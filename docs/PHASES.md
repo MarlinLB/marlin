@@ -1,0 +1,368 @@
+# Marlin — Implementation Phases
+
+**Status:** established 2026-08-20
+**Reconciled against:** `docs/design/README.md` revision 6, `DEPLOYMENT.md` first revision
+
+Five boundaries. Each states what must be **true** to cross it, not what someone intends to
+work on. A phase closes when its exit criteria hold in CI, not when its code is written.
+
+`docs/design/24-testing.md`'s "phase 0" predates this document and means **Phase 1**.
+
+---
+
+## Overview
+
+| Phase | Name | Closes when |
+|---|---|---|
+| 1 | Project setup | one L2 DSR packet forwards, configured by the C# service |
+| 2a | The map ABI | `types.h` is frozen and the C# mirror is reviewed against it |
+| 2b | Datapath completion | all three modes and both inner families forward correctly |
+| 3 | Control plane: basic features | Marlin runs unattended: health, reconciliation, ACL |
+| 4 | Control plane: complex features | the rate limiter is safe to enable under attack |
+
+### Why Phase 2 is split
+
+Phase 2 carries two boundaries because they fail differently:
+
+- **2a is a decision, not a milestone.** Freezing `types.h` fixes what a second implementation
+  mirrors by hand, and `marlin.h:141-145` makes the `drop_stats` indices ABI from first
+  release. Both are irreversible in a way that writing an encapsulation unit is not.
+- **2b is where the modes are exercised.** Encapsulation reads `backend` fields and
+  `config.tunnel_src`; doing that before the layout is frozen means writing the C# mirror
+  twice.
+
+An earlier proposal was one phase per forwarding mode. IPIP and GUE share
+`nexthop.c`, the MTU check (`docs/design/23-mtu.md`) and the checksum arithmetic
+(`docs/design/14-forwarding-modes.md`), so they are one boundary here rather than two. L2 DSR is
+separated out — into Phase 1 — because it is the mode with no encapsulation and therefore the
+shortest path to a forwarding packet.
+
+### Why the ACL is in Phase 3 and not Phase 4
+
+`docs/design/20-configuration-validation.md` rejects `CFG_RL_ENABLE` set while `CFG_ACL_ENABLE` is clear: without the ACL
+no packet carries an allow verdict, so the rate limiter would meter management prefixes with
+no escape hatch. **The ACL is therefore a prerequisite of Phase 4, not a peer of it.** Its
+control-plane work — reconciling four `LPM_TRIE` maps and maintaining `config.acl_lists` — is
+the same kind of work as backend reconciliation, and its datapath cost is two trie lookups on
+a pure function of `packet_tuple.src`. Neither belongs with the rate limiter.
+
+---
+
+## What holds in every phase
+
+- **Packet tests are built first, not last** (`docs/design/24-testing.md`). They are affordable because Marlin holds
+  no per-flow state, so output is a deterministic function of the packet and map contents.
+  Anything that breaks that property is a design change, not an implementation detail.
+- **Both feature flags stay off until their phase.** `acl.h` and `ratelimit.h` already exist
+  and are already called from `balancer.c`, so the phase gate is `CFG_ACL_ENABLE` (Phase 3)
+  and `CFG_RL_ENABLE` (Phase 4) plus the control-plane side — not the datapath code.
+- **The verifier is a build product.** CI fails on a load failure and records reported
+  complexity as a regression signal, because it degrades gradually as code is added
+  (`docs/design/24-testing.md`).
+- **A phase does not close with an open decision assigned to it.** The decisions are named per
+  phase below, and collected at the end of this document.
+
+---
+
+## Phase 1 — Project setup
+
+**Goal:** one packet arrives on a VIP and leaves for a backend, and a C# process put the
+configuration there. Nothing beyond that.
+
+### Entry state
+
+Sources exist ahead of any build: `marlin.c`, `balancer.c`, `nexthop.c`, and every header
+`docs/design/03-translation-units.md` names except `csum.h`. Not yet written: `parse.c`, `ipip_encap.c`, `gue_encap.c`
+and `csum.h`; `marlin-load.sh` and its systemd unit; and CI, whose obligations `docs/design/24-testing.md` states
+without naming a system. There is no build system, no test harness, no control-plane tree and no
+version control. Phase 1 is largely about making what exists compile, load and be driven.
+
+### Build
+
+- Per-translation-unit `clang -target bpf -g`, linked with `bpftool gen object` into
+  `marlin.bpf.o`. Every input carries BTF (`docs/design/03-translation-units.md`).
+- `marlin-load.sh` and its systemd oneshot, `RemainAfterExit`, ordered before the control
+  plane (`docs/design/02-architecture.md`).
+- `clang-format` and `clang-tidy` wired into CI, blocking per `.clang-tidy`'s
+  `WarningsAsErrors`.
+- Load and attach verified in a network namespace: `bpftool prog loadall` then
+  `net attach xdpdrv`. The attach must fail rather than degrade to SKB mode (`docs/design/02-architecture.md`).
+
+### Datapath — the vertical slice
+
+One path only. IPv4 inner, L2 DSR, one VIP with an explicit port, one `MARLIN_UP` backend with
+a stored `mac` and `MARLIN_BE_F_FIB` clear, `XDP_TX`.
+
+Included because omitting them would build the wrong thing:
+
+- Rendezvous selection over `fwd_table` as specified in `docs/design/12-selection.md`, not
+  `backends[hash % N]`. The table is generated for real even with one member
+  (`docs/design/12-selection.md`, "Why the table is not simply …").
+- SipHash-2-4 over the client address with `vip_meta.hash_key` (`docs/design/12-selection.md`).
+- `marlin_ctx` fully zeroed before the first `marlin_*` call, and the `config` snapshot taken
+  once in `marlin.c` (`docs/design/04-calling-convention.md`).
+- `drop_stats`, `vip_stats` and `backend_stats` written.
+
+Deliberately absent: IPv6 inner, extension headers, fragments, the ICMP branch, port-agnostic
+VIPs, `bpf_fib_lookup()`, `XDP_REDIRECT` and `tx_ports`, both encapsulation modes, ACL and
+rate-limit enforcement.
+
+### Control plane
+
+The real C#/.NET 10 service, minimal surface. It opens pinned paths and performs map I/O only;
+it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control-plane.md`).
+
+- `vip_map`, `fwd_table`, `backends`, `config` written over `bpf_obj_get` +
+  `bpf_map_update_elem`.
+- Hand-written mirrors for `vip_key`, `vip_meta`, `backend` and `marlin_config`, under
+  `docs/design/06-map-abi.md`'s parity discipline. `vip_key`'s anonymous union is
+  `[StructLayout(Explicit)]` with both arms
+  at `FieldOffset(0)`; fixed-size arrays are `[InlineArray]` or `fixed`, never managed arrays.
+- No health checking, no reconciliation loop, no APIs, no netlink.
+
+**Two decisions are required in this phase.**
+
+- **C# map access:** P/Invoke to `libbpf`, or a direct `bpf(2)` syscall wrapper. It determines
+  the deployment dependency set and is cheapest to settle before any map I/O is written.
+- **Indentation.** `.clang-format` sets `UseTab: Never` and `.editorconfig` sets
+  `indent_style = space`, but every existing source indents with tabs — no line in any of
+  them carries two or more leading spaces, and every leading-space line is a `^ *`
+  block-comment continuation. CI cannot enforce formatting until this is resolved, and
+  `clang-format` as configured today rewrites every file, comment continuations included.
+  Either the configuration adopts tabs, or the sources are reformatted once, in a commit
+  containing nothing else.
+
+### Exit criteria
+
+1. `marlin.bpf.o` builds with BTF, loads, and attaches in `xdpdrv` mode in a netns.
+2. `bpf_prog_test_run` asserts exact output bytes for: a VIP hit rewriting the destination MAC
+   and returning `XDP_TX`; a miss returning `XDP_PASS` counting `vip_miss`; `backend_id == 0`
+   dropping `no_backend`; `state != MARLIN_UP` dropping `backend_down`.
+3. The C# service configures that VIP and backend from scratch on a running datapath, and the
+   forwarding change is observed in `vip_stats` and `backend_stats` — not in service logs.
+4. Restarting the C# service disturbs neither the attachment nor forwarding
+   (`docs/design/02-architecture.md`, `docs/design/19-control-plane.md`).
+5. CI blocks on `clang-tidy` findings and on a verifier load failure, and records reported
+   complexity.
+6. Both Phase 1 decisions above are settled and written down — the C# map-access mechanism,
+   and indentation. The second is what criterion 5's format check depends on.
+
+---
+
+## Phase 2a — The map ABI
+
+**Goal:** `types.h` stops changing, and the C# mirror is known to match it by review.
+
+Two open decisions must close here, because both alter layout or index meaning and neither is
+revisable once a control plane has recorded a counter or read a struct in the field.
+
+| Decision | Where | Question |
+|---|---|---|
+| D4 | `types.h:203` | `backend.mac` straddles the 8-byte boundary at bytes 4-9. `docs/design/17-reconfiguration.md` calls `mac` immutable; `docs/design/15-nexthop-l2dsr.md` and `docs/design/19-control-plane.md` refresh it from neighbour events. If it is mutable, a torn read yields four bytes of the new MAC and two of the old. Field order is `docs/design/08-types.md`'s as written, pending this. |
+| D6 | `marlin.h:147` | `MAP_BOUNDS`, `NO_TX_PORT`, `ENCAP_LENGTH`, `FIB_UNSPEC` and the counted ICMP echo pass are in `enum marlin_ret` but not in `docs/design/22-observability.md`'s enumerated list of 23 reasons. |
+
+### Deliverables
+
+- `types.h` frozen: all 13 maps, their keys and values, and every constant of `docs/design/09-sizing.md`.
+- Byte offsets stated in comments on both the C and C# sides for every mirrored struct, so
+  parity is reviewable by reading — which `docs/design/06-map-abi.md` records as the only mechanism there is.
+- `drop_stats` enumerators appended from here, never reordered (`marlin.h:142`).
+- The C# mirror extended to every struct the later phases need, not only Phase 1's four.
+
+### Exit criteria
+
+1. D4 and D6 closed, with the resolution written into `docs/design/08-types.md` (D4) and
+   `docs/design/22-observability.md` (D6), and the header comment replaced rather than annotated.
+2. `docs/design/22-observability.md`'s reason list and `enum marlin_ret` agree, and `DROP_REASON_MAX` still bounds them.
+3. Every mirrored struct carries byte offsets on both sides and has been reviewed for parity
+   as a single commit spanning both languages (`docs/design/06-map-abi.md`).
+4. No `types.h` change lands after this point without the justification written into
+   `docs/design/06-map-abi.md` and `docs/design/08-types.md` in the same commit.
+
+---
+
+## Phase 2b — Datapath completion
+
+**Goal:** every forwarding mode and every parse path in `docs/design/11-pipeline.md` works. After this phase the
+datapath is feature-complete and further work is control-plane work.
+
+### Deliverables
+
+- `parse.c`: IPv6 extension-header walking to `MAX_EXT_HDRS`, fragments in both families, ESP
+  and AH as `unsupported_proto`, the ICMP branch including the embedded-header path, and the
+  port-agnostic double lookup of `vip_map` (`docs/design/11-pipeline.md`).
+- `ipip_encap.c`, `gue_encap.c`, `csum.h`: IPIP and GUE, IPv6 inner over IPv4 outer, the GUE
+  entropy source port and zero UDP checksum (`docs/design/14-forwarding-modes.md`).
+- `nexthop.c` completed: `bpf_fib_lookup()` with its seven return codes, the `neigh_fallback`
+  path, the L2 DSR gatewayed-next-hop refusal, `egress_mismatch`, and `XDP_REDIRECT` through
+  `tx_ports` (`docs/design/16-fib-lookup.md`).
+- The MTU and fragmentation checks of `docs/design/23-mtu.md`: `frag_needed` and `frame_too_big`. Encapsulation
+  also introduces `adjust_head_failed`, which is a driver-headroom failure counted under
+  `docs/design/22-observability.md`, not an MTU check.
+- Control plane gains only what the modes need: `config.tunnel_src`, a static
+  `config.max_frame`, and `tx_ports` population. Refreshing `max_frame` from netlink link
+  events is Phase 3.
+
+**Decision required in this phase:** `nexthop.c:206` — `docs/design/16-fib-lookup.md` calls
+`BPF_FIB_LOOKUP_DIRECT` optional but gives it no configuration surface, so policy routing rules
+currently apply.
+
+### Exit criteria
+
+1. `docs/design/24-testing.md`'s full packet-test matrix passes, including every named assertion: the **five**
+   `NO_NEIGH` fallback cases; `NO_NEIGH` dropping in every other mode; the FIB fallback
+   resolving the backend rather than the VIP; `MARLIN_BE_F_FIB` beating a resolved MAC with
+   the emitted source MAC asserted; L2 DSR refusing a gatewayed next hop while the same route
+   forwards under IPIP; `egress_mismatch` counting without changing the verdict in the
+   `tx_ports`-present case; and `egress_mismatch` **plus** a `no_tx_port` drop when **the
+   FIB's** interface is absent from `tx_ports` — the redirect keys on the FIB result, never on
+   `egress_ifindex` (`nexthop.c:351`), and the counter is not a claim that the frame left.
+2. Integration tests in network namespaces confirm a real kernel FOU/GUE listener and real
+   `ipip`/`sit` devices accept what Marlin emits, including the zero UDP checksum
+   (`docs/design/24-testing.md`).
+3. An extension-header chain at `MAX_EXT_HDRS` and one beyond it are distinguishable —
+   `ext_hdr_limit`, not `parse_error`.
+4. A redirect to an ifindex absent from `tx_ports` is a countable `XDP_ABORTED`, not a silent
+   loss (`docs/design/09-sizing.md`).
+5. Reported verifier complexity is inside budget with all three modes and both families
+   linked. If it is not, `docs/design/05-budgets.md`'s `PROG_ARRAY` fallback is taken **with its
+   three consequences accepted explicitly**: `marlin_ctx` moves to a per-CPU scratch map, the
+   accumulated stack cap drops to 256 bytes, and tail calls do not return.
+
+---
+
+## Phase 3 — Control plane: basic features
+
+**Goal:** Marlin runs unattended. Everything in `docs/design/19-control-plane.md`,
+`docs/design/20-configuration-validation.md` and `docs/design/21-active-active.md` except the
+rate-limiter conversion.
+
+### Deliverables
+
+- **Health checking** with the prober bound in a VRF that does not contain the VIP but
+  **does** contain the probe source address and the host `ipip`/`sit`/GUE devices the probes
+  traverse (`docs/design/18-health.md`; `DEPLOYMENT.md` §6).
+- **Reconciliation.** The configuration store is authoritative; maps are not. Startup
+  reconciles idempotently (`docs/design/19-control-plane.md`).
+- **Table generation** from the stored `table_seed` and member set, including regeneration
+  under traffic.
+- **Neighbour and MAC maintenance** from netlink: `backend.mac`, outer next-hop entries, and
+  the two cases `docs/design/15-nexthop-l2dsr.md`'s `neigh_fallback` cannot cover — a genuinely
+  off-segment flagged L2 DSR backend, and any backend configured without a `mac`
+  (`docs/design/19-control-plane.md`).
+- **Reachability as asserted opt-out.** `MARLIN_BE_F_FIB` set on every backend not positively
+  confirmed on the ingress segment; `backend.egress_ifindex` populated wherever the
+  determination produced an interface (`docs/design/19-control-plane.md`).
+- **`config.max_frame`** refreshed from the attach interface's MTU on netlink link events,
+  replacing the static value Phase 2b set.
+- **ACL**: four tries reconciled, `config.acl_lists` maintained, `CFG_ACL_ENABLE` usable
+  (`docs/design/27-source-filtering.md`).
+- **Configuration validation** — every rule in `docs/design/20-configuration-validation.md`, rejected at configuration time.
+- **Configuration and status APIs**, including the per-VIP non-reversible digest of
+  `hash_key` and `table_seed` that makes active/active divergence detectable
+  (`docs/design/21-active-active.md`).
+
+### Exit criteria
+
+1. One test per `docs/design/20-configuration-validation.md` validation rule, asserting
+   rejection rather than a warning, and one per rule accepted with a warning.
+2. Table regeneration under traffic never forwards through a row referencing an unpopulated
+   slot (`docs/design/24-testing.md`).
+3. `backend.mac` freshness tested against neighbour churn, which needs its own netlink-level
+   tests (`docs/design/24-testing.md`).
+4. `docs/design/24-testing.md`'s ACL coverage passes, **including the placement assertion**: a
+   blocked source addressed to a destination that is not a VIP drops with `acl_blocked`, not
+   `vip_miss`. That assertion is the whole of `docs/design/11-pipeline.md`'s host-firewall
+   property and it fails silently if step 3 is ever moved after step 4.
+5. `sizeof` asserted on both ACL key structs, 8 and 20 — a layout change alters what the trie
+   compares (`docs/design/24-testing.md`).
+6. A control-plane restart reconciles a partially applied write to the same end state, twice
+   in succession, with no forwarding interruption.
+7. `DEPLOYMENT.md`'s prerequisites are reviewed against what Phase 3 actually requires of the
+   integrator, and its §9 checklist is complete. The first revision already carries the five
+   requirements named for it: LRO disabled (§3.2), the router hairpin
+   (§4.1), backend packet size (§5.5), management prefixes allowlisted ahead of the first
+   blocklist rule together with ingress source-address validation (§7, §4.3), and the probe
+   VRF (§6).
+
+---
+
+## Phase 4 — Control plane: complex features
+
+**Goal:** the rate limiter is safe to enable on a link carrying production traffic.
+
+The datapath token bucket already exists in `ratelimit.h`. What this phase adds is the
+measurement that decides whether it may be turned on, the control-plane conversion, and the
+concurrency evidence.
+
+### Deliverables
+
+- **The insert-cost measurement `docs/design/28-rate-limiting.md` demands.** Insert-per-packet
+  throughput in native XDP, under a spoofed flood presenting a fresh source per packet, relative
+  to line rate. `docs/design/28-rate-limiting.md` states that bounded memory is achieved and
+  bounded cost is not: the mitigation is chosen *on the measurement*, and adding machinery before
+  it is what `docs/design/28-rate-limiting.md` rules out.
+- **Unit conversion in the control plane.** Operator tokens-per-second and burst-in-packets
+  become `config.rl_refill` and the scaled `config.rl_burst`. The datapath performs no unit
+  conversion (`docs/design/19-control-plane.md`).
+- **`ratelimit` is datapath-owned.** The control plane reads it for diagnostics and never
+  writes it (`docs/design/19-control-plane.md`).
+- `CFG_RL_ENABLE` usable, gated on `CFG_ACL_ENABLE`.
+
+### Exit criteria
+
+1. The insert cost measured and its outcome recorded as a policy decision, not a silent
+   optimisation. If
+   the cheapest correction is taken — admitting without inserting once insert pressure is
+   detected — that is a documented trade of enforcement against novel sources for bounded
+   cost.
+2. `docs/design/24-testing.md`'s rate-limiter regime passes: one update's arithmetic from a
+   seeded `state` word including refill, the clamp to `rl_burst`, the sub-one-token drop, the
+   timestamp wrap clamp, and a tick delta whose refill product would overflow 32 bits; bucket
+   exhaustion asserted as bounds rather than exact token counts; insertion beyond
+   `MAX_RL_ENTRIES` distinct sources holding capacity with no failed insertion.
+3. An allowlisted source at any rate is never `ratelimited` — the assertion that an allow
+   verdict survives the VIP lookup on `marlin_ctx.acl_verdict` (`docs/design/11-pipeline.md`).
+4. `rl_cas_exhausted` characterised under concurrent senders across multiple receive queues.
+   `bpf_prog_test_run` is single-threaded and cannot reach this; it needs the integration
+   environment (`docs/design/24-testing.md`).
+5. Every `docs/design/24-testing.md` packet test from earlier phases still passes with
+   `CFG_RL_ENABLE` off, which is what keeps that coverage order-independent.
+
+---
+
+## Open decisions, by phase
+
+Every decision a phase must close before it closes. Each is carried at the line or in the
+section it affects, not in a document of its own.
+
+| Decision | Carried in | Phase |
+|---|---|---|
+| C# map access: `libbpf` P/Invoke or direct `bpf(2)` | Phase 1, "Control plane" above | 1 |
+| Indentation: `.clang-format`/`.editorconfig` say spaces, every source uses tabs | `.clang-format`/`.editorconfig` | 1 |
+| D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
+| D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:147` | 2a |
+| `BPF_FIB_LOOKUP_DIRECT` has no configuration surface | `nexthop.c:206` | 2b |
+| The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |
+
+---
+
+## Not phased
+
+Recorded so their absence is not read as an omission.
+
+- **Datapath upgrade without dropping connections.** A non-goal (`docs/design/01-scope.md`).
+  Control-plane upgrades are non-disruptive at every phase because the maps are pinned; datapath
+  upgrades are not, at any phase.
+- **The accepted residual risks.** Not scheduled, because each is accepted rather than
+  outstanding, and each is argued where it arises: the `~1/(N+1)` reset on backend addition
+  (`docs/design/12-selection.md`, `docs/design/17-reconfiguration.md`; `DEPLOYMENT.md` §2), the
+  GUE-specific probe blind spot (`docs/design/18-health.md`; `DEPLOYMENT.md` §5.4 and §6), silent
+  `hash_key`/`table_seed` divergence (`docs/design/10-map-invariants.md`,
+  `docs/design/21-active-active.md`), distributed sub-threshold attacks
+  (`docs/design/25-rejected.md`, `docs/design/28-rate-limiting.md`), and the unchecked map ABI
+  (`docs/design/06-map-abi.md`).
+- **Extending the firewall beyond `docs/design/27-source-filtering.md` and
+  `docs/design/28-rate-limiting.md`.** L4-granular rules, stateful matching and userspace attack
+  classification are non-goals (`docs/design/01-scope.md`), and nothing beyond what those two
+  documents specify is in scope until an operational need names it.

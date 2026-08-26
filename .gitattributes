@@ -1,0 +1,40 @@
+# Marlin — EOL normalisation only. Formatting is owned elsewhere:
+# data-plane/.clang-format (C), control-plane/.editorconfig (C#).
+# See docs/REPO-STRUCTURE.md §5, row "/.gitattributes".
+#
+# Everything here is forced to LF. Git ops happen from WSL2 (autocrlf=false);
+# Rider on Windows only edits/builds, it does not commit. Forcing LF avoids a
+# second, conflicting EOL policy on the Windows side.
+
+* text=auto eol=lf
+
+# Datapath C — clang-format assumes LF; a CRLF file changes every line's
+# byte length under -target bpf tooling that counts columns.
+*.c text eol=lf
+*.h text eol=lf
+
+# Shipped, executed artefacts — deploy/marlin-load.sh runs on the target
+# host. A CRLF shebang line fails to exec there. docs/REPO-STRUCTURE.md §5
+# calls this out explicitly for deploy/*.sh; the same constraint applies to
+# the unit and env files beside it.
+*.sh text eol=lf
+*.service text eol=lf
+*.env.example text eol=lf
+
+# Control plane — .NET tooling and dotnet format accept LF; keep one policy
+# rather than forcing CRLF sln/csproj against everything else.
+*.cs text eol=lf
+*.sln text eol=lf
+*.csproj text eol=lf
+*.props text eol=lf
+
+# Docs and config
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Never rewritten
+*.png binary
+*.o binary
+*.bpf.o binary
