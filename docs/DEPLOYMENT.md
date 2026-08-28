@@ -49,7 +49,7 @@ The loader is `deploy/marlin-load.sh` and does exactly two things:
 
 ```sh
 bpftool prog loadall marlin.bpf.o /sys/fs/bpf/marlin pinmaps /sys/fs/bpf/marlin
-bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_marlin dev "$IFACE"
+bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_main dev "$IFACE"
 ```
 
 - There is no map pre-creation step. Every map is sized at compile time and created from its BTF

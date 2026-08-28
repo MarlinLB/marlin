@@ -75,7 +75,7 @@ The load sequence is two commands:
 bpftool prog loadall marlin.bpf.o /sys/fs/bpf/marlin \
     pinmaps /sys/fs/bpf/marlin
 
-bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_marlin dev "$IFACE"
+bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_main dev "$IFACE"
 ```
 
 ## Deployment
