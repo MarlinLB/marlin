@@ -17,8 +17,8 @@ gone.
 **PROXY protocol.** Only relevant because NAT loses the client address. DSR preserves it
 natively.
 
-**Secondaries and second chance** (GLB's design: carry a secondary backend in the GUE header
-and have the primary forward what it does not recognise). It genuinely eliminates LB-side flow
+**Secondaries and second chance** (carry a secondary backend in the GUE header and have the
+primary forward what it does not recognise). It genuinely eliminates LB-side flow
 state and makes drain non-disruptive. Rejected because it requires a component on every
 backend, restricts the fleet to one non-active backend at a time, and works only for GUE —
 L2 DSR and IPIP have nowhere to carry a secondary. Marlin serves backend fleets it does not
@@ -89,7 +89,7 @@ that no stage after parsing needs an ICMP branch.
 **A Count-Min sketch for per-source rates.** The technique of the P4 literature — Jaqen,
 Patronum, INDDoS — where it exists because a switch ASIC cannot perform a general hash lookup per
 packet. That constraint does not apply to a CPU running XDP, and `LRU_HASH` gives exact counts
-with bounded memory. Katran's `LRU_HASH` connection table is the applicable precedent.
+with bounded memory.
 
 **Sampling to a userspace decision daemon** — the Cloudflare `L4Drop`/`dosd`/`gatebot` and Meta
 Droplet shape. Rejected in favour of same-packet enforcement. It remains the only way to detect a
@@ -137,8 +137,8 @@ every global subprogram and to the static stage functions beneath them. `docs/de
 convention exists for exactly this case; a second, parallel convention for the second thing that
 crosses the boundary is a worse arrangement than extending the first.
 
-**A `config` lookup per translation unit.** Katran's shape: an `ARRAY` map consulted wherever a
-control value is needed. Cheap in isolation — a bounds check and pointer arithmetic — and it
+**A `config` lookup per translation unit.** An `ARRAY` map consulted wherever a control value
+is needed. Cheap in isolation — a bounds check and pointer arithmetic — and it
 suits a program that is one translation unit of inlined helpers, which Marlin is not. Rejected
 on two counts. It is *more* expensive against the combined stack budget than one snapshot,
 because each unit's local copy occupies a frame that coexists with the others on the chain
