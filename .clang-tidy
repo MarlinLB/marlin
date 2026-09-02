@@ -1,0 +1,150 @@
+---
+# clang-tidy for the Marlin eBPF/XDP load balancer — strict, CI-blocking.
+#
+# Naming/style rules are derived from the existing source: lower_case functions,
+# variables, structs and members; UPPER_CASE macros and enum constants
+# (MARLIN_XLATE_SNAT, MARLIN_FWD_CONTINUE, MARLIN_DROP_BOUNDS).
+#
+# C++-only groups (modernize-*, cppcoreguidelines-*, hicpp-*, google-*,
+# fuchsia-*, altera-*, abseil-*, boost-*, objc-*, zircon-*) are simply never
+# enabled — the list starts from `-*`, so no explicit disable is needed.
+#
+# Targets clang-tidy >= 18. ExcludeHeaderFilterRegex (a cleaner way to keep
+# vendor/kernel headers out of HeaderFilterRegex's matches) needs >= 19, so it
+# is not used here; HeaderFilterRegex below is narrowed to the project's own
+# headers instead, which works unchanged from 18 up.
+
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  concurrency-*,
+  linuxkernel-*,
+  misc-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  -cert-dcl37-c,
+  -cert-dcl51-cpp,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -readability-avoid-nested-conditional-operator
+
+# Rationale for each exclusion above (kept out of the block so the list stays
+# machine-editable):
+#
+#   bugprone-easily-swappable-parameters
+#       XDP helpers legitimately take (void *data, void *data_end) and
+#       (ctx, pkt, flow) triples. Unactionable noise in packet-processing code.
+#
+#   bugprone-reserved-identifier / cert-dcl37-c / cert-dcl51-cpp
+#       eBPF sources are saturated with reserved-namespace identifiers
+#       (__u8, __be16, __always_inline, __builtin_memset, __uint(), SEC()).
+#       Leaving these on drowns out every real finding.
+#
+#   misc-include-cleaner
+#       Kernel types arrive through a small set of UAPI umbrella headers —
+#       <linux/bpf.h>, <linux/types.h> — not through per-type headers. vmlinux.h
+#       is deliberately not in use (types.h). The check demands includes that do
+#       not exist either way.
+#
+#   misc-no-recursion
+#       Redundant: the eBPF verifier rejects recursion at load time, and the
+#       check misfires on __always_inline helper chains.
+#
+# readability-identifier-length stays ENABLED but is retuned via the
+# Minimum*NameLength options below, so the established 2-3 char names
+# (rc, ctx, pkt, dec) pass while single letters outside loops do not.
+
+# Fail the build on correctness findings. Style/readability findings warn only,
+# so a naming nit never blocks a hotfix.
+WarningsAsErrors: >
+  bugprone-*,
+  clang-analyzer-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier
+
+# Analyse only our own headers (include/marlin.h, include/marlin/**/*.h);
+# everything else — libbpf/kernel UAPI headers pulled in from the system
+# include path — is excluded by not matching, not by a separate deny list.
+HeaderFilterRegex: '(^|.*/)include/marlin(/.*)?\.h$'
+
+FormatStyle: file
+SystemHeaders: false
+UseColor: false
+
+CheckOptions:
+  # --- Naming -----------------------------------------------------------------
+  readability-identifier-naming.FunctionCase: lower_case
+  readability-identifier-naming.GlobalFunctionCase: lower_case
+  readability-identifier-naming.VariableCase: lower_case
+  readability-identifier-naming.LocalVariableCase: lower_case
+  readability-identifier-naming.GlobalVariableCase: lower_case
+  readability-identifier-naming.StaticVariableCase: lower_case
+  readability-identifier-naming.ParameterCase: lower_case
+  readability-identifier-naming.ConstantParameterCase: lower_case
+  readability-identifier-naming.MemberCase: lower_case
+  readability-identifier-naming.StructCase: lower_case
+  readability-identifier-naming.UnionCase: lower_case
+  readability-identifier-naming.EnumCase: lower_case
+  readability-identifier-naming.TypedefCase: lower_case
+  readability-identifier-naming.TypeAliasCase: lower_case
+  readability-identifier-naming.EnumConstantCase: UPPER_CASE
+  readability-identifier-naming.MacroDefinitionCase: UPPER_CASE
+  readability-identifier-naming.GlobalConstantCase: UPPER_CASE
+  readability-identifier-naming.StaticConstantCase: UPPER_CASE
+  # Tolerate kernel-style annotation macros and include guards.
+  readability-identifier-naming.MacroDefinitionIgnoredRegexp: '^(_.*|.*_H_?)$'
+
+  # --- Identifier length (replaces readability-identifier-length) -------------
+  readability-identifier-length.MinimumVariableNameLength: 2
+  readability-identifier-length.MinimumParameterNameLength: 2
+  readability-identifier-length.MinimumLoopCounterNameLength: 1
+  readability-identifier-length.IgnoredVariableNames: '^(rc|fd|id|nh|sk|ip)$'
+  readability-identifier-length.IgnoredParameterNames: '^(rc|fd|id|nh|sk|ip)$'
+
+  # --- Magic numbers (strict: only 0 and 1 are free) -------------------------
+  # Intentionally flags things like `case 2:` and `__u8 smac[6]` so they become
+  # named constants / ETH_ALEN.
+  readability-magic-numbers.IgnoredIntegerValues: '0;1;'
+  readability-magic-numbers.IgnoreAllFloatingPointValues: true
+  readability-magic-numbers.IgnorePowersOf2IntegerValues: false
+  readability-magic-numbers.IgnoreBitFieldsWidths: true
+
+  # --- Complexity budgets (XDP fast path must stay verifier-friendly) --------
+  readability-function-cognitive-complexity.Threshold: 25
+  readability-function-cognitive-complexity.DescribeBasicIncrements: true
+  readability-function-cognitive-complexity.IgnoreMacros: true
+  readability-function-size.LineThreshold: 120
+  readability-function-size.StatementThreshold: 80
+  readability-function-size.BranchThreshold: 20
+  readability-function-size.ParameterThreshold: 6
+  readability-function-size.NestingThreshold: 5
+
+  # --- Braces and control flow ----------------------------------------------
+  # 0 = braces required on every if/else/for/while, matching the source.
+  readability-braces-around-statements.ShortStatementLines: 0
+  readability-else-after-return.WarnOnUnfixable: true
+  readability-else-after-return.WarnOnConditionVariables: true
+  readability-simplify-boolean-expr.ChainedConditionalReturn: true
+  readability-simplify-boolean-expr.ChainedConditionalAssignment: true
+
+  # --- Literals and casts ----------------------------------------------------
+  readability-uppercase-literal-suffix.NewSuffixes: 'L;LL;U;UL;ULL'
+  readability-inconsistent-declaration-parameter-name.Strict: true
+
+  # --- Bug patterns ----------------------------------------------------------
+  bugprone-assert-side-effect.AssertMacros: 'assert,BUILD_BUG_ON'
+  bugprone-signed-char-misuse.CharTypdefsToIgnore: '__s8;__u8'
+  bugprone-sizeof-expression.WarnOnSizeOfIntegerExpression: true
+  bugprone-suspicious-enum-usage.StrictMode: true
+  bugprone-misplaced-widening-cast.CheckImplicitCasts: true
+  bugprone-narrowing-conversions.WarnOnIntegerNarrowingConversion: true
+  bugprone-narrowing-conversions.PedanticMode: false
+
+  # --- Misc ------------------------------------------------------------------
+  misc-unused-parameters.StrictMode: true
+  cert-dcl16-c.NewSuffixes: 'L;LL;U;UL;ULL'
