@@ -6,7 +6,7 @@
 C# equivalents are **hand-written to match it**, not generated. `[StructLayout]` is
 `Sequential` for every struct except `vip_key`, whose anonymous union (`docs/design/08-types.md`) requires
 `Explicit` with both arms at `FieldOffset(0)`. Fixed-size array members — `vip_meta.hash_key`,
-`backend.mac`, the `addr[4]` fields and every `pad` — are `[InlineArray]` or `fixed` buffers,
+`backend.mac`, `backend.inner_mac`, the `addr[4]` fields and every `pad` — are `[InlineArray]` or `fixed` buffers,
 never managed arrays.
 
 **The accepted risk.** A divergence between the two declarations is silent memory corruption,

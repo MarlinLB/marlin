@@ -60,6 +60,7 @@ marlin/
 │   │   ├── parse.c
 │   │   ├── ipip_encap.c
 │   │   ├── gue_encap.c
+│   │   ├── vxlan_encap.c
 │   │   └── nexthop.c
 │   └── include/
 │       ├── marlin.h                  # marlin_ctx, enum marlin_ret, marlin_* prototypes
@@ -70,6 +71,7 @@ marlin/
 │           │   └── enums.h           # modes, states, drop reasons, flag bits — see §8
 │           ├── maps.h
 │           ├── csum.h
+│           ├── entropy.h             # outer UDP source port entropy hash, shared by gue_encap.c and vxlan_encap.c
 │           ├── siphash.h
 │           ├── stats.h
 │           ├── acl.h
@@ -97,7 +99,7 @@ marlin/
 │
 ├── tests/
 │   ├── packet/                        # bpf_prog_test_run, exact output bytes (docs/design/24-testing.md)
-│   ├── integration/                   # netns, veth, real ipip/sit/FOU devices
+│   ├── integration/                   # netns, veth, real ipip/sit/FOU/vxlan devices
 │   └── unit/
 │       ├── Marlin.Core.Tests/
 │       ├── Marlin.Health.Tests/
@@ -266,9 +268,9 @@ samples anyone reading `parse.c` will have read. `BasedOnStyle: LLVM` matches no
 the repository but is less hostile to deep nesting.
 
 **7.6 The unnamed global subprograms.** `docs/design/04-calling-convention.md` names only
-`marlin_balance()`. The entries for `parse.c`, `ipip_encap.c`, `gue_encap.c` and `nexthop.c` are
-the file-to-file contract and are unspecified; `nexthop.c` may be one or two. Left silent, the
-first person to write `parse.c` picks them.
+`marlin_balance()`. The entries for `parse.c`, `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`
+and `nexthop.c` are the file-to-file contract and are unspecified; `nexthop.c` may be one or two.
+Left silent, the first person to write `parse.c` picks them.
 
 **7.7 An ABI parity test.** A `Marlin.Abi.Tests/` asserting `Marshal.SizeOf` and
 `Marshal.OffsetOf` against the byte offsets `docs/design/06-map-abi.md` requires in comments

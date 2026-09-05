@@ -17,12 +17,14 @@ gone.
 **PROXY protocol.** Only relevant because NAT loses the client address. DSR preserves it
 natively.
 
-**Secondaries and second chance** (carry a secondary backend in the GUE header and have the
-primary forward what it does not recognise). It genuinely eliminates LB-side flow
-state and makes drain non-disruptive. Rejected because it requires a component on every
-backend, restricts the fleet to one non-active backend at a time, and works only for GUE —
-L2 DSR and IPIP have nowhere to carry a secondary. Marlin serves backend fleets it does not
-control.
+**Secondaries and second chance** (carry a secondary backend identifier in the encapsulation
+header and have the primary forward what it does not recognise). It genuinely eliminates
+LB-side flow state and makes drain non-disruptive. Rejected because it requires a component on
+every backend and restricts the fleet to one non-active backend at a time — neither of which
+VXLAN's addition changes. It was also only ever going to work for the modes with header room to
+carry the secondary's identity: originally GUE alone; VXLAN's reserved header bytes could now
+serve the same purpose, but L2 DSR and IPIP still have nowhere to carry one, so the mechanism
+remains mode-specific rather than universal. Marlin serves backend fleets it does not control.
 
 **A flow cache.** It would not deliver a guarantee: entries are lost to eviction, per-CPU
 skew, CPU migration, and arrival at a different instance after an upstream rehash. It would
@@ -111,7 +113,27 @@ behind it — the same argument as the per-VIP down-set above.
 
 **Dropping non-first fragments to enforce a port-granular ACL tier on them.** Closes a hole that
 does not exist under `docs/design/27-source-filtering.md`'s address-only matching, at the cost of breaking large UDP for every
-source.
+source. Note this is the ACL case only; `docs/design/12-selection.md`'s `VIP_HASH_5TUPLE` does
+drop fragments, per VIP and counted, because there the wider input buys something the ACL's
+address-only matching does not need.
+
+**A port-bearing selection hash with fragments falling back to the source address.** The
+apparent way to widen the hash input without losing fragments, and the reason it is not: the
+first fragment hashes one way and its siblings another, so one datagram is split across two
+backends and never reassembles — silently, with no counter moving. Strictly worse than either
+position `docs/design/12-selection.md` offers, since address-only keeps the datagram whole and
+`VIP_HASH_5TUPLE` at least counts what it drops.
+
+**Fragment tracking to reunite a datagram's fragments on one backend.** Would make a
+port-bearing hash safe for fragmenting traffic. It is the flow cache of the entry above under
+another name — a per-packet read-modify-write over evictable state — and inherits every
+objection to it.
+
+**Reseeding or reweighting to relieve a hot `fwd_table` row.** The reflex when `backend_stats`
+shows one backend carrying a shared egress's whole population. Weights act per backend and
+cannot target a row (`docs/design/12-selection.md`), and reseeding remaps every client on the
+VIP while breaking the cross-instance agreement of `docs/design/21-active-active.md`. The row is
+hot because of what the hash reads, so the hash input is the only lever.
 
 **A `.bss` global for `acl_lists`.** `marlin_config` keeps every control-plane write on one
 pinned-map path (`docs/design/02-architecture.md`). A `volatile const` global would let the verifier delete the branches
@@ -128,8 +150,8 @@ writer, so each unit would end up copying to its stack anyway. That is the per-u
 below, with a cheaper load.
 
 **A `cfg` parameter threaded through the global subprograms.** `marlin_config` crosses the
-translation unit boundary — `balancer.c` plus both encapsulation units, for `tunnel_src` (`docs/design/14-forwarding-modes.md`)
-— so the snapshot has to reach three units somehow. Passing it as an extra argument is legal:
+translation unit boundary — `balancer.c` plus all three encapsulation units, for `tunnel_src` (`docs/design/14-forwarding-modes.md`)
+— so the snapshot has to reach four units somehow. Passing it as an extra argument is legal:
 struct pointer arguments have been available since 5.13 and the signatures stay inside the
 five-register limit. It was rejected because it costs *the same stack* as carrying it on
 `marlin_ctx` — the snapshot lives in the entry frame either way — while adding a parameter to

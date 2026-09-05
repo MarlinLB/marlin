@@ -20,7 +20,7 @@ concept, is control-plane metadata with no datapath meaning. See `docs/design/25
 
 ## In-place `backends` updates
 
-`bpf_map_update_elem()` on an `ARRAY` copies the whole 20-byte value and is **not** atomic
+`bpf_map_update_elem()` on an `ARRAY` copies the whole 32-byte value and is **not** atomic
 against a concurrent datapath read, so a reader may observe a torn value.
 
 This is harmless, but not for a reason to do with alignment. Only `state`, `flags` and
@@ -38,10 +38,11 @@ updated in the same read-modify-write, since a topology change usually moves bot
 
 **The invariant is a control-plane one, not a layout one.** Every in-place update must be a
 read-modify-write of the complete struct. Constructing a partial `struct backend` and writing it
-would corrupt `addr`, `mac` or `gue_dport` in a way that a torn read could expose.
+would corrupt `addr`, `mac`, `encap_dport`, `vni` or `inner_mac` in a way that a torn read could
+expose.
 
-`addr`, `mac`, `gue_dport` and `mode` are never modified in place; changing any of them is a
-removal followed by an addition under a new backend ID.
+`addr`, `mac`, `encap_dport`, `vni`, `inner_mac` and `mode` are never modified in place; changing
+any of them is a removal followed by an addition under a new backend ID.
 
 ## Rows pointing at a down backend drop
 
@@ -90,3 +91,11 @@ mid-connection, and would violate the single-8-byte-word invariant above.
 ## Table regeneration
 
 Per `docs/design/12-selection.md`'s write ordering. Regeneration is per VIP; other VIPs' blocks are untouched.
+
+**Widening the score's hash input is a one-time exception to that scoping.** VXLAN's rendezvous
+score hashes `addr`, `vni` and `inner_mac` together (`docs/design/12-selection.md`); a control
+plane upgrading from a version that hashed `addr` alone recomputes a different score for every
+row of every existing VIP, not just VXLAN ones, because the hash input changed for the whole
+algorithm rather than per backend. This is a single full-fleet regeneration performed once at
+upgrade, following the write ordering above per VIP as it is applied — not a new steady-state
+behaviour, and not a per-packet cost.

@@ -37,7 +37,7 @@ since `XDP_TX` needs no devmap.
 |---|---|
 | `fwd_table` (100 × 65536 × 4 B) | 26 MB |
 | `ratelimit` (262144 × 28 B of key and value) | 7.3 MB, plus per-element allocator and bucket overhead |
-| `backends` (4096 × 20 B) | 80 KB |
+| `backends` (4096 × 32 B) | 128 KB |
 | ACL tries | proportional to populated rules; nothing when empty |
 | everything else | negligible |
 

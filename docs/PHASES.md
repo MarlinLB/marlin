@@ -16,7 +16,7 @@ work on. A phase closes when its exit criteria hold in CI, not when its code is 
 |---|---|---|
 | 1 | Project setup | one L2 DSR packet forwards, configured by the C# service |
 | 2a | The map ABI | `types.h` is frozen and the C# mirror is reviewed against it |
-| 2b | Datapath completion | all three modes and both inner families forward correctly |
+| 2b | Datapath completion | all four modes and both inner families forward correctly |
 | 3 | Control plane: basic features | Marlin runs unattended: health, reconciliation, ACL |
 | 4 | Control plane: complex features | the rate limiter is safe to enable under attack |
 
@@ -31,11 +31,12 @@ Phase 2 carries two boundaries because they fail differently:
   `config.tunnel_src`; doing that before the layout is frozen means writing the C# mirror
   twice.
 
-An earlier proposal was one phase per forwarding mode. IPIP and GUE share
+An earlier proposal was one phase per forwarding mode. IPIP, GUE and VXLAN share
 `nexthop.c`, the MTU check (`docs/design/23-mtu.md`) and the checksum arithmetic
-(`docs/design/14-forwarding-modes.md`), so they are one boundary here rather than two. L2 DSR is
-separated out — into Phase 1 — because it is the mode with no encapsulation and therefore the
-shortest path to a forwarding packet.
+(`docs/design/14-forwarding-modes.md`), so all three are one boundary here rather than three
+separate ones. L2 DSR is separated out — into Phase 1 — because it is the mode with no
+encapsulation and therefore
+the shortest path to a forwarding packet.
 
 ### Why the ACL is in Phase 3 and not Phase 4
 
@@ -72,8 +73,9 @@ configuration there. Nothing beyond that.
 ### Entry state
 
 Sources exist ahead of any build: `marlin.c`, `balancer.c`, `nexthop.c`, and every header
-`docs/design/03-translation-units.md` names except `csum.h`. Not yet written: `parse.c`, `ipip_encap.c`, `gue_encap.c`
-and `csum.h`; `marlin-load.sh` and its systemd unit; and CI, whose obligations `docs/design/24-testing.md` states
+`docs/design/03-translation-units.md` names except `csum.h` and `entropy.h`. Not yet written:
+`parse.c`, `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`, `csum.h` and `entropy.h`;
+`marlin-load.sh` and its systemd unit; and CI, whose obligations `docs/design/24-testing.md` states
 without naming a system. There is no build system, no test harness, no control-plane tree and no
 version control. Phase 1 is largely about making what exists compile, load and be driven.
 
@@ -104,7 +106,7 @@ Included because omitting them would build the wrong thing:
 - `drop_stats`, `vip_stats` and `backend_stats` written.
 
 Deliberately absent: IPv6 inner, extension headers, fragments, the ICMP branch, port-agnostic
-VIPs, `bpf_fib_lookup()`, `XDP_REDIRECT` and `tx_ports`, both encapsulation modes, ACL and
+VIPs, `bpf_fib_lookup()`, `XDP_REDIRECT` and `tx_ports`, all three encapsulation modes, ACL and
 rate-limit enforcement.
 
 ### Control plane
@@ -164,6 +166,12 @@ revisable once a control plane has recorded a counter or read a struct in the fi
 ### Deliverables
 
 - `types.h` frozen: all 13 maps, their keys and values, and every constant of `docs/design/09-sizing.md`.
+- `VIP_HASH_5TUPLE` and `MARLIN_DROP_FRAG_UNSUPPORTED` land here or not at all
+  (`docs/design/12-selection.md`). The flag is a `vip_meta.flags` bit and the reason is a
+  `drop_stats` index, so both are exactly what this phase freezes; adding either afterwards is a
+  post-freeze `types.h` change under exit criterion 4. The datapath half is already written —
+  `balancer.c`'s `marlin_balance_frag()` and `marlin_balance_hash()` — and the flag stays
+  unusable until Phase 2b supplies its producer, below.
 - Byte offsets stated in comments on both the C and C# sides for every mirrored struct, so
   parity is reviewable by reading — which `docs/design/06-map-abi.md` records as the only mechanism there is.
 - `drop_stats` enumerators appended from here, never reordered (`marlin.h:142`).
@@ -191,8 +199,20 @@ datapath is feature-complete and further work is control-plane work.
 - `parse.c`: IPv6 extension-header walking to `MAX_EXT_HDRS`, fragments in both families, ESP
   and AH as `unsupported_proto`, the ICMP branch including the embedded-header path, and the
   port-agnostic double lookup of `vip_map` (`docs/design/11-pipeline.md`).
-- `ipip_encap.c`, `gue_encap.c`, `csum.h`: IPIP and GUE, IPv6 inner over IPv4 outer, the GUE
-  entropy source port and zero UDP checksum (`docs/design/14-forwarding-modes.md`).
+- **`parse.c` supplies what `VIP_HASH_5TUPLE` consumes.** The flag is inert without two
+  additions, and both are silent if omitted rather than failing visibly:
+  `MARLIN_CTX_F_FRAG_FIRST` set on the first fragment of a fragmented datagram — without it
+  `marlin_balance_frag()` admits first fragments and strands reassembly state on the backend —
+  and the embedded *destination* port recovered into `tuple.sport` on the ICMP error path, which
+  address-only selection never needed and without which ICMP errors hash to the wrong row and
+  path MTU discovery breaks for the encapsulation modes (`docs/design/13-icmp.md`). The
+  `icmp_unparseable` threshold moves from two bytes of embedded L4 header to four with it.
+  `tuple.pad` must stay zero, because the flag hashes the tuple whole
+  (`docs/design/10-map-invariants.md`).
+- `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`, `csum.h`, `entropy.h`: IPIP, GUE and VXLAN,
+  IPv6 inner over IPv4 outer, VXLAN's VNI, its inner Ethernet header rewrite and its outer
+  Ethernet header, the entropy source port shared by GUE and VXLAN, and the zero UDP checksum
+  (`docs/design/14-forwarding-modes.md`).
 - `nexthop.c` completed: `bpf_fib_lookup()` with its seven return codes, the `neigh_fallback`
   path, the L2 DSR gatewayed-next-hop refusal, `egress_mismatch`, and `XDP_REDIRECT` through
   `tx_ports` (`docs/design/16-fib-lookup.md`).
@@ -200,8 +220,9 @@ datapath is feature-complete and further work is control-plane work.
   also introduces `adjust_head_failed`, which is a driver-headroom failure counted under
   `docs/design/22-observability.md`, not an MTU check.
 - Control plane gains only what the modes need: `config.tunnel_src`, a static
-  `config.max_frame`, and `tx_ports` population. Refreshing `max_frame` from netlink link
-  events is Phase 3.
+  `config.max_frame`, `tx_ports` population, and, for VXLAN backends, `backend.vni` and
+  `backend.inner_mac` (`docs/design/19-control-plane.md`). Refreshing `max_frame` from netlink
+  link events is Phase 3.
 
 **Decision required in this phase:** `nexthop.c:206` — `docs/design/16-fib-lookup.md` calls
 `BPF_FIB_LOOKUP_DIRECT` optional but gives it no configuration surface, so policy routing rules
@@ -217,14 +238,14 @@ currently apply.
    `tx_ports`-present case; and `egress_mismatch` **plus** a `no_tx_port` drop when **the
    FIB's** interface is absent from `tx_ports` — the redirect keys on the FIB result, never on
    `egress_ifindex` (`nexthop.c:351`), and the counter is not a claim that the frame left.
-2. Integration tests in network namespaces confirm a real kernel FOU/GUE listener and real
-   `ipip`/`sit` devices accept what Marlin emits, including the zero UDP checksum
-   (`docs/design/24-testing.md`).
+2. Integration tests in network namespaces confirm a real kernel FOU/GUE listener, real
+   `ipip`/`sit` devices, and a real `vxlan` device accept what Marlin emits, including the zero
+   UDP checksum (`docs/design/24-testing.md`).
 3. An extension-header chain at `MAX_EXT_HDRS` and one beyond it are distinguishable —
    `ext_hdr_limit`, not `parse_error`.
 4. A redirect to an ifindex absent from `tx_ports` is a countable `XDP_ABORTED`, not a silent
    loss (`docs/design/09-sizing.md`).
-5. Reported verifier complexity is inside budget with all three modes and both families
+5. Reported verifier complexity is inside budget with all four modes and both families
    linked. If it is not, `docs/design/05-budgets.md`'s `PROG_ARRAY` fallback is taken **with its
    three consequences accepted explicitly**: `marlin_ctx` moves to a per-CPU scratch map, the
    accumulated stack cap drops to 256 bytes, and tail calls do not return.
@@ -240,8 +261,8 @@ rate-limiter conversion.
 ### Deliverables
 
 - **Health checking** with the prober bound in a VRF that does not contain the VIP but
-  **does** contain the probe source address and the host `ipip`/`sit`/GUE devices the probes
-  traverse (`docs/design/18-health.md`; `DEPLOYMENT.md` §6).
+  **does** contain the probe source address and the host `ipip`/`sit`/GUE/`vxlan` devices the
+  probes traverse (`docs/design/18-health.md`; `DEPLOYMENT.md` §1.9).
 - **Reconciliation.** The configuration store is authoritative; maps are not. Startup
   reconciles idempotently (`docs/design/19-control-plane.md`).
 - **Table generation** from the stored `table_seed` and member set, including regeneration
@@ -280,10 +301,10 @@ rate-limiter conversion.
    in succession, with no forwarding interruption.
 7. `DEPLOYMENT.md`'s prerequisites are reviewed against what Phase 3 actually requires of the
    integrator, and its §9 checklist is complete. The first revision already carries the five
-   requirements named for it: LRO disabled (§3.2), the router hairpin
-   (§4.1), backend packet size (§5.5), management prefixes allowlisted ahead of the first
+   requirements named for it: LRO disabled (§1.3), the router hairpin
+   (§1.11), backend packet size (§2.6), management prefixes allowlisted ahead of the first
    blocklist rule together with ingress source-address validation (§7, §4.3), and the probe
-   VRF (§6).
+   VRF (§1.9).
 
 ---
 
@@ -343,6 +364,7 @@ section it affects, not in a document of its own.
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:147` | 2a |
 | `BPF_FIB_LOOKUP_DIRECT` has no configuration surface | `nexthop.c:206` | 2b |
+| VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |
 
 ---
@@ -357,7 +379,7 @@ Recorded so their absence is not read as an omission.
 - **The accepted residual risks.** Not scheduled, because each is accepted rather than
   outstanding, and each is argued where it arises: the `~1/(N+1)` reset on backend addition
   (`docs/design/12-selection.md`, `docs/design/17-reconfiguration.md`; `DEPLOYMENT.md` §2), the
-  GUE-specific probe blind spot (`docs/design/18-health.md`; `DEPLOYMENT.md` §5.4 and §6), silent
+  GUE-specific probe blind spot (`docs/design/18-health.md`; `DEPLOYMENT.md` §1.9), silent
   `hash_key`/`table_seed` divergence (`docs/design/10-map-invariants.md`,
   `docs/design/21-active-active.md`), distributed sub-threshold attacks
   (`docs/design/25-rejected.md`, `docs/design/28-rate-limiting.md`), and the unchecked map ABI

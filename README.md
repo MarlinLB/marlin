@@ -9,7 +9,7 @@ attached as native-mode XDP; the control plane is a C#/.NET 10 service.
 
 ## What it does
 
-Three forwarding modes, all Direct Server Return — backends reply to clients without
+Four forwarding modes, all Direct Server Return — backends reply to clients without
 traversing Marlin, and Marlin holds no per-flow state.
 
 | Mode | Inner families | Outer family | Backend requirement |
@@ -17,6 +17,7 @@ traversing Marlin, and Marlin holds no per-flow state.
 | L2 DSR | IPv4, IPv6 | n/a | VIP on loopback, ARP/NDP suppression, same L2 segment |
 | IPIP | IPv4, IPv6 | IPv4 | `ipip` and/or `sit` tunnel device |
 | GUE | IPv4, IPv6 | IPv4 | one FOU/GUE listener |
+| VXLAN | IPv4, IPv6 | IPv4 | a `vxlan` device with the matching VNI and dstport |
 
 Mode is a property of the individual backend — a single VIP may be served by backends
 running different modes at once.

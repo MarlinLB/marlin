@@ -40,16 +40,21 @@ Reasons that are passes or fallbacks rather than drops are marked as such, so th
 | `fib_gatewayed` | instance | an L2 DSR backend is off-link; either the flag is wrong or the backend moved (`docs/design/16-fib-lookup.md`) |
 | `backend_unresolved` | instance | control plane populated neither `backend.mac` nor `backend.addr` (`docs/design/15-nexthop-l2dsr.md`) |
 | `frag_needed` | instance | backend MSS or tunnel MTU misconfigured (`docs/design/23-mtu.md`) |
-| `adjust_head_failed` | instance | insufficient driver headroom for encapsulation |
-| `frame_too_big` | instance | encapsulated frame exceeds the egress MTU (`docs/design/23-mtu.md`) |
+| `adjust_head_failed` | instance | insufficient driver headroom for encapsulation — VXLAN's 50-byte requirement is the largest of the three and makes this materially more likely than under IPIP or GUE (`DEPLOYMENT.md` §1.3) |
+| `frame_too_big` | instance | encapsulated frame exceeds the egress MTU, under any of the three encapsulating modes (`docs/design/23-mtu.md`) |
 | `icmp_unparseable` | instance | PMTUD errors being dropped |
 | `no_backend` | instance | table rows pointing at 0 — a control-plane reconciliation fault |
 | `acl_blocked` | instance | the blocklist is matching; volume shows whether it is load-bearing |
 | `ratelimited` | instance | a source is over budget |
+| `frag_unsupported` | instance | a fragment arrived for a `VIP_HASH_5TUPLE` VIP; non-zero means the flag is set on a VIP whose traffic fragments (`docs/design/12-selection.md`) |
 | `rl_cas_exhausted` | instance | `RL_CAS_RETRIES` too low under contention (`docs/design/28-rate-limiting.md`) |
 
 Backend distribution is derivable from `backend_stats` alone, which makes hash skew behind
-CGNAT observable without additional instrumentation.
+CGNAT observable without additional instrumentation. It is also the measurement that decides
+whether a VIP wants `VIP_HASH_5TUPLE` (`docs/design/12-selection.md`): a single backend holding
+a share of the VIP's traffic that no weight explains is the symptom of a shared egress
+concentrated on one row, and `frag_unsupported` above is the counter that says whether setting
+the flag cost anything.
 
 `drop_stats` is keyed by reason with no VIP dimension, so every reason above is instance-scoped.
 Three consequences are worth stating rather than rediscovering: `no_backend` cannot be attributed

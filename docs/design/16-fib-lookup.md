@@ -3,7 +3,7 @@
 ## `bpf_fib_lookup()`
 
 Also used where backends are reached via a different interface than ingress. The destination is
-always `backend.addr`, in every mode — the outer tunnel destination for IPIP and GUE, the
+always `backend.addr`, in every mode — the outer tunnel destination for IPIP, GUE and VXLAN, the
 backend's segment address for L2 DSR — so the lookup is `AF_INET` throughout. Set `ifindex` to
 the ingress interface and call with flags `0`, or optionally `BPF_FIB_LOOKUP_DIRECT` to skip
 policy rules. On success the helper returns egress `ifindex`, `smac`, `dmac` and `mtu_result`.
@@ -18,7 +18,7 @@ writes neither and `ipv4_dst` still holds the seeded value. So the datapath test
 then `ipv4_dst` against `backend.addr` — a check for "did the helper overwrite my seed", not a
 read of a returned field. Stated precisely because the distinction does not show in the outcome
 and the imprecise version invites a future reader to rely on an unconditional write that does not
-exist. The behaviour is stable across the range in Appendix A. For IPIP and GUE a gateway is the point — the outer
+exist. The behaviour is stable across the range in Appendix A. For IPIP, GUE and VXLAN a gateway is the point — the outer
 header is addressed to `backend.addr` and the router forwards it onward. Under L2 DSR the frame
 is not encapsulated and still carries the VIP, so a router receiving it routes on the VIP, which
 is anycast to Marlin. The packet returns, is balanced again and leaves again: a loop bounded by
@@ -53,7 +53,7 @@ this reason.
 | Return code | Handling |
 |---|---|
 | `BPF_FIB_LKUP_RET_SUCCESS`, next hop == `backend.addr` | write MACs, transmit |
-| `BPF_FIB_LKUP_RET_SUCCESS`, next hop != `backend.addr` | IPIP and GUE: write MACs, transmit. L2 DSR: drop `fib_gatewayed` |
+| `BPF_FIB_LKUP_RET_SUCCESS`, next hop != `backend.addr` | IPIP, GUE and VXLAN: write MACs, transmit. L2 DSR: drop `fib_gatewayed` |
 | `RET_NO_NEIGH`, L2 DSR, next hop on-link, egress == ingress, `backend.mac` set | write the stored MAC, `XDP_TX`, count `neigh_fallback` |
 | `RET_NO_NEIGH`, otherwise | drop `fib_no_neigh`; passing cannot resolve it in any mode (below) |
 | `RET_FWD_DISABLED` | drop `fib_fwd_disabled`; integrator prerequisite |
@@ -92,11 +92,11 @@ still needs a resolvable neighbour or it drops.
 
 **Passing does not resolve it in any mode.** Handing the frame to the stack works only where
 the stack would look up the same neighbour — where the address this lookup asked about is also
-the destination of the frame being passed. The lookup asks about `backend.addr`, and neither
-mode's frame is addressed to it. Under L2 DSR the frame carries the VIP, so the stack would
+the destination of the frame being passed. The lookup asks about `backend.addr`, and no mode's
+frame is addressed to it. Under L2 DSR the frame carries the VIP, so the stack would
 resolve the VIP's neighbour rather than the backend's — and the backend requirement in `docs/design/14-forwarding-modes.md`
-suppresses ARP and NDP for the VIP, so that resolution has no answer either. Under IPIP and GUE
-the frame reaching next-hop resolution is already the encapsulated one (`docs/design/11-pipeline.md` step 8 precedes step
+suppresses ARP and NDP for the VIP, so that resolution has no answer either. Under IPIP, GUE and
+VXLAN the frame reaching next-hop resolution is already the encapsulated one (`docs/design/11-pipeline.md` step 8 precedes step
 9), sourced from `config.tunnel_src`; where that address is local to the Marlin host the
 ingress path discards it as a martian source, because `bpf_fib_lookup()` applies no source
 validation in either direction while `XDP_PASS` submits the frame to `ip_route_input()`, which
