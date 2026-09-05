@@ -4,6 +4,10 @@
 
 DATA_PLANE_DIR := data-plane
 
+# Recursive $(MAKE) -C calls below would otherwise print "Entering/Leaving
+# directory" around every sub-make; propagates to the child via MAKEFLAGS.
+MAKEFLAGS += --no-print-directory
+
 .DEFAULT_GOAL := all
 
 .PHONY: all data-plane check-toolchain ci clean help
@@ -12,19 +16,19 @@ all: data-plane
 
 ## Build the eBPF/XDP data plane (data-plane/Makefile's default target).
 data-plane:
-	$(MAKE) -C $(DATA_PLANE_DIR) all
+	@$(MAKE) -C $(DATA_PLANE_DIR) all
 
 ## Verify the data-plane toolchain (clang, bpftool, clang-format, clang-tidy versions).
 check-toolchain:
-	$(MAKE) -C $(DATA_PLANE_DIR) check-toolchain
+	@$(MAKE) -C $(DATA_PLANE_DIR) check-toolchain
 
 ## Run what CI runs: check-toolchain (strict) followed by a full build.
 ci:
-	$(MAKE) -C $(DATA_PLANE_DIR) ci
+	@$(MAKE) -C $(DATA_PLANE_DIR) ci
 
 ## Remove data-plane build artefacts.
 clean:
-	$(MAKE) -C $(DATA_PLANE_DIR) clean
+	@$(MAKE) -C $(DATA_PLANE_DIR) clean
 
 ## List available targets.
 help:
