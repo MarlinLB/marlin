@@ -7,11 +7,9 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
-#include <marlin.h>
-
 int xdp_main(struct xdp_md *ctx)
 {
     return XDP_PASS;
 }
 
-char _license[] SEC("license") = "Dual GPL/BSD";
+char _license[] SEC("license") = "Dual GPL/BSD"; // NOLINT(readability-identifier-naming) -- libbpf loader convention (SEC("license"))

@@ -7,9 +7,9 @@
 #pragma once
 
 #ifndef likely
-#define likely(x) __builtin_expect(!!(x), 1)
+#define likely(x) __builtin_expect(!!(x), 1) // NOLINT(readability-identifier-naming) -- kernel convention, not UPPER_CASE
 #endif
 
 #ifndef unlikely
-#define unlikely(x) __builtin_expect(!!(x), 0)
+#define unlikely(x) __builtin_expect(!!(x), 0) // NOLINT(readability-identifier-naming) -- kerne convention, not UPPER_CASE
 #endif

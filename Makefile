@@ -10,7 +10,7 @@ MAKEFLAGS += --no-print-directory
 
 .DEFAULT_GOAL := all
 
-.PHONY: all data-plane check-toolchain ci clean help
+.PHONY: all data-plane check-toolchain ci format tidy clean help
 
 all: data-plane
 
@@ -26,6 +26,14 @@ check-toolchain:
 ci:
 	@$(MAKE) -C $(DATA_PLANE_DIR) ci
 
+## Rewrite the data plane's .c/.h in place with clang-format (repo-root .clang-format).
+format:
+	@$(MAKE) -C $(DATA_PLANE_DIR) format
+
+## Run clang-tidy over the data plane (repo-root .clang-tidy; builds its own compile database).
+tidy:
+	@$(MAKE) -C $(DATA_PLANE_DIR) tidy
+
 ## Remove data-plane build artefacts.
 clean:
 	@$(MAKE) -C $(DATA_PLANE_DIR) clean
@@ -37,6 +45,8 @@ help:
 	@echo "  data-plane      Build the eBPF/XDP data plane"
 	@echo "  check-toolchain Verify the data-plane toolchain is present and correct"
 	@echo "  ci              check-toolchain + a full build, the way CI runs it"
+	@echo "  format          Rewrite data-plane C sources/headers with clang-format"
+	@echo "  tidy            Run clang-tidy over the data-plane C sources"
 	@echo "  clean           Remove data-plane build artefacts"
 	@echo "  help            Show this message"
 	@echo ""
