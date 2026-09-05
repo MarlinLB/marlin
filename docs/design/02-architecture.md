@@ -16,7 +16,7 @@ Four deployed pieces, three of which Marlin builds:
 bpftool prog loadall marlin.bpf.o /sys/fs/bpf/marlin \
     pinmaps /sys/fs/bpf/marlin
 
-bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_marlin dev "$IFACE"
+bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_main dev "$IFACE"
 ```
 
 Two commands. All maps are sized at compile time (`docs/design/09-sizing.md`), so no map is pre-created and no

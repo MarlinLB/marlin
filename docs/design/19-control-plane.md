@@ -7,6 +7,12 @@
 - Generate `fwd_table` per VIP from the stored `table_seed` and member set, and write it.
 - Health-check backends and maintain `backend.state`.
 - Populate and refresh `backend.mac` from the kernel neighbour table.
+- **Populate `backend.vni` and `backend.inner_mac` for every VXLAN backend, from configuration.**
+  Unlike `backend.mac`, these come from the operator's configuration store, never from the
+  kernel neighbour table — `inner_mac` is an overlay address, and the overlay is not a network
+  the underlay neighbour table has any knowledge of. This is the whole reason D-B gave VXLAN a
+  separate field rather than overloading `backend.mac` to carry it: `backend.mac` has a
+  neighbour-table source of truth to refresh from, and an overlay MAC does not.
 - Keep outer next-hop neighbour entries fresh (`nud permanent` or periodic probing).
 - **Keep the neighbour entry for `backend.addr` fresh for every L2 DSR backend that is genuinely
   off-segment, and for every backend configured without a `backend.mac`.** Those are the cases

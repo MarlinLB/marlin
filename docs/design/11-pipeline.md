@@ -33,11 +33,16 @@ clients, there is no reverse path and no classifier.
      backend out another interface
    - `IPIP` → `docs/design/14-forwarding-modes.md`
    - `GUE` → `docs/design/14-forwarding-modes.md`
+   - `VXLAN` → `docs/design/14-forwarding-modes.md`; alone among the modes this step also
+     writes the frame's **outer** Ethernet header, because it consumes the arriving one as the
+     inner header (§7.4)
 9. **Next hop** — `docs/design/15-nexthop-l2dsr.md`, `docs/design/16-fib-lookup.md`.
 
-Steps 1–7 are identical for all three modes. Steps 8 and 9 both diverge on `backend.mode`:
-step 8 between the two encapsulation units and L2 DSR's empty case, step 9 between
-`marlin_nexthop_l2dsr()` and `marlin_nexthop_encap()`.
+Steps 1–7 are identical for all four modes. Steps 8 and 9 both diverge on `backend.mode`:
+step 8 between the three encapsulation units and L2 DSR's empty case, step 9 between
+`marlin_nexthop_l2dsr()` and `marlin_nexthop_encap()` — and, inside the latter, once more on
+whether the MAC-swap default applies, which it does for IPIP and GUE and does not for VXLAN
+(`docs/design/15-nexthop-l2dsr.md`).
 
 **Why the ACL precedes the VIP lookup.** A VIP miss is `XDP_PASS` to the local stack, so ahead
 of the lookup the ACL is a host firewall as well as a VIP firewall — a blocked source cannot

@@ -17,13 +17,36 @@ headers, fragments in both families, IPv6 extension-header chains — including 
 port-agnostic VIPs, the sentinel and down-backend paths, and the header-adjustment paths where
 pointer invalidation bites.
 
+**`VIP_HASH_5TUPLE` doubles the selection regime rather than replacing it**
+(`docs/design/12-selection.md`). The determinism above makes each assertion exact:
+
+- With the flag clear, two packets differing only in source port select the same backend. With
+  it set, the row is a function of the whole tuple — asserted as "the flag changes the selected
+  row for some tuple", not as a distribution claim, which 65536 rows cannot support in a
+  single-packet harness.
+- With the flag set, a first fragment and a non-first fragment both drop `frag_unsupported`. The
+  first-fragment half is the assertion that `MARLIN_CTX_F_FRAG_FIRST` is actually produced by
+  `parse.c` — the failure it guards is a first fragment forwarded and reassembly state stranded,
+  which no other test would notice.
+- With the flag clear, both fragments still forward, and to the same backend as an unfragmented
+  packet of the same flow. This is the existing guarantee, and it must not move.
+- An ICMP error on a flagged VIP selects the same row as the flow it reports on. This fails
+  unless `parse.c` recovers the embedded destination port into `tuple.sport`
+  (`docs/design/13-icmp.md`), and it is the only test that catches that omission.
+- `tuple.pad` non-zero changes the selected row on a flagged VIP and does not on an unflagged
+  one — the assertion behind `docs/design/10-map-invariants.md`'s zeroing rule for a struct that
+  is hashed whole rather than used as a map key.
+
 **The `NO_NEIGH` fallback fires only on its exact conditions.** Five cases against one flagged
 L2 DSR backend with a stored MAC and no neighbour entry: on-link route, FIB returns the ingress
 interface → emit on the stored MAC, count `neigh_fallback`; on-link but FIB returns another
 interface → drop `fib_no_neigh`, no frame; **gatewayed route, FIB returns the ingress interface
 → drop, no frame** — the case that separates a correct implementation from one that blackholes
 whenever a router's neighbour entry expires; the on-link ingress case again with an all-zero MAC
-→ drop; the same missing neighbour under IPIP → drop. Assert the emitted frame's source MAC is
+→ drop; the same missing neighbour under IPIP → drop. `docs/design/16-fib-lookup.md`'s FIB
+handling does not vary by mode, so this one case stands for GUE and VXLAN as well — exercising
+it under all three would assert the same code path three times. Assert the emitted frame's
+source MAC is
 Marlin's ingress MAC in the first case — the fallback does not have `fib.smac` and must not be
 reading one.
 
@@ -46,10 +69,10 @@ only the destination MAC would pass with the branches reversed. Pair it with the
 on the same backend, which must `XDP_TX` on the stored MAC without touching the helper.
 
 **L2 DSR refuses a gatewayed next hop.** A backend whose `addr` is reachable only via a router
-must drop and count `fib_gatewayed`, with no frame emitted. The same route under IPIP must
-forward normally — the mode split is the whole content of the check, so a test that exercises
-one mode proves nothing. The route in question is the reachable-but-wrong case, so it is
-constructed rather than a misconfiguration: a host route via a gateway on an attached segment.
+must drop and count `fib_gatewayed`, with no frame emitted. The same route under IPIP, GUE or
+VXLAN must forward normally — the mode split is the whole content of the check, so a test that
+exercises one mode proves nothing. The route in question is the reachable-but-wrong case, so it
+is constructed rather than a misconfiguration: a host route via a gateway on an attached segment.
 
 **`egress_mismatch` counts without changing the verdict.** A backend whose `egress_ifindex` names
 an interface the FIB does not choose, where that interface *is* in `tx_ports`, must still emit
@@ -93,8 +116,21 @@ environment below with concurrent senders across multiple receive queues.
 ## Integration tests
 
 Network namespaces and veth pairs with real tunnel devices on simulated backends. Validates
-what packet tests cannot: that a real kernel FOU/GUE listener and `ipip`/`sit` device accept
-what Marlin emits, including the zero UDP checksum.
+what packet tests cannot: that a real kernel FOU/GUE listener, a real `ipip`/`sit` device, and a
+real `vxlan` device accept what Marlin emits, including the zero UDP checksum.
+
+**VXLAN-specific assertions,** alongside the packet-level coverage above: that the emitted inner
+Ethernet header carries `backend.inner_mac` as its destination and Marlin's own MAC as its
+source (`docs/design/14-forwarding-modes.md` §7.4); that the emitted **outer** Ethernet header
+carries the arriving frame's source MAC as its destination and Marlin's own as its source — the
+assertion that catches an implementation which rewrote the inner header before saving those
+addresses, which is the ordering hazard §7.4 exists to prevent and which no other mode can
+exercise, because no other mode consumes the arriving header; that the VNI occupies the header's
+3-byte field with the reserved byte behind it zero, the observable consequence of the
+`bpf_htonl(vni << 8)` conversion; that the inner EtherType correctly distinguishes IPv4 from
+IPv6 inner traffic arriving on the same `vxlan` device, since that is the mechanism the
+single-device simplification depends on; and that a 50-byte headroom shortfall on the egress
+interface is counted `adjust_head_failed` rather than emitting a truncated frame.
 
 ## Deliberately harder
 

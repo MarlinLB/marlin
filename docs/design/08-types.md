@@ -19,15 +19,18 @@ struct vip_meta {             /* 24 bytes */
     __u8  hash_key[16];       /* packet hashing key */
 };
 
-struct backend {              /* 20 bytes */
-    __be32 addr;              /* the backend's own address, IPv4; required in every mode (docs/design/16-fib-lookup.md) */
-    __u8   mac[6];            /* next-hop MAC; all-zero = resolve via bpf_fib_lookup */
-    __be16 gue_dport;         /* 0 = default 6080 */
-    __u8   mode;              /* MARLIN_MODE_{L2DSR,IPIP,GUE} */
-    __u8   state;             /* MARLIN_UP | MARLIN_DOWN */
-    __u8   flags;             /* MARLIN_BE_F_FIB */
-    __u8   pad;
-    __u32  egress_ifindex;    /* expected FIB egress interface, validation only (docs/design/16-fib-lookup.md) */
+struct backend {              /* 32 bytes */
+    __be32 addr;              /* 0-3   the backend's own address / outer tunnel destination, IPv4; required in every mode (docs/design/16-fib-lookup.md) */
+    __u8   mac[6];            /* 4-9   underlay next-hop MAC, every mode; all-zero = resolve via bpf_fib_lookup */
+    __be16 encap_dport;       /* 10-11 0 = per-mode default: 6080 GUE, 4789 VXLAN */
+    __u8   mode;              /* 12    MARLIN_MODE_{L2DSR,IPIP,GUE,VXLAN} */
+    __u8   state;             /* 13    MARLIN_UP | MARLIN_DOWN */
+    __u8   flags;             /* 14    MARLIN_BE_F_FIB */
+    __u8   pad;               /* 15 */
+    __u32  egress_ifindex;    /* 16-19 expected FIB egress interface, validation only (docs/design/16-fib-lookup.md) */
+    __u32  vni;               /* 20-23 VXLAN only; host order, 0..0xFFFFFF; the value's high byte must be zero. vxlan_encap.c writes bpf_htonl(vni << 8) (docs/design/14-forwarding-modes.md) */
+    __u8   inner_mac[6];      /* 24-29 VXLAN only; overlay destination MAC */
+    __u8   pad2[2];           /* 30-31 */
 };
 
 struct packet_tuple {         /* 40 bytes */
@@ -96,16 +99,23 @@ eliminated.
 prefixlen` followed by the address bytes. Both are naturally aligned with no implicit padding,
 so neither needs packing to keep an alignment hole out of the bit string the trie compares.
 
-`struct backend` is 20 bytes: sixteen for the original layout — the outer family is IPv4 only
-(`docs/design/01-scope.md`), so the tunnel destination is 4 bytes rather than 16 — plus the four of `egress_ifindex`
-(`docs/design/16-fib-lookup.md`). Note that `marlin_ctx` embeds a `backend` by value, so every byte
-added here is also a byte of the shared `MAX_BPF_STACK` budget (`docs/design/05-budgets.md`) — which is what bounds the
-struct now that map memory does not (`docs/design/09-sizing.md`, "Memory": 80 KB against `fwd_table`'s 26 MB).
+`struct backend` is 32 bytes: twenty for the layout through `egress_ifindex` — the outer family is
+IPv4 only (`docs/design/01-scope.md`), so the tunnel destination is 4 bytes rather than 16, plus
+the four of `egress_ifindex` (`docs/design/16-fib-lookup.md`) — plus twelve more for `vni` and
+`inner_mac`. Those twelve bytes buy a per-backend overlay identity that IPIP and GUE have no use
+for: VXLAN encapsulates an Ethernet frame, not an IP packet, so the backend needs an inner
+destination MAC and a VNI that neither of the other two modes carries, and `backend.mac` keeps
+meaning the underlay next-hop MAC in every mode rather than being overloaded to hold it. Note that
+`marlin_ctx` embeds a `backend` by value, so every byte added here is also a byte of the shared
+`MAX_BPF_STACK` budget (`docs/design/05-budgets.md`) — which is what bounds the struct now that map
+memory does not (`docs/design/09-sizing.md`, "Memory": 128 KB against `fwd_table`'s 26 MB). The
+budget target itself was raised to accommodate this struct, by decision rather than by
+measurement (`docs/design/05-budgets.md`).
 
 `packet_tuple` is IPv6-capable because inner traffic
 may be either family. It is the single normalised description of the connection being load
 balanced, with three consumers: the `vip_key` construction of `docs/design/11-pipeline.md`, the selection hash of `docs/design/12-selection.md` —
-which reads `src` only, never the 5-tuple — and the GUE entropy hash of `docs/design/14-forwarding-modes.md`. It is not a key
+which reads `src` only, never the 5-tuple — and the entropy hash of `docs/design/14-forwarding-modes.md`, shared by GUE and VXLAN. It is not a key
 or value of any map, so it lives in `marlin.h` rather than `types.h` and has no C#
 counterpart.
 
@@ -130,7 +140,11 @@ packet: for an ICMP error it is reconstructed from the embedded header.
 |---|---|
 | 0 | reserved, must be zero |
 | 1 | `VIP_RATELIMIT` — meter sources addressing this VIP (docs/design/28-rate-limiting.md) |
-| 2–31 | reserved, must be zero |
+| 2 | `VIP_HASH_5TUPLE` — hash the whole tuple for row selection, not the source address alone; drops every fragment on this VIP (docs/design/12-selection.md) |
+| 3–31 | reserved, must be zero |
+
+`VIP_HASH_5TUPLE` is hash input, so it is subject to the cross-instance agreement requirement
+of `docs/design/21-active-active.md` rather than being a free per-instance choice.
 
 `backend.flags`:
 

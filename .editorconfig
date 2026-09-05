@@ -1,0 +1,63 @@
+# EditorConfig for the Marlin eBPF/XDP load balancer
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+max_line_length = 135
+
+# BPF programs, userspace loader, headers
+[*.{c,h,bpf.c}]
+indent_style = space
+indent_size = 4
+max_line_length = 135
+
+# Linker scripts / assembly, if any
+[*.{S,s,lds}]
+indent_style = space
+indent_size = 4
+
+# Make requires hard tabs for recipe lines
+[{Makefile,Makefile.*,makefile,*.mk,GNUmakefile}]
+indent_style = tab
+indent_size = 8
+tab_width = 8
+
+[*.{sh,bash}]
+indent_style = space
+indent_size = 4
+
+[*.py]
+indent_style = space
+indent_size = 4
+max_line_length = 120
+
+[*.{yml,yaml,json,toml}]
+indent_style = space
+indent_size = 2
+
+[*.{cmake,txt}]
+indent_style = space
+indent_size = 4
+
+# Markdown uses trailing double-space for hard line breaks
+[*.md]
+indent_size = 2
+trim_trailing_whitespace = false
+max_line_length = off
+
+# Vendored — do not touch. No generated headers: vmlinux.h is not in use (types.h).
+[{**/vendor/**,**/third_party/**}]
+trim_trailing_whitespace = false
+insert_final_newline = false
+indent_size = unset
+max_line_length = off
+
+[*.patch]
+trim_trailing_whitespace = false
+insert_final_newline = false

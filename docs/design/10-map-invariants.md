@@ -19,6 +19,13 @@ union must be zeroed, or lookups miss intermittently and present as packet loss.
 above are laid out to have no implicit padding for the same reason; where padding is needed
 it is explicit.
 
+**`packet_tuple.pad` is bound by the same rule, for a different consumer.** It is not a map key,
+but `VIP_HASH_5TUPLE` hashes `packet_tuple` whole (`docs/design/12-selection.md`), so those two
+bytes enter the digest and a non-zero value in them selects a different row. `marlin.c` zeroes
+`marlin_ctx` before parsing, which establishes it; the obligation on `parse.c` is not to write
+them. The same holds for the IPv4 case, where `tuple.src[1..3]` and `tuple.dst[1..3]` must stay
+zero rather than merely being ignored.
+
 ## `vip_meta.hash_key` is the packet hashing key
 
 Not the table generation seed. `table_seed` is control-plane only and never enters the

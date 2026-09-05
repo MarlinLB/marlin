@@ -14,9 +14,9 @@ Global subprograms are verified independently of their callers and are restricte
   entry frame and threaded through as a pointer.
 
 ```c
-struct marlin_ctx {          /* 92 bytes */
+struct marlin_ctx {          /* 104 bytes */
     struct packet_tuple tuple; /* 40 — written by parse.c, read by everything after */
-    struct backend backend;  /* 20 — written by balancer.c, read by the encap units */
+    struct backend backend;  /* 32 — written by balancer.c, read by the encap units */
     struct marlin_config cfg;/* 20 — written by marlin.c, read by balancer.c and the encap units */
     __u32 flags;             /*  4 */
     __u16 l3_off;            /*  2 */
@@ -46,8 +46,8 @@ int marlin_balance(struct xdp_md *ctx, struct marlin_ctx *mctx);
   exemption.
 
 - **`cfg` is the per-packet configuration snapshot, taken once in `marlin.c`.** It qualifies by
-  the same test as everything else here: three units read it — `balancer.c` for `flags` and
-  `max_frame`, `ipip_encap.c` and `gue_encap.c` for `tunnel_src` (`docs/design/14-forwarding-modes.md`). No unit other
+  the same test as everything else here: four units read it — `balancer.c` for `flags` and
+  `max_frame`, `ipip_encap.c`, `gue_encap.c` and `vxlan_encap.c` for `tunnel_src` (`docs/design/14-forwarding-modes.md`). No unit other
   than `marlin.c` looks the `config` map up.
 
   Two things follow from taking it once rather than per unit. **One generation per packet:** the

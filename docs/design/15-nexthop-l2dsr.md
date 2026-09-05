@@ -3,7 +3,7 @@
 
 XDP emits a finished Ethernet frame, so the destination MAC must be supplied.
 
-## MAC swap — default for the encapsulation modes
+## MAC swap — default for IPIP and GUE
 
 The packet arrived from the upstream router, so the frame already carries that router's MAC as
 source and Marlin's as destination. Swap them and `XDP_TX`; the router routes the encapsulated
@@ -17,6 +17,16 @@ packet onward using its own table.
   forwarding and must be verified.
 - Naturally symmetric with multiple uplinks: the encapsulated packet leaves via whichever
   router delivered it. There is no reply path — backends answer clients directly (`docs/design/01-scope.md`).
+
+**VXLAN does not take this path.** Its encapsulation consumes the arriving Ethernet header as
+the frame's *inner* header and overwrites both addresses, so by the time next-hop resolution
+runs there is nothing left to swap and the router's MAC is gone. `vxlan_encap.c` writes the
+outer header itself, from addresses saved ahead of the header adjustment, reaching the same
+result one step earlier (`docs/design/14-forwarding-modes.md` §7.4). `marlin_nexthop_encap()`
+therefore applies the swap above for IPIP and GUE and skips it for VXLAN.
+
+The FIB path below is common to all three regardless: where `bpf_fib_lookup()` resolves the next
+hop it supplies both MACs, and those overwrite whatever the encapsulation unit wrote.
 
 ## L2 DSR — stored MAC, with FIB fallback
 
@@ -83,4 +93,4 @@ bytes of the `docs/design/05-budgets.md` stack budget for no forwarding capabili
 fixed struct size this argument used to rest on — `struct backend` is no longer fixed, but the
 budget that constrains it is.
 **An L2 DSR backend therefore needs an IPv4 address on the attached segment** — a deployment
-prerequisite, see `DEPLOYMENT.md` §5.2.
+prerequisite, see `DEPLOYMENT.md` §2.2.

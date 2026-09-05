@@ -15,7 +15,7 @@ table numbers and sysctl paths are examples. Marlin is pre-implementation, so no
 run against a working system. Translate them; do not paste them.
 
 Where a requirement is real but its mechanism is not settled, this document says so at the point it
-would have to be applied rather than omitting it. Those places are §1.9, §1.10 and §2.2.
+would have to be applied rather than omitting it. Those places are §1.9, §1.10, §2.2 and §2.5.
 
 ---
 
@@ -49,7 +49,7 @@ The loader is `deploy/marlin-load.sh` and does exactly two things:
 
 ```sh
 bpftool prog loadall marlin.bpf.o /sys/fs/bpf/marlin pinmaps /sys/fs/bpf/marlin
-bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_marlin dev "$IFACE"
+bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_main dev "$IFACE"
 ```
 
 - There is no map pre-creation step. Every map is sized at compile time and created from its BTF
@@ -82,8 +82,8 @@ ethtool -K "$IFACE" rx-gro-hw off   # not present on every driver; ignore a fail
 ```
 
 **The driver must leave headroom in front of each packet for encapsulation** — 20 bytes for
-IP-in-IP, 32 for GUE. A driver that does not cannot be worked around from the datapath; the
-failure counts as `adjust_head_failed`.
+IP-in-IP, 32 for GUE, 50 for VXLAN. A driver that does not cannot be worked around from the
+datapath; the failure counts as `adjust_head_failed`.
 
 Two other properties of this interface are read by the control plane rather than configured:
 
@@ -99,7 +99,7 @@ Map memory is allocated at load, not as VIPs are configured.
 |---|---|
 | `fwd_table` | 100 × 65536 × 4 B = **26 MB, preallocated in full at load regardless of how many VIPs exist** |
 | `ratelimit` | 262144 × 28 B = 7.3 MB of key and value data, plus allocator and bucket overhead that has not been measured |
-| `backends` | 4096 × 20 B = 80 KB |
+| `backends` | 4096 × 32 B = 128 KB |
 | `vip_map` | preallocated; at 100 entries `BPF_F_NO_PREALLOC` would only add cost |
 | Source-filtering tries | proportional to populated rules — a binary trie with N leaves also holds up to N−1 internal nodes, so budget roughly 2× the rule count. Nothing when empty. |
 
@@ -153,17 +153,20 @@ not host state, but they are host-specific and easy to leave unset.
 
 | Value | Requirement |
 |---|---|
-| `config.tunnel_src` | The outer IPv4 source address for encapsulated traffic. **Required if any backend is IP-in-IP or GUE**; the configuration is rejected without it. |
-| `config.max_frame` | Egress MTU + `ETH_HLEN`. **Required if any backend is IP-in-IP or GUE**; the configuration is rejected without it, precisely because an unset value would be a silent loss of protection rather than a visible failure — zero disables the egress frame check in the datapath. Sourced from the attached interface's MTU. The check is **per-instance, not per-next-hop**, so an asymmetric-MTU fabric is only covered on the routing-table path. |
+| `config.tunnel_src` | The outer IPv4 source address for encapsulated traffic. **Required if any backend is IP-in-IP, GUE or VXLAN**; the configuration is rejected without it. |
+| `config.max_frame` | Egress MTU + `ETH_HLEN`. **Required if any backend is IP-in-IP, GUE or VXLAN**; the configuration is rejected without it, precisely because an unset value would be a silent loss of protection rather than a visible failure — zero disables the egress frame check in the datapath. Sourced from the attached interface's MTU. The check is **per-instance, not per-next-hop**, so an asymmetric-MTU fabric is only covered on the routing-table path. |
 | `vip_meta.hash_key` | Exactly 16 bytes. Rejected at any other length. |
 
-Where more than one Marlin instance serves the same VIP, **`hash_key` and `table_seed` must be
-byte-identical on every instance**. They are distinct values with distinct effects and matching one
-without the other buys nothing:
+Where more than one Marlin instance serves the same VIP, **`hash_key`, `table_seed` and the
+`VIP_HASH_5TUPLE` bit must be identical on every instance**. They are distinct values with
+distinct effects and matching some without the others buys nothing:
 
 - `hash_key` acts in the datapath. Disagreement maps the same client to different table rows.
 - `table_seed` acts in the control plane and never enters the datapath. Disagreement maps the same
   row to different backends.
+- `VIP_HASH_5TUPLE` selects which fields the datapath hashes (§1.7.1). Disagreement maps the same
+  client to different rows, and additionally has one instance dropping the VIP's fragments while
+  another forwards them.
 
 Both are per-VIP secrets owned by the configuration store, established once at VIP creation and
 supplied by the operator or generated there. **Neither is ever generated during reconciliation** —
@@ -175,8 +178,37 @@ backend counters, and nothing measures the correlation between instances. The pe
 would detect it is a Phase 3 deliverable (`PHASES.md`); until it exists, the configuration store is
 the only place to check.
 
-Given both values agree, nothing else needs to. Marlin holds no per-flow state, so any instance can
+Given these values agree, nothing else needs to. Marlin holds no per-flow state, so any instance can
 handle any packet and upstream ECMP may rehash freely.
+
+### 1.7.1 `VIP_HASH_5TUPLE` — when to set it, and what it costs
+
+By default the datapath hashes the client's source address alone to pick a backend, so **every
+client sharing a source address lands on one backend**: a VPN concentrator, a corporate proxy
+egress, a CGNAT pool. `VIP_HASH_5TUPLE` (`vip_meta.flags`, `docs/design/08-types.md`) hashes the
+whole tuple instead — source address and port, VIP and service port, protocol — which
+distributes that population.
+
+**Decide from `backend_stats`, not in advance.** The symptom is one backend holding a share of a
+VIP's traffic that its weight does not explain. If no backend is disproportionate, leave the flag
+clear.
+
+**The cost: a flagged VIP drops every IP fragment**, counted as `frag_unsupported`. Non-first
+fragments carry no ports, so a fragmented datagram cannot be steered consistently once ports are
+hashed, and both halves are dropped rather than stranding reassembly state on the backend.
+
+| Set it on | Leave it clear on |
+|---|---|
+| TCP VIPs, where PMTUD and MSS clamping mean traffic does not fragment in practice | Any VIP carrying UDP datagrams that can exceed the path MTU — DNS over UDP with large responses, QUIC without correct PMTUD, tunnelled or media protocols |
+
+**Nothing validates this.** Whether a VIP's traffic fragments is not visible in the
+configuration, so no check rejects the flag on the wrong VIP
+(`docs/design/20-configuration-validation.md`). After setting it, watch `frag_unsupported`: any
+sustained non-zero value means the flag is set on a VIP whose traffic fragments, and the fix is
+to clear it. Set it on one VIP at a time for that reason.
+
+Clearing the flag again moves every client on the VIP to a new row, so it is as disruptive as a
+reseed — treat both directions as a reconfiguration, not a tuning knob to toggle.
 
 ### 1.8 Routing state
 
@@ -242,6 +274,7 @@ per instance:
 BE=198.51.100.20            # backend.addr
 VIP4=203.0.113.10
 VIP6=2001:db8::10
+VNI=100                      # backend.vni, VXLAN only
 
 ip link add vrf-probe type vrf table 100
 ip link set vrf-probe up
@@ -254,25 +287,34 @@ ip link set probe-src up
 ip addr add 198.51.100.250/32 dev probe-src
 ip addr add 2001:db8:1::250/128 dev probe-src nodad
 
-# One host tunnel device per mode *and* per inner address family. The device type
-# fixes the inner family on the originating side, so four devices cover the two
+# One host tunnel device per mode *and* per inner address family — with one exception.
+# The device type fixes the inner family on the originating side for IPIP and GUE, so
+# four devices cover those two encapsulating modes. VXLAN needs only one: the inner
+# EtherType in its inner Ethernet header carries the family, the same property that
+# lets a single backend-side `vxlan` device serve both families
+# (docs/design/14-forwarding-modes.md §7.4). Five devices, not six, cover the three
 # encapsulating modes.
-ip link add probe-ipip type ipip  local 198.51.100.250 remote "$BE"     # IPIP, IPv4 inner
-ip link add probe-sit  type sit   local 198.51.100.250 remote "$BE"     # IPIP, IPv6 inner
-ip link add probe-gue4 type ipip  local 198.51.100.250 remote "$BE" \
-    encap gue encap-dport 6080                                          # GUE,  IPv4 inner
-ip link add probe-gue6 type sit   local 198.51.100.250 remote "$BE" \
-    encap gue encap-dport 6080                                          # GUE,  IPv6 inner
+ip link add probe-ipip  type ipip  local 198.51.100.250 remote "$BE"     # IPIP, IPv4 inner
+ip link add probe-sit   type sit   local 198.51.100.250 remote "$BE"     # IPIP, IPv6 inner
+ip link add probe-gue4  type ipip  local 198.51.100.250 remote "$BE" \
+    encap gue encap-dport 6080                                           # GUE,  IPv4 inner
+ip link add probe-gue6  type sit   local 198.51.100.250 remote "$BE" \
+    encap gue encap-dport 6080                                           # GUE,  IPv6 inner
+ip link add probe-vxlan type vxlan id "$VNI" dstport 4789 \
+    local 198.51.100.250 remote "$BE"                                    # VXLAN, both inner families
 
-for d in probe-ipip probe-sit probe-gue4 probe-gue6; do
+for d in probe-ipip probe-sit probe-gue4 probe-gue6 probe-vxlan; do
     ip link set "$d" master vrf-probe
     ip link set "$d" up
 done
 
 # The VIP must route out the device for the mode being probed. One route per
-# VIP per table, so a table cannot express two backends in the same mode.
+# VIP per table, so a table cannot express two backends in the same mode. The
+# VXLAN device takes both families' routes, since one device serves both.
 ip route add "$VIP4" dev probe-ipip table 100
 ip -6 route add "$VIP6" dev probe-sit table 100
+ip route add "$VIP4" dev probe-vxlan table 100
+ip -6 route add "$VIP6" dev probe-vxlan table 100
 ```
 
 For an L2 DSR backend there is no tunnel device; the probe is resolved statically instead, against
@@ -290,6 +332,7 @@ Per mode, what the probe needs:
 | L2 DSR | A static neighbour entry mapping the VIP to the backend's hardware address, and a route to the VIP out the device that entry is on |
 | IP-in-IP | A host tunnel device matching the inner address family. **Both families where a backend serves both** — they are different devices |
 | GUE | A host GUE tunnel device **per inner address family.** The single-listener property of GUE is a receiver property; on the originating side the device type still fixes the inner family |
+| VXLAN | A single host `vxlan` device with the matching VNI and dstport, covering **both inner families** on its own — the inner EtherType carries the family, so unlike IP-in-IP and GUE no second device is needed |
 
 The control plane binds its probe sockets into this VRF with `SO_BINDTODEVICE`. Health checking is
 entirely control-plane work and the datapath is not involved.
@@ -300,8 +343,9 @@ change but IPv4-only, which would leave every IPv6 VIP unprobeable.
 
 Two accepted blind spots:
 
-- A host tunnel device does not reproduce the GUE entropy source port or the zero outer UDP
-  checksum (§2.4). A backend that rejects those two things specifically still probes healthy.
+- A host tunnel device does not reproduce the entropy source port or the zero outer UDP
+  checksum that GUE and VXLAN both use (§2.4, §2.5). A backend that rejects those two things
+  specifically still probes healthy.
 - Under active/active, each instance probes independently and instances may briefly disagree about
   a backend. This is harmless — a row pointing at a backend one instance believes is down simply
   drops on that instance. Health state is not synchronised, by design.
@@ -334,9 +378,13 @@ document must say on which interface, and how it is advertised to the fabric), o
 
 ### 1.11 The uplink
 
-For IP-in-IP and GUE, the datapath's default next-hop behaviour is to swap the Ethernet source and
-destination and send the encapsulated packet back out the interface it arrived on. The upstream
-router then routes it onward using its own table. Three things must be true of that router:
+For IP-in-IP, GUE and VXLAN, the datapath's default next-hop behaviour is to send the
+encapsulated packet back out the interface it arrived on, addressed to the router that delivered
+it — by swapping the Ethernet source and destination under IP-in-IP and GUE, and by writing the
+outer Ethernet header directly under VXLAN, which has consumed the arriving header as its inner
+one and so has nothing left to swap (`docs/design/14-forwarding-modes.md` §7.4). The result on
+the wire is the same in all three. The upstream router then routes it onward using its own
+table. Three things must be true of that router:
 
 - **It is on the same network segment as Marlin.** Normal in the BGP/ECMP anycast topology Marlin
   is designed for.
@@ -361,7 +409,7 @@ arrangement is naturally symmetric: an encapsulated packet leaves via whichever 
 ## 2. A backend node
 
 The forwarding mode is a property of the individual backend, so **one VIP may be served by
-backends in all three modes simultaneously**. Provision each backend for the mode it is configured
+backends in all four modes simultaneously**. Provision each backend for the mode it is configured
 with.
 
 | Mode | Adds | Crosses routers? | Backend needs |
@@ -369,16 +417,17 @@ with.
 | L2 DSR (§2.2) | nothing | no | VIP on loopback or dummy, ARP/NDP suppression, directly attached segment |
 | IP-in-IP (§2.3) | 20 bytes | yes | an `ipip` device, a `sit` device, or both |
 | GUE (§2.4) | 32 bytes | yes | one FOU listener, plus the tunnel receive devices |
+| VXLAN (§2.5) | 50 bytes | yes | one `vxlan` device with the matching VNI and dstport |
 
 ### 2.1 Every mode
 
-**The backend must hold the VIP and accept traffic addressed to it.** In all three modes the packet
+**The backend must hold the VIP and accept traffic addressed to it.** In all four modes the packet
 that reaches the application still carries the VIP as its destination, and that is what lets the
-backend reply directly to the client with the correct source address. All three modes are Direct
+backend reply directly to the client with the correct source address. All four modes are Direct
 Server Return; there is no mode that works against an unmodified server.
 
 **The backend needs an IPv4 address of its own** — `backend.addr` — in every mode. It is the outer
-destination for IP-in-IP and GUE, and the address whose neighbour entry is looked up for L2 DSR. It
+destination for IP-in-IP, GUE and VXLAN, and the address whose neighbour entry is looked up for L2 DSR. It
 is the only address the datapath ever resolves. A backend configured without it is rejected, and a
 resolved hardware address does not substitute.
 
@@ -389,8 +438,8 @@ Two operational consequences worth knowing before you provision rather than afte
 - **A backend is up or down.** There is no drain. Rows pointing at a backend marked down drop
   (`backend_down`); they are not migrated. Marking a backend down or back up changes no forwarding
   table rows and disrupts nothing else.
-- **`mode`, `addr` and `gue_dport` cannot be edited in place.** Changing any of them means removing
-  the backend and adding it under a new identifier. Removal costs only that backend's own
+- **`mode`, `addr`, `encap_dport`, `vni` and `inner_mac` cannot be edited in place.** Changing any
+  of them means removing the backend and adding it under a new identifier. Removal costs only that backend's own
   connections, but the addition half resets approximately `1/(N+1)` of established connections **on
   healthy backends** — about 1.3% at 75 backends. Adding a backend to a live VIP costs the same.
   This is accepted design behaviour on the assumption that clients reconnect immediately; avoid it
@@ -505,17 +554,17 @@ sysctl -w net.ipv4.conf.ipip0.rp_filter=0
 
 All traffic Marlin sends to one IP-in-IP backend shares a single outer address pair, so the network
 cannot spread it across equal-cost paths and the backend's network card cannot spread it across
-receive queues. That limitation is the reason GUE exists as a third mode; choose GUE where it
-matters.
+receive queues. That limitation is the reason GUE and VXLAN exist as additional modes; choose one
+of them where it matters.
 
-See §2.5 for packet size.
+See §2.6 for packet size.
 
 ### 2.4 GUE
 
 Like IP-in-IP with a UDP header in between: outer IPv4 (20) + UDP (8) + GUE header (4) =
 **32 bytes**. The outer header is always IPv4.
 
-The backend needs **one FOU listener** on the configured port — `backend.gue_dport`, or 6080 where
+The backend needs **one FOU listener** on the configured port — `backend.encap_dport`, or 6080 where
 that is unset:
 
 ```sh
@@ -546,15 +595,78 @@ Three things Marlin emits that a strict receiver may object to:
 A backend that rejects the entropy source port or the zero checksum specifically will still pass
 health checks, because the probe path cannot reproduce either (§1.9).
 
-Changing a backend's `gue_dport` is a remove-and-re-add, not an edit (§2.1).
+Changing a backend's `encap_dport` is a remove-and-re-add, not an edit (§2.1).
 
-See §2.5 for packet size.
+See §2.6 for packet size.
 
-### 2.5 Packet size, for IP-in-IP and GUE
+### 2.5 VXLAN
 
-Marlin adds 20 bytes (IP-in-IP) or 32 bytes (GUE) on the path from Marlin to the backend. A
-1500-byte client packet leaves as 1520 or 1532 bytes. Nothing is added on the return path, because
-there is no return path — only client-to-backend is encapsulated. Two ways to accommodate it:
+Like GUE with an 8-byte VXLAN header instead of GUE's 4-byte one, and — the difference that
+drives everything else in this section — encapsulating a full Ethernet frame rather than a bare
+IP packet: outer IPv4 (20) + UDP (8) + VXLAN (8) + inner Ethernet (14) = **50 bytes**, the
+largest of the three encapsulating modes. The outer header is always IPv4.
+
+The backend needs **one `vxlan` device**, matching the configured VNI and `dstport`:
+
+```sh
+ip link add vxlan0 type vxlan id 100 dstport 4789 local 198.51.100.20 remote any
+ip link set vxlan0 up
+```
+
+**The Linux `vxlan` device defaults to UDP port 8472, not the IANA-assigned 4789.** Give
+`dstport 4789` explicitly, on this device and on any host probe device (§1.9) — a device left at
+its kernel default silently fails to receive what Marlin sends, which looks identical to a
+missing device from the outside.
+
+A single `vxlan` device covers both inner address families, because the inner EtherType in the
+inner Ethernet header — not a receiving device's type — is what tells the kernel which family a
+decapsulated frame is. This is the one place VXLAN costs less than what it replaces: IP-in-IP
+needs `ipip` and `sit` as separate devices (§2.3) and GUE needs its single listener paired with
+both receive devices anyway (§2.4); VXLAN needs neither split.
+
+**Relax reverse-path validation on the receive device**, for the same reason as §2.3 and §2.4:
+the decapsulated packet carries the client's source address and arrives on the `vxlan` device,
+while the backend's route back to that client is out its ordinary interface.
+
+```sh
+sysctl -w net.ipv4.conf.vxlan0.rp_filter=0
+```
+
+Two things Marlin emits that a strict receiver may object to, identical in kind to GUE's (§2.4):
+
+- **The outer UDP source port carries the same entropy hash as GUE's**, over the client's inner
+  5-tuple, for the identical reason — without it, every packet to one VXLAN backend would present
+  an identical outer tuple to routers and to the backend's NIC.
+- **The outer UDP checksum is zero.** Unconditionally permitted with an IPv4 outer header, exactly
+  as under GUE.
+
+A backend that rejects the entropy source port or the zero checksum specifically will still pass
+health checks, because the probe path cannot reproduce either (§1.9).
+
+**The inner Ethernet header's destination address is `backend.inner_mac`**, a value the backend
+must configure to match whatever its `vxlan` device (or the interface behind it) presents as its
+own hardware address — unlike `backend.mac`, there is no fallback for this address: it names an
+overlay identity the underlay neighbour table has no knowledge of, so Marlin cannot resolve it
+for you the way it can resolve an underlay next hop.
+
+**This is undecided, not omitted: where the VIP itself must sit relative to the `vxlan` device.**
+The decapsulated frame carries the VIP as its IP destination and `backend.inner_mac` as its
+Ethernet destination — the same VIP-held-locally, ARP/NDP-suppressed requirement §2.2 states for
+L2 DSR — but whether that means a loopback or dummy interface as in §2.2, or the `vxlan` device
+itself, since that is where the frame is actually delivered, is not settled by the design
+documents (`docs/design/01-scope.md`; `PHASES.md`'s open-decision table, Phase 2b). Provision
+conservatively — as for L2 DSR, with ARP/NDP suppressed — until that closes.
+
+Changing a backend's `vni` or `inner_mac` is a remove-and-re-add, not an edit (§2.1).
+
+See §2.6 for packet size.
+
+### 2.6 Packet size, for IP-in-IP, GUE and VXLAN
+
+Marlin adds 20 bytes (IP-in-IP), 32 bytes (GUE) or 50 bytes (VXLAN) on the path from Marlin to the
+backend. A 1500-byte client packet leaves as 1520, 1532 or 1550 bytes. Nothing is added on the
+return path, because there is no return path — only client-to-backend is encapsulated. Two ways to
+accommodate it:
 
 1. **Raise the MTU on the Marlin-to-backend path** so the encapsulated frame fits. The only option
    that covers all traffic.
@@ -576,15 +688,16 @@ What this leaves uncovered:
 
 - MSS applies to TCP only. Large non-QUIC UDP is covered by raising the MTU and by nothing else.
 - QUIC is unaffected in practice: its 1200-byte datagrams, with DPLPMTUD, sit below 1500 even with
-  GUE's 32 bytes added.
+  VXLAN's 50 bytes added, the new worst case among the three.
 
 Marlin does not generate "fragmentation needed" or "packet too big" errors; it forwards ones
 generated elsewhere, steering them by the embedded header so that path MTU discovery works through
 the encapsulation. Oversized frames are dropped and counted, which is what makes this diagnosable:
 
 - `frag_needed` fires only on the routing-table path, against the egress MTU the lookup returns.
-- `frame_too_big` covers the default path. Marlin's default next hop for both encapsulation modes
-  is a hardware-address swap, which performs no routing-table lookup and so has no egress MTU to
+- `frame_too_big` covers the default path. Marlin's default next hop for all three encapsulation
+  modes — a hardware-address swap under IP-in-IP and GUE, an outer header written during
+  encapsulation under VXLAN (§1.11) — performs no routing-table lookup and so has no egress MTU to
   compare against; the datapath checks the emitted frame against `config.max_frame` instead. That
   is why there are two counters rather than one — and why `config.max_frame` being unset is a
   silent loss of protection (§1.7).

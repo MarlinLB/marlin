@@ -1,10 +1,14 @@
 # Marlin — Design
 
 **Status:** design settled, pre-implementation
-**Last updated:** 2026-08-20
-**Revision:** 6 — source filtering and rate limiting incorporated (`27-source-filtering.md`,
-`28-rate-limiting.md`); ICMP branch narrowed to replace step 2 only; health probes isolated in
-a VRF
+**Last updated:** 2026-09-04
+**Revision:** 8 — VXLAN's outer Ethernet header specified (`14-forwarding-modes.md` §7.4):
+`vxlan_encap.c` writes it, because the MAC-swap default (`15-nexthop-l2dsr.md`) cannot once the
+arriving header has been consumed as the inner one; `backend.vni`'s host byte order and
+conversion site are stated. Revision 7 added VXLAN as a fourth per-backend forwarding mode —
+`struct backend` gained `vni` and `inner_mac`, the rendezvous score (`12-selection.md`) became
+keyed on `addr`, `vni` and `inner_mac` together, and the stack budget target was raised to
+accommodate the wider struct (`05-budgets.md`)
 
 Marlin is an eBPF/XDP layer-4 load balancer. The datapath is C compiled with clang and
 attached as a native-mode XDP program. The control plane is a C#/.NET 10 service.
@@ -27,7 +31,7 @@ provisioning are the integrator's responsibility; see `DEPLOYMENT.md`.
 | 11-pipeline.md | The packet pipeline steps and pointer invalidation |
 | 12-selection.md | Rendezvous hashing, table design, and backend ID lifecycle |
 | 13-icmp.md | ICMP error handling and embedded-header steering |
-| 14-forwarding-modes.md | L2 DSR, IPIP, GUE modes, families, and checksums |
+| 14-forwarding-modes.md | L2 DSR, IPIP, GUE, VXLAN modes, families, and checksums |
 | 15-nexthop-l2dsr.md | MAC swap and L2 DSR stored-MAC/FIB fallback |
 | 16-fib-lookup.md | `bpf_fib_lookup()` return codes and gateway handling |
 | 17-reconfiguration.md | Backend state changes, updates, and disruption analysis |

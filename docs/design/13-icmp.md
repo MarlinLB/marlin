@@ -17,7 +17,26 @@ own addresses describe the router and ICMP carries no ports at all:
 | `vip_key.addr` | embedded **source** address |
 | `vip_key.port` | embedded **source** port |
 | `vip_key.proto` | embedded protocol |
-| selection hash input | embedded **destination** address |
+| selection hash input | embedded **destination** address, and its port under `VIP_HASH_5TUPLE` |
+
+**`parse.c` must recover the embedded destination port into `tuple.sport`, not only the source
+port.** Address-only selection never needed it, so the requirement is new with
+`VIP_HASH_5TUPLE` (`docs/design/12-selection.md`): on a flagged VIP the hash covers `sport`, and
+an ICMP error carrying zero there hashes to a different row than the flow it belongs to, sending
+the error to the wrong backend and breaking path MTU discovery for the encapsulation modes
+precisely where it is load-bearing. With both ports recovered the normalised tuple is the
+offending flow's own tuple, so the error hashes to the flow's row under either hash input.
+
+This moves the truncation threshold below: reaching the embedded destination port needs four
+bytes of embedded L4 header rather than two.
+
+**The fragment flags describe the ICMP packet, not the embedded header.** `MARLIN_CTX_F_FRAG`
+and `MARLIN_CTX_F_FRAG_FIRST` (`marlin.h`) qualify the packet being forwarded. An ICMP error is
+a whole packet with a fully populated tuple, so neither bit is set even when the datagram it
+reports on was itself fragmented — routers generate the error from the first fragment, which
+carries the ports. Deriving the bits from the embedded header instead would have a
+`VIP_HASH_5TUPLE` VIP drop precisely the `frag_needed` errors that path MTU discovery depends
+on, which is the opposite of the intent.
 
 The embedded source is the VIP and its service port; the embedded destination is the client, so
 hashing it reproduces the original selection and steers the error to the backend that sent the
@@ -39,8 +58,14 @@ above — embedded source into `key.dst`, embedded destination into `key.src`. E
 parsing therefore reads one shape, and neither the VIP lookup nor the selection hash needs an
 ICMP branch.
 
-Errors that cannot be parsed — truncated payload, embedded header too short to reach the source
-port, nested tunnel, unrecognised inner protocol — drop with reason `icmp_unparseable`.
+Errors that cannot be parsed — truncated payload, embedded header too short to reach the
+destination port, nested tunnel, unrecognised inner protocol — drop with reason
+`icmp_unparseable`. The threshold is the destination port rather than the source port because
+`VIP_HASH_5TUPLE` hashes `tuple.sport`, and an error parsed only as far as the source port would
+carry a zero there and hash to the wrong row. Applying the wider threshold unconditionally keeps
+parsing free of a per-VIP branch, at the cost of dropping errors on unflagged VIPs that the
+narrower threshold would have admitted — errors truncated between the two offsets, which
+requires an embedded header cut to an odd two-byte boundary.
 
 **ICMP echo** request and reply are not errors and are not load-balanced: `XDP_PASS` to the
 local stack.

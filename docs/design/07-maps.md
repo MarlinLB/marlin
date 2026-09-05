@@ -48,6 +48,5 @@ so allocation scales with roughly twice the rule count. `docs/design/27-source-f
 separate maps and why the families are not merged.
 
 **`ratelimit` = LRU_HASH.** Eviction at capacity is what bounds memory against a
-high-cardinality source flood — the same mechanism and reasoning as Katran's connection table.
-Both families share one map, since hash lookup cost does not scale with key size the way trie
-depth does.
+high-cardinality source flood. Both families share one map, since hash lookup cost does not
+scale with key size the way trie depth does.

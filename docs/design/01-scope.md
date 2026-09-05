@@ -8,12 +8,23 @@
 | L2 DSR | IPv4, IPv6 | n/a | VIP on loopback, ARP/NDP suppression, same L2 segment |
 | IPIP | IPv4, IPv6 | IPv4 | `ipip` and/or `sit` tunnel device |
 | GUE | IPv4, IPv6 | IPv4 | one FOU/GUE listener |
+| VXLAN | IPv4, IPv6 | IPv4 | a `vxlan` device with the matching VNI and dstport |
 
 Mode is a property of the individual backend. A single VIP may be served by backends using
 different modes.
 
-**Marlin holds no per-flow state.** All three modes are direct server return: backends reply
+**Marlin holds no per-flow state.** All four modes are direct server return: backends reply
 to clients without traversing Marlin.
+
+**VXLAN's backend requirement is a hybrid of L2 DSR's and the encapsulating modes'.** The
+`vxlan` device decapsulates to an ordinary Ethernet frame addressed to `backend.inner_mac`
+(`docs/design/08-types.md`) and carrying the VIP as its IP destination — so, as under L2 DSR, the
+backend must hold the VIP and suppress ARP/NDP for it (`docs/design/14-forwarding-modes.md`
+§7.4), rather than simply owning a tunnel endpoint as IPIP and GUE backends do. What is not
+derivable from the design documents as they stand is **where** the VIP must be configured
+relative to the `vxlan` device — on a loopback or dummy interface as under L2 DSR, or on the
+`vxlan` device itself, since that is where the decapsulated frame is delivered. This is left open
+rather than guessed; see `PHASES.md`'s open-decision table, closed by Phase 2b.
 
 ## Targets
 

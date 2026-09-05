@@ -12,6 +12,7 @@ depends on is correct — and every mode has a silent failure of exactly that ki
 |---|---|---|
 | IPIP | tunnel device missing or wrong type for the inner family | probe the VIP over a matching host tunnel device |
 | GUE | FOU listener absent, wrong port, or receive device missing | probe the VIP over a host GUE tunnel device |
+| VXLAN | `vxlan` device missing, wrong VNI, or wrong dstport | probe the VIP over a host `vxlan` device with the matching VNI and dstport |
 | L2 DSR | VIP not on loopback, or ARP/NDP suppression missing | probe the VIP with a static neighbour entry pointing at the backend's MAC |
 
 In each case the probe is addressed to the **VIP**, not the backend address, and forced down
@@ -27,7 +28,7 @@ the local route, and every probe fails against a healthy backend. Left unhandled
 entire fleet `MARLIN_DOWN`, which is worse than the failures this section exists to detect.
 
 **The probe socket is therefore bound to a VRF that does not contain the VIP**, together with
-the host tunnel devices the IPIP and GUE probes traverse. Source-address validation is
+the host tunnel devices the IPIP, GUE and VXLAN probes traverse. Source-address validation is
 per-VRF, so inside it the reply is ordinary traffic.
 
 - **No new privilege.** A VRF device and `SO_BINDTODEVICE` are within the `CAP_NET_ADMIN` the
@@ -47,11 +48,13 @@ probe never carries the VIP. Isolating the prober keeps the detection and remove
 
 Two limitations, stated rather than papered over:
 
-- A host tunnel device does not reproduce everything Marlin emits — notably the GUE entropy
-  source port and the zero UDP checksum. A backend that rejects those specifically will still
-  probe healthy.
+- A host tunnel device does not reproduce everything Marlin emits — notably the entropy source
+  port and the zero UDP checksum that GUE and VXLAN both use. A backend that rejects those
+  specifically will still probe healthy.
 - The IPIP probe must cover both inner families separately if the backend serves both, since
-  they use different tunnel devices.
+  they use different tunnel devices. This is where VXLAN costs less than what it replaces: one
+  `vxlan` device covers both inner families (`docs/design/14-forwarding-modes.md` §7.4), so a
+  VXLAN backend needs one probe device where an IPIP backend needs two.
 
 **Under active/active**, each instance probes independently and may briefly disagree. Harmless
 given drop-on-down (`docs/design/17-reconfiguration.md`). Health state is not synchronised between instances.

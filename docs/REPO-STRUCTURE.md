@@ -18,9 +18,8 @@ The rules the layout follows, stated so a new file can be placed without re-deri
 1. **One repository.** Three built artefacts (`docs/design/02-architecture.md`) sharing one ABI
    whose two halves must change in the same commit (`docs/design/06-map-abi.md`). A repository
    boundary between them would put that commit across two histories.
-2. **A directory per deployed piece**, following GLB's `src/<component>/` shape rather than
-   Katran's flat userspace tree. The pieces are independent artefacts with different
-   toolchains, not one program.
+2. **A directory per deployed piece**, not a flat tree. The pieces are independent artefacts
+   with different toolchains, not one program.
 3. **The map ABI is a delimited surface.** Nothing in the build detects a divergence between
    `types.h` and its C# mirror, and review by reading is the only mechanism
    (`docs/design/06-map-abi.md`). Both halves therefore live in directories whose entire
@@ -35,7 +34,7 @@ The rules the layout follows, stated so a new file can be placed without re-deri
 
 ## 2. Tree
 
-```
+```none
 marlin/
 ├── README.md
 ├── CLAUDE.md                         # agent guidance; stays at the root, where tooling finds it
@@ -56,11 +55,12 @@ marlin/
 │   ├── .clang-format
 │   ├── .clang-tidy
 │   ├── src/
-│   │   ├── marlin.c                  # XDP entry point
+│   │   ├── main.c                  # XDP entry point
 │   │   ├── balancer.c                # marlin_balance()
 │   │   ├── parse.c
 │   │   ├── ipip_encap.c
 │   │   ├── gue_encap.c
+│   │   ├── vxlan_encap.c
 │   │   └── nexthop.c
 │   └── include/
 │       ├── marlin.h                  # marlin_ctx, enum marlin_ret, marlin_* prototypes
@@ -71,6 +71,7 @@ marlin/
 │           │   └── enums.h           # modes, states, drop reasons, flag bits — see §8
 │           ├── maps.h
 │           ├── csum.h
+│           ├── entropy.h             # outer UDP source port entropy hash, shared by gue_encap.c and vxlan_encap.c
 │           ├── siphash.h
 │           ├── stats.h
 │           ├── acl.h
@@ -98,7 +99,7 @@ marlin/
 │
 ├── tests/
 │   ├── packet/                        # bpf_prog_test_run, exact output bytes (docs/design/24-testing.md)
-│   ├── integration/                   # netns, veth, real ipip/sit/FOU devices
+│   ├── integration/                   # netns, veth, real ipip/sit/FOU/vxlan devices
 │   └── unit/
 │       ├── Marlin.Core.Tests/
 │       ├── Marlin.Health.Tests/
@@ -211,7 +212,7 @@ Analyzer severity lives in `control-plane/.editorconfig`, paired with
 
 ## 6. Build flow
 
-```
+```none
 make            → data-plane/  clang -target bpf -g   (BTF on every input, docs/design/03-translation-units.md)
                              → bpftool gen object → marlin.bpf.o
                              → compile_commands.json
@@ -249,9 +250,9 @@ than the repository and the design disagreeing from the first commit.
 
 | Option | For | Against |
 |---|---|---|
-| C + libbpf | shortest path to exact-byte assertions; Katran's shape | a second test runner in CI |
+| C + libbpf | shortest path to exact-byte assertions | a second test runner in CI |
 | C# P/Invoke | one runner; seeds maps through the hand-written structs, so a wrong offset fails a forwarding assertion instead of corrupting production | marshalling a syscall the control plane never makes |
-| Python + ctypes | fastest packet crafting; GLB's shape | a third language in the tree |
+| Python + ctypes | fastest packet crafting | a third language in the tree |
 
 **7.3 `Marlin.Bpf` interop.** libbpf P/Invoke matches the function names in
 `docs/design/19-control-plane.md` and gets `bpf_map_lookup_batch` for free; a raw `bpf()`
@@ -263,14 +264,13 @@ surface by containment. Flattening to `include/marlin/{types,limits,enums}.h` ma
 into a sentence.
 
 **7.5 clang-format base style.** Kernel style — tabs, 8 wide, 80 columns — matches the BPF
-samples anyone reading `parse.c` will have read, and is what Katran's BPF tree uses.
-`BasedOnStyle: LLVM` matches nothing else in the repository but is less hostile to deep
-nesting.
+samples anyone reading `parse.c` will have read. `BasedOnStyle: LLVM` matches nothing else in
+the repository but is less hostile to deep nesting.
 
 **7.6 The unnamed global subprograms.** `docs/design/04-calling-convention.md` names only
-`marlin_balance()`. The entries for `parse.c`, `ipip_encap.c`, `gue_encap.c` and `nexthop.c` are
-the file-to-file contract and are unspecified; `nexthop.c` may be one or two. Left silent, the
-first person to write `parse.c` picks them.
+`marlin_balance()`. The entries for `parse.c`, `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`
+and `nexthop.c` are the file-to-file contract and are unspecified; `nexthop.c` may be one or two.
+Left silent, the first person to write `parse.c` picks them.
 
 **7.7 An ABI parity test.** A `Marlin.Abi.Tests/` asserting `Marshal.SizeOf` and
 `Marshal.OffsetOf` against the byte offsets `docs/design/06-map-abi.md` requires in comments

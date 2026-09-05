@@ -1,0 +1,184 @@
+---
+# clang-format for the Marlin eBPF/XDP load balancer.
+#
+# NOT YET APPLIED TO THE TREE. Every source file is indented with hard tabs while
+# UseTab below is Never and .editorconfig sets indent_style = space, so running
+# this config rewrites all ten files. Resolving that — adopt tabs here, or
+# reformat the tree once in a commit containing nothing else — is a Phase 1
+# decision (PHASES.md, DEVELOPMENT.md §7). Do not resolve it incidentally.
+#
+# Style otherwise reverse-engineered from the existing source:
+#   - 4-wide indent
+#   - opening brace on its own line for FUNCTIONS only; same line for if/for/switch/struct
+#   - opening brace on its own line for FUNCTIONS only; same line for if/for/switch/struct
+#   - no space between a control keyword and '(' -> `if(rc != ...)`, `switch(dec->action)`
+#   - `} else if(...) {` on one line
+#   - pointer binds to the name: `struct fwd_decision *dec`
+#   - case labels flush with `switch`
+#   - consecutive #define values column-aligned
+#   - no space after a C-style cast: `(__u16)rc`
+#
+# Requires clang-format >= 16 (InsertBraces, InsertNewlineAtEOF, RemoveSemicolon).
+# Drop those three keys for clang-format 14/15.
+#
+# Deliberately uses the pre-17 spelling of the paren/return-type/empty-line
+# options (SpacesInParentheses, SpacesInCStyleCastParentheses,
+# SpacesInConditionalStatement, SpaceInEmptyParentheses,
+# AlwaysBreakAfterReturnType, KeepEmptyLinesAtTheStartOfBlocks) because those
+# are accepted by every version from 14 through 21. On a 17+-only toolchain the
+# modern equivalents are SpacesInParens: Never (+ SpacesInParensOptions),
+# BreakAfterReturnType and KeepEmptyLines.AtStartOfBlock.
+Language: Cpp
+Standard: Latest
+
+BasedOnStyle: LLVM
+
+ColumnLimit: 135
+IndentWidth: 4
+ContinuationIndentWidth: 8
+TabWidth: 4
+UseTab: Never
+
+# --- Braces -------------------------------------------------------------------
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: false
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterFunction: true
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  AfterExternBlock: false
+  BeforeElse: false
+  BeforeWhile: false
+  IndentBraces: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+InsertBraces: true
+
+# --- Single-line collapsing (never; the source always uses full blocks) -------
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# --- Line breaking ------------------------------------------------------------
+AlignAfterOpenBracket: Align
+AlwaysBreakAfterReturnType: None
+BinPackArguments: true
+BinPackParameters: true
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+BreakStringLiterals: false
+PenaltyBreakAssignment: 100
+PenaltyReturnTypeOnItsOwnLine: 1000
+
+# --- Alignment ----------------------------------------------------------------
+AlignConsecutiveMacros: AcrossEmptyLinesAndComments
+AlignConsecutiveAssignments: false
+AlignConsecutiveBitFields: Consecutive
+AlignConsecutiveDeclarations: false
+AlignEscapedNewlines: Left
+AlignOperands: Align
+AlignTrailingComments: true
+BitFieldColonSpacing: Both
+DerivePointerAlignment: false
+PointerAlignment: Right
+QualifierAlignment: Leave
+ReferenceAlignment: Right
+
+# --- Indentation details ------------------------------------------------------
+IndentCaseBlocks: false
+IndentCaseLabels: false
+IndentExternBlock: NoIndent
+IndentGotoLabels: false
+IndentPPDirectives: None
+NamespaceIndentation: None
+
+# --- Spacing ------------------------------------------------------------------
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAroundPointerQualifiers: Default
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCaseColon: false
+SpaceBeforeParens: Custom
+SpaceBeforeParensOptions:
+  AfterControlStatements: false
+  AfterForeachMacros: false
+  AfterFunctionDeclarationName: false
+  AfterFunctionDefinitionName: false
+  AfterIfMacros: false
+  BeforeNonEmptyParentheses: false
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceBeforeSquareBrackets: false
+SpaceInEmptyBlock: false
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 1
+SpacesInCStyleCastParentheses: false
+SpacesInConditionalStatement: false
+SpacesInContainerLiterals: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# --- Blank lines --------------------------------------------------------------
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+SeparateDefinitionBlocks: Always
+
+# --- Includes -----------------------------------------------------------------
+# NEVER sort. vmlinux.h is not in use here (types.h) — the sources include UAPI
+# headers directly — but the ordering is still load-bearing: <linux/bpf.h> must
+# precede <bpf/bpf_helpers.h>, and bpf_endian.h follows both. Alphabetical
+# sorting breaks the build.
+SortIncludes: Never
+IncludeBlocks: Preserve
+
+# --- Comments -----------------------------------------------------------------
+ReflowComments: true
+FixNamespaceComments: false
+
+# --- Misc ---------------------------------------------------------------------
+Cpp11BracedListStyle: false
+InsertNewlineAtEOF: true
+RemoveSemicolon: false
+
+# Kernel/eBPF annotation macros: treat as attributes, not as part of the type.
+# NOTE: only annotations belong here. Never add __u8/__u16/__be16/__sum16 —
+# those are types and listing them would corrupt declaration formatting.
+AttributeMacros:
+  - __always_inline
+  - __noinline
+  - __maybe_unused
+  - __used
+  - __unused
+  - __must_check
+  - __packed
+  - __aligned
+  - __percpu
+  - __rcu
+  - __user
+  - __kernel
+  - __force
+  - __init
+  - __exit
+  - __weak
+  - __hidden
+
+# BPF bounded-loop and kernel list iteration macros.
+ForEachMacros:
+  - bpf_for
+  - bpf_for_each
+  - bpf_repeat
+  - list_for_each_entry
+  - list_for_each_entry_safe
+
+# Map-definition and section macros whose payload must not be re-wrapped.
+WhitespaceSensitiveMacros:
+  - SEC
+  - __uint
+  - __type
+  - __array
+  - STRINGIFY
