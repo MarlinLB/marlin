@@ -63,3 +63,16 @@ struct marlin_l4_ports {
 };
 
 _Static_assert(sizeof(struct marlin_l4_ports) == 4, "marlin_l4_ports must overlay the first word of a TCP or UDP header");
+
+#define MARLIN_UDP_HLEN 8 /* source, dest, len, check -- fixed width, no options */
+
+/* RFC 8999 SS4.1: the header-form bit is the one field every QUIC version
+ * keeps at a fixed offset. A short header (bit clear) is 1-RTT and
+ * steerable by connection ID; a long header (bit set) spans the whole
+ * handshake, which RFC 9000 SS9 forbids migrating before, so it needs no
+ * steering (docs/design/30-quic.md).
+ */
+#define MARLIN_QUIC_LONG_HEADER 0x80
+
+#define MARLIN_QUIC_CID_MIN 7  /* 1 format byte + 2 backend_id bytes + >=4 entropy bytes */
+#define MARLIN_QUIC_CID_MAX 20 /* QUIC v1 limit, RFC 9000 SS17.2 */

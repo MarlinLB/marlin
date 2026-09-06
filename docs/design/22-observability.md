@@ -29,6 +29,13 @@ name; reconciling the two is `marlin.h`'s open decision D6.
 Reasons that are passes or fallbacks rather than drops are marked as such, so the sum of
 `drop_stats` is not mistaken for total drops.
 
+**Four counters are reserved for `VIP_QUIC` and land with `balancer.c`, not before**
+(`docs/design/30-quic.md`): `quic_cid_routed` (steered by connection ID), and
+`quic_cid_check_failed`, `quic_cid_unknown_backend`, `quic_cid_backend_down` — three distinct
+ways a steered packet instead falls through to the hash path. None of the four is a drop, so
+none changes the count above, and none exists in `enum marlin_ret` yet; named here so they are
+not invented twice.
+
 ## Counters
 
 | Signal | Scope | Diagnoses |

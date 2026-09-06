@@ -189,6 +189,38 @@ static __u32 pb_ports(__u16 sport_host, __u16 dport_host)
     return pb_raw(&ports, sizeof(ports));
 }
 
+/* Full 8-byte UDP header -- source and dest overlay marlin_l4_ports exactly
+ * as pb_ports() writes them; len_host and check are never read by parser.c
+ * but are filled in so a captured packet's fixed header matches the wire.
+ */
+static __attribute__((unused)) __u32 pb_udp(__u16 sport_host, __u16 dport_host, __u16 len_host)
+{
+    struct {
+        __be16 source;
+        __be16 dest;
+        __be16 len;
+        __be16 check;
+    } udp;
+
+    udp.source = bpf_htons(sport_host);
+    udp.dest = bpf_htons(dport_host);
+    udp.len = bpf_htons(len_host);
+    udp.check = 0;
+
+    return pb_raw(&udp, sizeof(udp));
+}
+
+/* One byte carrying only the QUIC header-form bit (RFC 8999 SS4.1;
+ * MARLIN_QUIC_LONG_HEADER in proto.h): 0x80 set selects a long header, clear
+ * selects short. Nothing in this repo decodes past the form bit yet
+ * (docs/design/30-quic.md), so this is the whole of a QUIC payload the
+ * builder needs to produce.
+ */
+static __attribute__((unused)) __u32 pb_quic_form(__u8 first_byte)
+{
+    return pb_raw(&first_byte, sizeof(first_byte));
+}
+
 static __u32 pb_icmp(__u8 type, __u8 code)
 {
     struct marlin_icmphdr icmp;

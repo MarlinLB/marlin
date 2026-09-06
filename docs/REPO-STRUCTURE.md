@@ -55,7 +55,7 @@ marlin/
 ├── .gitignore
 │
 ├── docs/                             # see §6 on migrating the existing documents
-│   ├── design/                       # README.md plus 29 numbered per-topic files, replacing DESIGN.md
+│   ├── design/                       # README.md plus 30 numbered per-topic files, replacing DESIGN.md
 │   ├── DEPLOYMENT.md
 │   ├── PHASES.md
 │   └── REPO-STRUCTURE.md
@@ -165,7 +165,7 @@ two that are boundaries for a reason beyond tidiness:
 
 - **`Marlin.Abi` is separate from `Marlin.Bpf`** because four projects need the struct
   vocabulary — `Core` for `fwd_table` generation (`docs/design/12-selection.md`) and validation,
-  `Health` to write `backend.state`, `Api` for the flag bits and drop-reason labels that
+  `Health` to write the state bit of `backend.flags`, `Api` for the flag bits and drop-reason labels that
   `docs/design/08-types.md` calls part of the control-plane API surface, and `Bpf` for map I/O.
   Merging the two would make all three others reference the interop project to see a struct
   definition, pulling libbpf P/Invoke and syscall marshalling into projects that should

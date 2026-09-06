@@ -165,13 +165,14 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 
 **Goal:** `types.h` stops changing, and the C# mirror is known to match it by review.
 
-Two open decisions must close here, because both alter layout or index meaning and neither is
+Three open decisions must close here, because all three alter layout or index meaning and none is
 revisable once a control plane has recorded a counter or read a struct in the field.
 
 | Decision | Where | Question |
 |---|---|---|
 | D4 | `types.h:203` | `backend.mac` straddles the 8-byte boundary at bytes 4-9. `docs/design/17-reconfiguration.md` calls `mac` immutable; `docs/design/15-nexthop-l2dsr.md` and `docs/design/19-control-plane.md` refresh it from neighbour events. If it is mutable, a torn read yields four bytes of the new MAC and two of the old. Field order is `docs/design/08-types.md`'s as written, pending this. |
 | D6 | `marlin.h:44` | `MAP_BOUNDS`, `NO_TX_PORT`, `ENCAP_LENGTH`, `FIB_UNSPEC`, `NOT_FORWARDED`, `FRAG_UNSUPPORTED` and the counted ICMP echo pass are in `enum marlin_ret` but not in `docs/design/22-observability.md`'s enumerated list of 23 reasons. |
+| D7 | `defines.h:35` | `MARLIN_BE_F_ENCAP_REQUIRED` (bit 4 of `backend.flags`) is defined and mirrored in `Marlin.Abi`'s `BackendFlags`, but nothing in the datapath reads it and no document assigns it a meaning. Either give it semantics before Phase 2a closes or remove the bit. |
 
 ### Deliverables
 
@@ -182,6 +183,10 @@ revisable once a control plane has recorded a counter or read a struct in the fi
   post-freeze `types.h` change under exit criterion 4. The datapath half is already written —
   `balancer.c`'s `marlin_balance_frag()` and `marlin_balance_hash()` — and the flag stays
   unusable until Phase 2b supplies its producer, below.
+- `VIP_QUIC` and the CID-length field land here or not at all (`docs/design/30-quic.md`), on the
+  same freeze logic as `VIP_HASH_5TUPLE` above. Unlike that flag, `parser.c`'s half —
+  `marlin_parse_quic()`, classifying short- from long-header packets — is already written; the
+  steering step that consumes the flag is `balancer.c`'s, in Phase 2b.
 - Byte offsets stated in comments on both the C and C# sides for every mirrored struct, so
   parity is reviewable by reading — which `docs/design/06-map-abi.md` records as the only mechanism there is.
 - `drop_stats` enumerators appended from here, never reordered (`marlin.h:142`).
@@ -189,8 +194,9 @@ revisable once a control plane has recorded a counter or read a struct in the fi
 
 ### Exit criteria
 
-1. D4 and D6 closed, with the resolution written into `docs/design/08-types.md` (D4) and
-   `docs/design/22-observability.md` (D6), and the header comment replaced rather than annotated.
+1. D4, D6 and D7 closed, with the resolution written into `docs/design/08-types.md` (D4 and D7)
+   and `docs/design/22-observability.md` (D6), and the header comment replaced rather than
+   annotated.
 2. `docs/design/22-observability.md`'s reason list and `enum marlin_ret` agree, and `DROP_REASON_MAX` still bounds them.
 3. Every mirrored struct carries byte offsets on both sides and has been reviewed for parity
    as a single commit spanning both languages (`docs/design/06-map-abi.md`).
@@ -223,6 +229,12 @@ datapath is feature-complete and further work is control-plane work.
   `icmp_unparseable` threshold moves from two bytes of embedded L4 header to four with it.
   `tuple.pad` must stay zero, because the flag hashes the tuple whole
   (`docs/design/10-map-invariants.md`).
+- **`balancer.c`'s `VIP_QUIC` steering step.** On a `VIP_QUIC` VIP, a `MARLIN_CTX_F_QUIC` packet
+  decodes a `backend_id` from its connection ID and indexes `backends[]` directly, bypassing
+  `fwd_table`; any decode failure — check mismatch, an out-of-range or unpopulated
+  `backend_id`, or a backend not `MARLIN_UP` — falls through to the existing hash path, uncounted
+  as a drop (`docs/design/30-quic.md`). The four `MARLIN_COUNT_*` counters this needs are
+  reserved but not yet in `enum marlin_ret` (`docs/design/22-observability.md`).
 - `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`, `csum.h`, `entropy.h`: IPIP, GUE and VXLAN,
   IPv6 inner over IPv4 outer, VXLAN's VNI, its inner Ethernet header rewrite and its outer
   Ethernet header, the entropy source port shared by GUE and VXLAN, and the zero UDP checksum
@@ -299,7 +311,12 @@ rate-limiter conversion.
 - **Configuration validation** — every rule in `docs/design/20-configuration-validation.md`, rejected at configuration time.
 - **Configuration and status APIs**, including the per-VIP non-reversible digest of
   `hash_key` and `table_seed` that makes active/active divergence detectable
+  (`docs/design/21-active-active.md`). Extended to cover `VIP_QUIC`, the connection-ID length
+  and `hash_key`'s QUIC use once Phase 2b lands the steering step
   (`docs/design/21-active-active.md`).
+- **`VIP_QUIC` backend distribution.** Assigning and distributing `backend_id`, `hash_key` and
+  the connection-ID length to each backend's QUIC server, and the rotation story
+  (`docs/design/30-quic.md`; `DEPLOYMENT.md` §1.7.2).
 
 ### Exit criteria
 
@@ -382,9 +399,12 @@ section it affects, not in a document of its own.
 | Whether `data-plane/tests/` joins `make format`/`make tidy`, or takes its own `.clang-format`/`.clang-tidy` | `docs/REPO-STRUCTURE.md` §7.2 | 1 |
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
+| D7 — `MARLIN_BE_F_ENCAP_REQUIRED` has no assigned meaning and no reader | `defines.h:35` | 2a |
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
 | `BPF_FIB_LOOKUP_DIRECT` has no configuration surface | `nexthop.c:206` | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
+| Whether a connection ID naming a `DOWN` backend falls through to hash or drops | `docs/design/30-quic.md` | 2b |
+| Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |
 
 ---

@@ -23,10 +23,9 @@ struct backend {              /* 32 bytes */
     __be32 addr;              /* 0-3   the backend's own address / outer tunnel destination, IPv4; required in every mode (docs/design/16-fib-lookup.md) */
     __u8   mac[6];            /* 4-9   underlay next-hop MAC, every mode; all-zero = resolve via bpf_fib_lookup */
     __be16 encap_dport;       /* 10-11 0 = per-mode default: 6080 GUE, 4789 VXLAN */
-    __u8   mode;              /* 12    MARLIN_MODE_{L2DSR,IPIP,GUE,VXLAN} */
-    __u8   state;             /* 13    MARLIN_UP | MARLIN_DOWN */
-    __u8   flags;             /* 14    MARLIN_BE_F_FIB */
-    __u8   pad;               /* 15 */
+    __u8   flags;             /* 12    bits 0-3 MARLIN_MODE_{L2DSR,IPIP,GUE,VXLAN}; bit 4 MARLIN_BE_F_ENCAP_REQUIRED;
+                                *       bit 5 MARLIN_BE_F_FIB; bit 6 MARLIN_BE_F_STATE (set = MARLIN_UP); bit 7 reserved */
+    __u8   pad[3];            /* 13-15 */
     __u32  egress_ifindex;    /* 16-19 expected FIB egress interface, validation only (docs/design/16-fib-lookup.md) */
     __u32  vni;               /* 20-23 VXLAN only; host order, 0..0xFFFFFF; the value's high byte must be zero. vxlan_encap.c writes bpf_htonl(vni << 8) (docs/design/14-forwarding-modes.md) */
     __u8   inner_mac[6];      /* 24-29 VXLAN only; overlay destination MAC */
@@ -141,17 +140,28 @@ packet: for an ICMP error it is reconstructed from the embedded header.
 | 0 | reserved, must be zero |
 | 1 | `VIP_RATELIMIT` — meter sources addressing this VIP (docs/design/28-rate-limiting.md) |
 | 2 | `VIP_HASH_5TUPLE` — hash the whole tuple for row selection, not the source address alone; drops every fragment on this VIP (docs/design/12-selection.md) |
-| 3–31 | reserved, must be zero |
+| 3 | `VIP_QUIC` — steer short-header UDP packets by connection ID instead of the hash path (docs/design/30-quic.md) |
+| 4–7 | reserved, must be zero |
+| 8–12 | `VIP_QUIC_CID_LEN` — configured connection-ID length, 7–20; 0 = unset (docs/design/30-quic.md) |
+| 13–31 | reserved, must be zero |
 
 `VIP_HASH_5TUPLE` is hash input, so it is subject to the cross-instance agreement requirement
-of `docs/design/21-active-active.md` rather than being a free per-instance choice.
+of `docs/design/21-active-active.md` rather than being a free per-instance choice. `VIP_QUIC`
+and `VIP_QUIC_CID_LEN` join it there for the same reason: a mismatch does not merely lose
+affinity, it routes deterministically to the wrong backend (docs/design/30-quic.md).
 
-`backend.flags`:
+`backend.flags` packs the encapsulation mode with three independent bits — `mode`, `state` and
+`fib` were byte-per-field in an earlier revision of this document; the header now packs all of
+it into one byte, so a torn read of `backends[id]` (`docs/design/17-reconfiguration.md`) tears
+mode and state together rather than independently:
 
-| Bit | Meaning |
+| Bits | Meaning |
 |---|---|
-| 0 | `MARLIN_BE_F_FIB` — resolve the next hop with `bpf_fib_lookup()` rather than the mode's zero-lookup path (docs/design/16-fib-lookup.md) |
-| 1–7 | reserved, must be zero |
+| 0–3 | `MARLIN_MODE_{L2DSR,IPIP,GUE,VXLAN}` (`ENCAP_MODE(flags)`) |
+| 4 | `MARLIN_BE_F_ENCAP_REQUIRED` — meaning undecided (see `PHASES.md`'s open-decision table) |
+| 5 | `MARLIN_BE_F_FIB` — resolve the next hop with `bpf_fib_lookup()` rather than the mode's zero-lookup path (docs/design/16-fib-lookup.md) |
+| 6 | `MARLIN_BE_F_STATE` — set = `MARLIN_UP`, clear = `MARLIN_DOWN` (docs/design/17-reconfiguration.md, docs/design/18-health.md) |
+| 7 | reserved, must be zero |
 
 Bits are defined here as they are introduced rather than left to implementation, because all
 three fields are part of the control-plane API surface.

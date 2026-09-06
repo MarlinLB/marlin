@@ -216,6 +216,25 @@ static __always_inline int marlin_parse_ports(const void *data, const void *data
     return MARLIN_OK;
 }
 
+/* RFC 9000 SS9 forbids migrating before the handshake completes, so every
+ * long-header packet (Initial/0-RTT/Handshake/Retry) shares one flight's
+ * 4-tuple and needs no steering; only short-header (1-RTT) packets can
+ * arrive after a migration, and those are what balancer.c will steer by
+ * connection ID (docs/design/30-quic.md). This classifies the form only --
+ * decoding the connection ID is balancer.c's job, once it can read
+ * vip_meta.hash_key.
+ */
+static __always_inline __u32 marlin_parse_quic(const void *data, const void *data_end, __u32 l4_off)
+{
+    const __u8 *form = (const __u8 *)data + l4_off + MARLIN_UDP_HLEN;
+
+    if((const void *)(form + 1) > data_end) {
+        return 0;
+    }
+
+    return (*form & MARLIN_QUIC_LONG_HEADER) == 0 ? MARLIN_CTX_F_QUIC : 0;
+}
+
 static __always_inline int marlin_proto_is_icmp(__u8 family, __u8 proto)
 {
     return (family == AF_INET && proto == IPPROTO_ICMP) || (family == AF_INET6 && proto == IPPROTO_ICMPV6);
@@ -341,5 +360,11 @@ int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
         return marlin_parse_icmp(data, data_end, l3.l4_off, family, &l3, mctx);
     }
 
-    return marlin_parse_ports(data, data_end, l3.l4_off, l3.proto, &mctx->tuple.sport, &mctx->tuple.dport);
+    rc = marlin_parse_ports(data, data_end, l3.l4_off, l3.proto, &mctx->tuple.sport, &mctx->tuple.dport);
+
+    if(rc == MARLIN_OK && l3.proto == IPPROTO_UDP) {
+        mctx->flags |= marlin_parse_quic(data, data_end, l3.l4_off);
+    }
+
+    return rc;
 }

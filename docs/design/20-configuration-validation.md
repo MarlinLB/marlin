@@ -12,8 +12,8 @@ Rejected at configuration time rather than allowed to fail per packet:
 - A backend with no `addr`, in any mode. It is the only address the datapath ever looks up
   (`docs/design/15-nexthop-l2dsr.md`); under L2 DSR it is the backend's address on the attached segment, and a backend whose
   `mac` is currently resolved still needs it for the fallback.
-- A backend with `mode` IPIP, GUE or VXLAN while `config.tunnel_src` is unset.
-- A backend with `mode` IPIP, GUE or VXLAN while `config.max_frame` is unset. Zero disables the
+- A backend whose `flags` mode bits are IPIP, GUE or VXLAN while `config.tunnel_src` is unset.
+- A backend whose `flags` mode bits are IPIP, GUE or VXLAN while `config.max_frame` is unset. Zero disables the
   egress-MTU check in the datapath (`docs/design/23-mtu.md`), so an unset value is a silent loss of protection
   rather than a failure.
 - A VXLAN backend with `vni` unset, or with `vni & 0xFF000000` non-zero. `vni` is a host-order
@@ -31,7 +31,7 @@ Rejected at configuration time rather than allowed to fail per packet:
   means anything outside VXLAN, and accepting one silently on, say, a GUE backend would let a
   future mode change re-interpret bytes the operator never meant to set, rather than surfacing
   the mismatch at the point the backend was configured.
-- An in-place `mode`, `addr` or `encap_dport` edit on an existing backend ID (`docs/design/17-reconfiguration.md`) — the API
+- An in-place edit of the mode bits of `flags`, or of `addr` or `encap_dport`, on an existing backend ID (`docs/design/17-reconfiguration.md`) — the API
   requires remove-then-add. `vni` and `inner_mac` require the same: both are identity for the
   purposes of `docs/design/12-selection.md`'s score, exactly as `addr` is.
 - A backend with `egress_ifindex` naming an interface that is neither the XDP-attached

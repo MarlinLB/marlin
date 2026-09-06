@@ -20,15 +20,23 @@ clients, there is no reverse path and no classifier.
    equivalent of IPv4's `frag_off`.
    A non-first fragment carries no L4 header in either family, so `sport` and `dport` stay
    zero and the VIP lookup falls to the port-agnostic retry below.
+
+   A UDP payload opening with a QUIC short header is flagged `MARLIN_CTX_F_QUIC` here, for
+   step 6 to steer on. A long header is never flagged: RFC 9000 §9 forbids migrating before
+   the handshake completes, so every long-header packet is safe on the hash path
+   (`docs/design/30-quic.md`).
 3. **ACL** — `marlin_acl()`. An allow match admits and suppresses step 5; a block match drops
    with reason `acl_blocked`. `docs/design/27-source-filtering.md`.
 4. **VIP lookup** — `vip_map` → `vip_num`, `flags`, `hash_key`. Miss → `XDP_PASS`.
 5. **Rate limit** — `marlin_ratelimit()`, if `VIP_RATELIMIT` is set and step 3 did not admit
    explicitly. Over budget → drop `ratelimited`. `docs/design/28-rate-limiting.md`.
-6. **Resolve** — hash, `fwd_table`, `backends`, in `balancer.c`. `docs/design/12-selection.md`.
+6. **Resolve** — on a `VIP_QUIC` VIP, a `MARLIN_CTX_F_QUIC` packet decodes a `backend_id`
+   from the connection ID and indexes `backends` directly, bypassing `fwd_table`
+   (`docs/design/30-quic.md`); every other packet, and any decode failure, falls through to
+   hash, `fwd_table`, `backends`, in `balancer.c` (`docs/design/12-selection.md`).
 7. **Validity and state** — `backend_id == 0` → drop `no_backend`;
-   `state != MARLIN_UP` → drop `backend_down`.
-8. **Dispatch** on `backend.mode`:
+   `MARLIN_BE_F_STATE` clear in `backend.flags` → drop `backend_down`.
+8. **Dispatch** on `ENCAP_MODE(backend.flags)`:
    - `L2DSR` → rewrite destination MAC; `XDP_TX`, or `XDP_REDIRECT` where `docs/design/16-fib-lookup.md` resolves the
      backend out another interface
    - `IPIP` → `docs/design/14-forwarding-modes.md`
@@ -38,7 +46,7 @@ clients, there is no reverse path and no classifier.
      inner header (§7.4)
 9. **Next hop** — `docs/design/15-nexthop-l2dsr.md`, `docs/design/16-fib-lookup.md`.
 
-Steps 1–7 are identical for all four modes. Steps 8 and 9 both diverge on `backend.mode`:
+Steps 1–7 are identical for all four modes. Steps 8 and 9 both diverge on `ENCAP_MODE(backend.flags)`:
 step 8 between the three encapsulation units and L2 DSR's empty case, step 9 between
 `marlin_nexthop_l2dsr()` and `marlin_nexthop_encap()` — and, inside the latter, once more on
 whether the MAC-swap default applies, which it does for IPIP and GUE and does not for VXLAN

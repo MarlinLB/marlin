@@ -1729,6 +1729,243 @@ MARLIN_TEST(parse_icmpv6_embedded_two_ext_hdrs_is_ok)
     CHECK_RET(MARLIN_OK, rc);
 }
 
+/* ======================================================================
+ * QUIC classification -- marlin_parse_quic(), the parser half of
+ * docs/design/30-quic.md. balancer.c does not exist yet, so nothing reads
+ * MARLIN_CTX_F_QUIC downstream; these cases assert the classification
+ * itself and that it changes nothing else.
+ * ====================================================================== */
+
+MARLIN_TEST(parse_quic_short_header_sets_flag)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+    pb_udp(51820, 443, 9);
+    pb_quic_form(0x40); /* bit 7 clear: short header */
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(MARLIN_CTX_F_QUIC, mctx.flags & MARLIN_CTX_F_QUIC);
+}
+
+static void check_quic_long_header_no_flag(__u8 first_byte)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+    pb_udp(51820, 443, 9);
+    pb_quic_form(first_byte);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
+}
+
+/* Every long-header packet type -- Initial, Handshake and Retry alike --
+ * must leave the flag clear: RFC 9000 SS9 forbids migrating before the
+ * handshake completes, so none of them can arrive off a migrated path, and
+ * an Initial's client-invented DCID must never be steered (docs/design/30-quic.md).
+ */
+MARLIN_TEST(parse_quic_long_header_initial_v1_no_flag)
+{
+    check_quic_long_header_no_flag(0xc3); /* long, fixed bit, type=Initial */
+}
+
+MARLIN_TEST(parse_quic_long_header_handshake_v1_no_flag)
+{
+    check_quic_long_header_no_flag(0xe3); /* long, fixed bit, type=Handshake */
+}
+
+MARLIN_TEST(parse_quic_long_header_retry_v1_no_flag)
+{
+    check_quic_long_header_no_flag(0xf0); /* long, fixed bit, type=Retry */
+}
+
+MARLIN_TEST(parse_quic_zero_length_udp_payload_no_flag)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+    pb_udp(51820, 443, 8); /* header only, no payload byte */
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
+}
+
+/* Every truncation from the start of the UDP header through one byte short
+ * of a complete form byte must leave the flag clear without reading past
+ * data_end -- ASan (-fsanitize=address, data-plane/Makefile) is what
+ * actually catches an out-of-bounds read here; CHECK_EQ only catches the
+ * flag. Some of these truncations fall inside the ports word itself, so rc
+ * varies between MARLIN_OK and MARLIN_DROP_PARSE_ERROR; only the flag is
+ * asserted.
+ */
+MARLIN_TEST(parse_quic_truncated_udp_header_no_flag)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    __u32 udp_off;
+    __u32 n;
+
+    for(n = 0; n < 9; n++) {
+        pb_reset();
+        pb_eth(ETH_P_IP);
+        pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+        udp_off = pb_len;
+        pb_udp(51820, 443, 9);
+        pb_quic_form(0x40);
+        pb_truncate(udp_off + n);
+        pb_xdp(&md);
+        mctx_init(&mctx);
+        marlin_parse(&md, &mctx);
+        CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
+    }
+}
+
+/* proto is TCP, so marlin_parse() must never call marlin_parse_quic() at
+ * all -- the same byte that would set the flag on UDP must not on TCP.
+ */
+MARLIN_TEST(parse_quic_short_header_byte_on_tcp_no_flag)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_TCP, 5, 0, V4_SRC, V4_DST);
+    pb_ports(51820, 443);
+    pb_pad(4); /* the len/checksum a real tcphdr carries here; parser.c never reads them */
+    pb_quic_form(0x40); /* would set MARLIN_CTX_F_QUIC on UDP; proto is TCP */
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
+}
+
+/* A non-first fragment carries no L4 header on the wire, so the QUIC
+ * classifier must not run -- mctx.flags must equal MARLIN_CTX_F_FRAG
+ * exactly, not MARLIN_CTX_F_FRAG with the QUIC bit also set.
+ */
+MARLIN_TEST(parse_quic_non_first_fragment_udp_no_flag)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0x0040 /* offset, MF clear: not-first, last fragment */, V4_SRC, V4_DST);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(MARLIN_CTX_F_FRAG, mctx.flags);
+}
+
+/* An ICMP error's embedded header carries at most 8 bytes of L4
+ * (marlin_l4_ports) and never a CID -- marlin_parse_icmp() has no call site
+ * for marlin_parse_quic() at all, so the flag must stay clear even when a
+ * QUIC-shaped byte follows the embedded ports word.
+ */
+MARLIN_TEST(parse_quic_icmpv4_embedded_udp_no_flag)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_ICMP, 5, 0, V4_DST, V4_SRC);
+    pb_icmp(ICMP_DEST_UNREACH, 0);
+    pb_ipv4(IPPROTO_UDP, 5, 0, EMB4_SRC, EMB4_DST);
+    pb_ports(51000, 53);
+    pb_quic_form(0x40); /* one byte past the embedded ports word */
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
+}
+
+/* The form byte is read off l4_off after the IPv6 extension-header walk,
+ * not a fixed ethernet+ipv4 offset -- l4_off=62 matches the sibling TCP
+ * case at parse_ipv6_one_hopopts_hdrlen_zero_l4_off.
+ */
+MARLIN_TEST(parse_quic_ipv6_hopopts_flag_set_off_walked_l4_off)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    pb_ipv6(IPPROTO_HOPOPTS, SRC6, DST6);
+    pb_ext6(IPPROTO_UDP, 0);
+    pb_udp(51820, 443, 9);
+    pb_quic_form(0x40);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(62, mctx.l4_off);
+    CHECK_EQ(MARLIN_CTX_F_QUIC, mctx.flags & MARLIN_CTX_F_QUIC);
+}
+
+/* The parser's outward behaviour is unchanged by this payload: rc and the
+ * tuple are identical whether or not a QUIC-shaped byte follows the UDP
+ * header, and mctx.flags differs from the no-payload case by exactly
+ * MARLIN_CTX_F_QUIC. Nothing downstream reads the new bit yet
+ * (docs/design/30-quic.md); this is what "inert" means for this commit.
+ */
+MARLIN_TEST(parse_quic_payload_does_not_change_tuple_or_rc)
+{
+    struct xdp_md md;
+    struct marlin_ctx plain;
+    struct marlin_ctx quic;
+    int rc_plain;
+    int rc_quic;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+    pb_udp(51820, 443, 8);
+    pb_xdp(&md);
+    mctx_init(&plain);
+    rc_plain = marlin_parse(&md, &plain);
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+    pb_udp(51820, 443, 9);
+    pb_quic_form(0x40);
+    pb_xdp(&md);
+    mctx_init(&quic);
+    rc_quic = marlin_parse(&md, &quic);
+
+    CHECK_RET(rc_plain, rc_quic);
+    CHECK_MEM(&plain.tuple, &quic.tuple, sizeof(plain.tuple));
+    CHECK_EQ(MARLIN_CTX_F_QUIC, quic.flags ^ plain.flags);
+}
+
 int main(void)
 {
     return marlin_tests_main();

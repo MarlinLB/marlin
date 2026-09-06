@@ -201,6 +201,12 @@ hashed, and both halves are dropped rather than stranding reassembly state on th
 |---|---|
 | TCP VIPs, where PMTUD and MSS clamping mean traffic does not fragment in practice | Any VIP carrying UDP datagrams that can exceed the path MTU — DNS over UDP with large responses, QUIC without correct PMTUD, tunnelled or media protocols |
 
+**On a `VIP_QUIC` VIP, `VIP_HASH_5TUPLE` costs more than the fragment table above says.** The
+address-only default already survives a NAT port rebind, which is most of what makes a QUIC
+client's tuple change; the 5-tuple hash does not, so every rebind becomes a reset. `VIP_QUIC`
+steering (§1.7.2) handles genuine address migration on its own and gets nothing from a wider
+hash input. Leave `VIP_HASH_5TUPLE` clear on any VIP carrying QUIC traffic.
+
 **Nothing validates this.** Whether a VIP's traffic fragments is not visible in the
 configuration, so no check rejects the flag on the wrong VIP
 (`docs/design/20-configuration-validation.md`). After setting it, watch `frag_unsupported`: any
@@ -209,6 +215,33 @@ to clear it. Set it on one VIP at a time for that reason.
 
 Clearing the flag again moves every client on the VIP to a new row, so it is as disruptive as a
 reseed — treat both directions as a reconfiguration, not a tuning knob to toggle.
+
+### 1.7.2 `VIP_QUIC` — the backend contract
+
+`VIP_QUIC` (`docs/design/08-types.md`, `docs/design/30-quic.md`) steers a short-header QUIC
+packet by decoding a `backend_id` the *backend* embedded in the connection ID it issued — an
+address migration keeps the same connection ID, so it keeps the same backend, where the hash
+path would rehash it onto a different one.
+
+**What the backend must do.** Its QUIC server must run a library that exposes custom
+connection-ID generation and configure it to encode the `backend_id` this instance assigns that
+backend, using the connection-ID length and encoding `docs/design/30-quic.md` specifies. mvfst
+(Meta's QUIC implementation) ships exactly this hook by default, generating Katran-compatible
+connection IDs; other widely used implementations — quiche, msquic, quic-go — expose a
+comparable connection-ID-generation callback, but verify the exact mechanism against the
+library in use before relying on it.
+
+**A backend that does not cooperate is not a configuration error.** Marlin cannot tell a
+non-conforming connection ID from a conforming one that fails the check field
+(`docs/design/30-quic.md`), so an unconfigured backend's connections simply take the hash path,
+silently, exactly as they would with `VIP_QUIC` unset. Enable it per backend as each is
+configured, not as a fleet-wide switch.
+
+**Rollout order matters.** Assign `backend_id` and distribute it, `hash_key` and the
+connection-ID length to a backend's QUIC server *before* setting `VIP_QUIC` on the VIP — the
+flag has no effect on a backend not yet configured, but a mismatched `hash_key` or length on one
+that *is* configured routes deterministically to the wrong backend rather than merely missing
+the migration case (`docs/design/21-active-active.md`).
 
 ### 1.8 Routing state
 
@@ -438,7 +471,7 @@ Two operational consequences worth knowing before you provision rather than afte
 - **A backend is up or down.** There is no drain. Rows pointing at a backend marked down drop
   (`backend_down`); they are not migrated. Marking a backend down or back up changes no forwarding
   table rows and disrupts nothing else.
-- **`mode`, `addr`, `encap_dport`, `vni` and `inner_mac` cannot be edited in place.** Changing any
+- **The mode bits of `flags`, and `addr`, `encap_dport`, `vni` and `inner_mac`, cannot be edited in place.** Changing any
   of them means removing the backend and adding it under a new identifier. Removal costs only that backend's own
   connections, but the addition half resets approximately `1/(N+1)` of established connections **on
   healthy backends** — about 1.3% at 75 backends. Adding a backend to a live VIP costs the same.

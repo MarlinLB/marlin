@@ -25,6 +25,7 @@ _Static_assert(sizeof(struct packet_tuple) == 40, "packet_tuple must stay 40 byt
 #define MARLIN_CTX_F_ICMP       (1U << 0) /* tuple came from an embedded header */
 #define MARLIN_CTX_F_FRAG       (1U << 1) /* non-first fragment: no L4 ports */
 #define MARLIN_CTX_F_FRAG_FIRST (1U << 2) /* first fragment: ports present, more follow */
+#define MARLIN_CTX_F_QUIC       (1U << 3) /* UDP payload opens with a QUIC short header (RFC 8999) */
 #define MARLIN_CTX_F_FRAG_ANY   (MARLIN_CTX_F_FRAG | MARLIN_CTX_F_FRAG_FIRST)
 
 struct marlin_ctx {            /* 104 bytes */

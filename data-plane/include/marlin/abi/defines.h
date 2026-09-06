@@ -61,9 +61,20 @@
 /* vip_meta.flags */
 #define VIP_RATELIMIT                  (1U << 1)
 #define VIP_HASH_5TUPLE                (1U << 2)
+#define VIP_QUIC                       (1U << 3)
 
 #define VIP_HASH_5TUPLE_BIT            2
-#define VIP_FLAGS_RESERVED             (~(__u32)(VIP_RATELIMIT | VIP_HASH_5TUPLE))
+#define VIP_QUIC_BIT                   3
+
+/* Connection-ID length for VIP_QUIC's short-header decode: 7-20 inclusive,
+ * 0 = unset (docs/design/30-quic.md). RFC 8999 SS4.2: a short header's DCID
+ * length is not on the wire, so it must come from configuration.
+ */
+#define VIP_QUIC_CID_LEN_SHIFT         8
+#define VIP_QUIC_CID_LEN_MASK          ((__u32)0x1f << VIP_QUIC_CID_LEN_SHIFT)
+#define VIP_QUIC_CID_LEN(f)            (((f) & VIP_QUIC_CID_LEN_MASK) >> VIP_QUIC_CID_LEN_SHIFT)
+
+#define VIP_FLAGS_RESERVED             (~(__u32)(VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK))
 
 /*
  * Rate limiting
@@ -107,7 +118,10 @@ _Static_assert((MARLIN_BE_F_RESERVED &
                 (MARLIN_BE_ENCAP_MODE_MASK | MARLIN_BE_F_STATE | MARLIN_BE_F_ENCAP_REQUIRED | MARLIN_BE_F_FIB)) == 0,
                "flags reserved bits overlap an assigned bit");
 
-_Static_assert((VIP_FLAGS_RESERVED & (VIP_RATELIMIT | VIP_HASH_5TUPLE)) == 0, "vip_meta.flags reserved mask overlaps an assigned bit");
+_Static_assert((VIP_FLAGS_RESERVED & (VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK)) == 0,
+               "vip_meta.flags reserved mask overlaps an assigned bit");
+_Static_assert((20U << VIP_QUIC_CID_LEN_SHIFT) <= VIP_QUIC_CID_LEN_MASK,
+               "the QUIC CID length field must hold values up to 20 (RFC 9000 SS17.2)");
 /* The four acl_lists bits must fit below the reserved range. */
 _Static_assert((ACL_LISTS_BIT(ACL_LIST_BLOCK, ACL_FAMILY_V6) & ACL_LISTS_RESERVED) == 0,
                "acl_lists bit encoding overflows into the reserved bits");

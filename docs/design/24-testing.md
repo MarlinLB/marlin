@@ -37,6 +37,27 @@ pointer invalidation bites.
   one — the assertion behind `docs/design/10-map-invariants.md`'s zeroing rule for a struct that
   is hashed whole rather than used as a map key.
 
+**`VIP_QUIC` steers a flagged short-header packet by connection ID instead of the hash, once
+`balancer.c` exists** (`docs/design/30-quic.md`). `parser.c`'s classification is native-unit-tested
+today (`data-plane/tests/parser_test.c`); the assertions below are packet-level and register as
+`MARLIN_SKIP` placeholders (`docs/PHASES.md`) until the steering step lands:
+
+- Two packets with the same connection ID and different source addresses select the same
+  backend — the migration assertion, and the whole point of the feature.
+- The same two packets on a VIP without `VIP_QUIC` select by hash and may therefore differ —
+  proving the flag is what does it.
+- A connection ID whose check field fails, or whose decoded `backend_id` is 0, `>= MAX_BACKENDS`,
+  or not `MARLIN_UP`, falls through to the hash path and counts — never an out-of-bounds
+  `backends[]` read.
+- A non-QUIC UDP packet and a long-header QUIC packet on a `VIP_QUIC` VIP both route by hash,
+  unchanged.
+- An ICMP error on a `VIP_QUIC` VIP routes by hash: an embedded header carries at most 8 bytes of
+  L4 (`data-plane/include/marlin/proto.h`) and never a connection ID. A known gap, asserted
+  rather than fixed.
+- A fragmented UDP datagram on a `VIP_QUIC` VIP routes by hash. QUIC's 1200-byte floor and
+  DPLPMTUD keep it unfragmented in practice (`docs/design/23-mtu.md`), but the path must be
+  explicit.
+
 **The `NO_NEIGH` fallback fires only on its exact conditions.** Five cases against one flagged
 L2 DSR backend with a stored MAC and no neighbour entry: on-link route, FIB returns the ingress
 interface → emit on the stored MAC, count `neigh_fallback`; on-link but FIB returns another
