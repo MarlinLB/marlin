@@ -80,11 +80,6 @@ enum marlin_ret {
     MARLIN_COUNT_RL_CAS_EXHAUSTED,
 
     MARLIN_DROP_FRAG_UNSUPPORTED,
-
-    /* a packet this build does not forward, passed to the local stack:
-     * a non-IP EtherType, and in Phase 1 also IPv6 and any protocol
-     * other than TCP or UDP
-     */
     MARLIN_PASS_NOT_FORWARDED,
 
     MARLIN_RET_MAX

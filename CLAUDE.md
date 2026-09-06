@@ -47,7 +47,7 @@ control plane is C#/.NET 10. Design is settled and pre-implementation.
 - `types.h` is ABI. The C# mirror is hand-written and nothing checks that the two agree, so a
   divergence is silent memory corruption. Change both in the same commit.
 - `enum marlin_ret` values are `drop_stats` indices from first release. Append, never reorder.
-- The BPF stack is 512 bytes **combined across the whole call chain**. `marlin_ctx` is 92.
+- The BPF stack is 512 bytes **combined across the whole call chain**. `marlin_ctx` is 104.
 - Never hold a packet pointer across a `marlin_*` call, and re-read `data`/`data_end` after
   every `bpf_xdp_adjust_head()`.
 - Every source file is tab-indented while `.clang-format` and `.editorconfig` mandate spaces.

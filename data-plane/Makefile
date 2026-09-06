@@ -90,8 +90,7 @@ format:
 
 .PHONY: tidy
 tidy:
-	$(MAKE) check-toolchain
-	$(MAKE) $(COMPILE_COMMANDS)
+	@$(MAKE) $(COMPILE_COMMANDS)
 	@$(CLANG_TIDY) --config-file=$(MARLIN_REPO_ROOT)/.clang-tidy -p $(BUILD_DIR) $(SRCS)
 
 .PHONY: clean

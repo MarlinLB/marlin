@@ -41,12 +41,16 @@
 # emitted frames byte-for-byte and so backend.mac can be configured by hand.
 #
 # Usage:  sudo ./l2dsr_wsl.sh up | attach | reload | detach | status | down
+#                            | test_icmp_echo | test_http_get
 #
-#   up      build the topology (does not attach the program)
-#   attach  load marlin.bpf.o, pin it, attach to ${MARLIN_IF}
-#   reload  after a rebuild: detach, unpin, load the new object, attach
-#   detach  detach and remove the pins; the topology stays up
-#   down    tear the topology down (implies detach)
+#   up              build the topology (does not attach the program)
+#   attach          load marlin.bpf.o, pin it, attach to ${MARLIN_IF}
+#   reload          after a rebuild: detach, unpin, load the new object, attach
+#   detach          detach and remove the pins; the topology stays up
+#   down            tear the topology down (implies detach)
+#   test_icmp_echo  ping the VIP from the client namespace
+#   test_http_get   GET the VIP from the client namespace, against a throwaway
+#                   listener started in the backend namespace
 #
 # Overridable: MARLIN_OBJ, MARLIN_PINDIR, XDP_MODE, BPFTOOL.
 #
@@ -71,6 +75,8 @@ BR=ml2br
 NS_CLI=ml2cli
 NS_BE=ml2be
 NS_ALL=("${NS_CLI}" "${NS_BE}")
+
+HTTP_PORT=80                 # test_http_get; the VIP carries no port of its own
 
 # Root-namespace devices this script owns. down() deletes exactly these.
 ROOT_DEVS=("${MARLIN_IF}" "${MARLIN_BR}" "${CLI_BR}" "${BE_BR}" "${BR}")
@@ -257,8 +263,9 @@ Attach — ${XDP_MODE}, because WSL2 veth has no native XDP:
 
 Drive it:
 
-  ip netns exec ${NS_CLI} ping -c1 ${VIP}
-  ip netns exec ${NS_CLI} curl -sS --max-time 2 http://${VIP}/
+  sudo $0 test_icmp_echo  # ip netns exec ${NS_CLI} ping -c1 ${VIP}
+  sudo $0 test_http_get   # ip netns exec ${NS_CLI} curl -sS --max-time 2 http://${VIP}/
+                          # ...against python3 -m http.server in ns ${NS_BE}
 
 Watch it:
 
@@ -414,13 +421,144 @@ reload() {
 }
 
 # ---------------------------------------------------------------------------
+# Traffic
+# ---------------------------------------------------------------------------
+#
+# Generators, not assertions. Each runs one client-side command and reports
+# which drop_stats counters moved while it ran; the exit status is the
+# command's own.
+
+# Names for the counters, read from the header at run time rather than copied
+# here. The enumerators are drop_stats indices from first release (CLAUDE.md),
+# and a second hand-written mirror would drift with nothing to catch it.
+RET_HDR="${SCRIPT_DIR}/../include/marlin/marlin.h"
+
+# Emits "index name" per counted enumerator. The running counter is not just the
+# line number: MARLIN_OK carries an explicit "= 0" (marlin.h), and any later
+# enumerator may too, so an explicit value resets the count rather than being
+# ignored.
+ret_names() {
+	[[ -f ${RET_HDR} ]] || return 0
+	sed -n '/^enum marlin_ret {/,/^};/p' "${RET_HDR}" | awk '
+		BEGIN { n = 0 }
+		{ sub(/\/\*.*/, "") }
+		match($0, /MARLIN_[A-Z0-9_]+/) {
+			name = substr($0, RSTART, RLENGTH)
+			if(name == "MARLIN_RET_MAX") next
+			if(match($0, /=[[:space:]]*[0-9]+/))
+				n = substr($0, RSTART + 1, RLENGTH - 1) + 0
+			print n, name
+			n++
+		}'
+}
+
+# drop_stats is a per-CPU array of __u64 keyed by enum marlin_ret, so a reading
+# is the per-CPU values summed per index. The JSON form is what stays stable:
+# bpftool's plain-text layout for per-CPU maps has moved between releases. A
+# value comes back as a number when the object carries BTF and as a
+# little-endian byte array when it does not; num() takes either.
+stats_read() {
+	[[ -e ${PINDIR}/drop_stats ]] || return 1
+	"${BPFTOOL}" -j map dump pinned "${PINDIR}/drop_stats" 2>/dev/null | python3 -c '
+import json, sys
+
+def num(v):
+    if isinstance(v, list):
+        return int("".join(b[2:] for b in reversed(v)), 16)
+    return int(v)
+
+for e in json.load(sys.stdin):
+    print(num(e["key"]), sum(num(v["value"]) for v in e.get("values", [e])))
+'
+}
+
+STATS_BEFORE=
+
+stats_snapshot() {
+	STATS_BEFORE=$(stats_read || true)
+}
+
+stats_report() {
+	local after moved=0 i b a n
+	if [[ -z ${STATS_BEFORE} ]]; then
+		echo "drop_stats unreadable -- no pins under ${PINDIR} (run '$0 attach'), or no python3"
+		return 0
+	fi
+	after=$(stats_read || true)
+	local -A before=() name=()
+	# if/then rather than an && list, for the reason in detach() above.
+	while read -r i n; do if [[ -n ${i} ]]; then name[${i}]=${n}; fi; done < <(ret_names)
+	while read -r i b; do if [[ -n ${i} ]]; then before[${i}]=${b}; fi; done <<<"${STATS_BEFORE}"
+	echo "drop_stats:"
+	while read -r i a; do
+		[[ -n ${i} ]] || continue
+		b=${before[${i}]:-0}
+		(( a > b )) || continue
+		moved=1
+		printf '  %-32s +%s\n' "${name[${i}]:-index ${i}}" "$(( a - b ))"
+	done <<<"${after}"
+	(( moved )) || echo "  nothing moved"
+}
+
+test_icmp_echo() {
+	need_root
+	rig_up_or_die
+	stats_snapshot
+	local rc=0
+	# -W bounds the wait. Nothing answers the VIP until the datapath forwards,
+	# and ping's default linger makes that look like a hang rather than a miss.
+	nsx "${NS_CLI}" ping -c1 -W2 "${VIP}" || rc=$?
+	echo
+	stats_report
+	return "${rc}"
+}
+
+# python3 -m http.server because it needs no configuration and is already the
+# dependency stats_read() carries. Nothing here depends on what it serves, only
+# that something completes the handshake from the backend namespace.
+test_http_get() {
+	need_root
+	rig_up_or_die
+	command -v python3 >/dev/null 2>&1 || {
+		echo "python3 not found -- needed for the throwaway backend listener" >&2
+		exit 1
+	}
+
+	local pid rc=0
+	nsx "${NS_BE}" python3 -m http.server "${HTTP_PORT}" >/dev/null 2>&1 &
+	pid=$!
+	# The kill has to survive a failing curl, a ^C and set -e alike: a listener
+	# that outlives the script holds the port and the next run cannot bind.
+	trap 'kill "${pid}" 2>/dev/null || true' EXIT
+	sleep 0.3
+	kill -0 "${pid}" 2>/dev/null || {
+		echo "listener failed to start in ns ${NS_BE} (port ${HTTP_PORT} busy?)" >&2
+		exit 1
+	}
+
+	stats_snapshot
+	nsx "${NS_CLI}" curl -sS --max-time 2 "http://${VIP}/" || rc=$?
+	echo
+	stats_report
+
+	kill "${pid}" 2>/dev/null || true
+	trap - EXIT
+	return "${rc}"
+}
+
+# ---------------------------------------------------------------------------
 
 case "${1:-}" in
-	up)     up ;;
-	attach) attach ;;
-	detach) detach ;;
-	reload) reload ;;
-	status) status ;;
-	down)   down ;;
-	*)      echo "usage: $0 {up|attach|reload|detach|status|down}" >&2; exit 2 ;;
+	up)             up ;;
+	attach)         attach ;;
+	detach)         detach ;;
+	reload)         reload ;;
+	status)         status ;;
+	down)           down ;;
+	test_icmp_echo) test_icmp_echo ;;
+	test_http_get)  test_http_get ;;
+	*)
+		echo "usage: $0 {up|attach|reload|detach|status|down|test_icmp_echo|test_http_get}" >&2
+		exit 2
+		;;
 esac

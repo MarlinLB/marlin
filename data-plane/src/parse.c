@@ -10,19 +10,22 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/in.h>
-#include <linux/in6.h>
 #include <linux/icmpv6.h>
-#include <linux/tcp.h>
-#include <linux/udp.h>
+
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
 #include <marlin/abi/types.h>
-#include <marlin/compiler.h>
 #include <marlin/proto.h>
 #include <marlin/parse.h>
 
-#define MARLIN_L3_OFF_ETH ((__u16)ETH_HLEN)
+#define MARLIN_L3_OFF_ETH        ((__u16)ETH_HLEN)
+
+/* RFC 8200 §4.1 permits at most a hop-by-hop header ahead of the fragment
+ * header, and a router copies the offending packet verbatim; a chain longer
+ * than that in an embedded header is not a datagram Marlin forwarded.
+ */
+#define MARLIN_ICMP_EMB_EXT_HDRS 2
 
 /*
  * Not crossing a translation unit, so this stays local rather than in
@@ -258,7 +261,7 @@ static __always_inline int marlin_parse_icmp(const void *data, const void *data_
         return MARLIN_DROP_ICMP_UNPARSEABLE;
     }
 
-    rc = marlin_parse_l3(data, data_end, l4_off + sizeof(*icmp), family, 0, emb);
+    rc = marlin_parse_l3(data, data_end, l4_off + sizeof(*icmp), family, MARLIN_ICMP_EMB_EXT_HDRS, emb);
 
     if(rc != MARLIN_OK) {
         return MARLIN_DROP_ICMP_UNPARSEABLE;

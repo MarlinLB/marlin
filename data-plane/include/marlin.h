@@ -11,4 +11,3 @@
 #include <marlin/compiler.h>
 #include <marlin/marlin.h>
 #include <marlin/abi/types.h>
-

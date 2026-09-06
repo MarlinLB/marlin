@@ -161,7 +161,7 @@ revisable once a control plane has recorded a counter or read a struct in the fi
 | Decision | Where | Question |
 |---|---|---|
 | D4 | `types.h:203` | `backend.mac` straddles the 8-byte boundary at bytes 4-9. `docs/design/17-reconfiguration.md` calls `mac` immutable; `docs/design/15-nexthop-l2dsr.md` and `docs/design/19-control-plane.md` refresh it from neighbour events. If it is mutable, a torn read yields four bytes of the new MAC and two of the old. Field order is `docs/design/08-types.md`'s as written, pending this. |
-| D6 | `marlin.h:147` | `MAP_BOUNDS`, `NO_TX_PORT`, `ENCAP_LENGTH`, `FIB_UNSPEC` and the counted ICMP echo pass are in `enum marlin_ret` but not in `docs/design/22-observability.md`'s enumerated list of 23 reasons. |
+| D6 | `marlin.h:44` | `MAP_BOUNDS`, `NO_TX_PORT`, `ENCAP_LENGTH`, `FIB_UNSPEC`, `NOT_FORWARDED`, `FRAG_UNSUPPORTED` and the counted ICMP echo pass are in `enum marlin_ret` but not in `docs/design/22-observability.md`'s enumerated list of 23 reasons. |
 
 ### Deliverables
 
@@ -366,7 +366,7 @@ section it affects, not in a document of its own.
 | C# map access: `libbpf` P/Invoke or direct `bpf(2)` | Phase 1, "Control plane" above | 1 |
 | Indentation: `.clang-format`/`.editorconfig` say spaces, every source uses tabs | `.clang-format`/`.editorconfig` | 1 |
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
-| D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:147` | 2a |
+| D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
 | `BPF_FIB_LOOKUP_DIRECT` has no configuration surface | `nexthop.c:206` | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |

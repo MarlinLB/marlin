@@ -40,16 +40,18 @@ static __always_inline int marlin_action(int rc)
 
     case MARLIN_OK_REDIRECT:
         return XDP_REDIRECT;
-        
+
     default:
         return XDP_DROP;
     }
 }
 
 SEC("xdp")
+
 int xdp_main(struct xdp_md *ctx)
 {
     struct marlin_ctx mctx;
+    __u8 *origin_ip;
     int rc;
 
     __builtin_memset(&mctx, 0, sizeof(mctx));
@@ -68,7 +70,10 @@ int xdp_main(struct xdp_md *ctx)
         return marlin_action(rc);
     }
 
-    bpf_printk("Processing packet, size=%u origin ip=%u\n", mctx.pkt_len, 0);
+    origin_ip = (__u8 *)&mctx.tuple.src[0];
+
+    bpf_printk("Processing packet, size=%u origin ip=%u.%u.%u.%u\n", mctx.pkt_len, origin_ip[0], origin_ip[1], origin_ip[2],
+               origin_ip[3]);
 
     return XDP_PASS;
 }
