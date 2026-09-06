@@ -9,6 +9,8 @@
 
 #include <marlin.h>
 #include <marlin/maps.h>
+#include <marlin/parse.h>
+#include <marlin/stats.h>
 
 static __always_inline int xdp_load_config(struct marlin_ctx *ctx)
 {
@@ -25,12 +27,26 @@ static __always_inline int xdp_load_config(struct marlin_ctx *ctx)
     return MARLIN_OK;
 }
 
-SEC("xdp")
+static __always_inline int marlin_action(int rc)
+{
+    switch(rc) {
+    case MARLIN_PASS_VIP_MISS:
+    case MARLIN_PASS_ICMP_ECHO:
+    case MARLIN_PASS_NOT_FORWARDED:
+        return XDP_PASS;
+    case MARLIN_OK_TX:
+        return XDP_TX;
+    case MARLIN_OK_REDIRECT:
+        return XDP_REDIRECT;
+    default:
+        return XDP_DROP;
+    }
+}
 
+SEC("xdp")
 int xdp_main(struct xdp_md *ctx)
 {
     struct marlin_ctx mctx;
-    __u32 packet_size;
     int rc;
 
     __builtin_memset(&mctx, 0, sizeof(mctx));
@@ -41,8 +57,12 @@ int xdp_main(struct xdp_md *ctx)
         return XDP_ABORTED;
     }
 
-    packet_size = ctx->data_end - ctx->data;
-    bpf_printk("Packet received: size=%u\n", packet_size);
+    rc = marlin_parse(ctx, &mctx);
+    marlin_count(rc);
+
+    if(rc != MARLIN_OK) {
+        return marlin_action(rc);
+    }
 
     return XDP_PASS;
 }

@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <linux/types.h>
+#include <linux/bpf.h>
 
 #include <marlin/marlin.h>
 
