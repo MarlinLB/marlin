@@ -31,7 +31,9 @@ Checks: >
   -cert-dcl51-cpp,
   -misc-include-cleaner,
   -misc-no-recursion,
-  -readability-avoid-nested-conditional-operator
+  -readability-avoid-nested-conditional-operator,
+  -readability-magic-numbers,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
 
 # Rationale for each exclusion above (kept out of the block so the list stays
 # machine-editable):
@@ -55,6 +57,17 @@ Checks: >
 #       Redundant: the eBPF verifier rejects recursion at load time, and the
 #       check misfires on __always_inline helper chains.
 #
+#   readability-magic-numbers
+#       Not wanted. Packet-processing code is full of legitimate numeric
+#       literals (offsets, header lengths, protocol constants) and the check
+#       produces noise without a corresponding correctness benefit here.
+#
+#   clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+#       Flags __builtin_memset/__builtin_memcpy and recommends the Annex K
+#       _s variants (memset_s, memcpy_s). Those don't exist in this
+#       freestanding eBPF environment — no libc, no Annex K — so the check
+#       has no actionable fix here.
+#
 # readability-identifier-length stays ENABLED but is retuned via the
 # Minimum*NameLength options below, so the established 2-3 char names
 # (rc, ctx, pkt, dec) pass while single letters outside loops do not.
@@ -65,7 +78,8 @@ WarningsAsErrors: >
   bugprone-*,
   clang-analyzer-*,
   -bugprone-easily-swappable-parameters,
-  -bugprone-reserved-identifier
+  -bugprone-reserved-identifier,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
 
 # Analyse only our own headers (include/marlin.h, include/marlin/**/*.h);
 # everything else — libbpf/kernel UAPI headers pulled in from the system
@@ -105,14 +119,6 @@ CheckOptions:
   readability-identifier-length.MinimumLoopCounterNameLength: 1
   readability-identifier-length.IgnoredVariableNames: '^(rc|fd|id|nh|sk|ip)$'
   readability-identifier-length.IgnoredParameterNames: '^(rc|fd|id|nh|sk|ip)$'
-
-  # --- Magic numbers (strict: only 0 and 1 are free) -------------------------
-  # Intentionally flags things like `case 2:` and `__u8 smac[6]` so they become
-  # named constants / ETH_ALEN.
-  readability-magic-numbers.IgnoredIntegerValues: '0;1;'
-  readability-magic-numbers.IgnoreAllFloatingPointValues: true
-  readability-magic-numbers.IgnorePowersOf2IntegerValues: false
-  readability-magic-numbers.IgnoreBitFieldsWidths: true
 
   # --- Complexity budgets (XDP fast path must stay verifier-friendly) --------
   readability-function-cognitive-complexity.Threshold: 25

@@ -36,7 +36,7 @@ struct backend { /* 32 bytes */
     __u32 egress_ifindex;
     __u32 vni;
     __u8 inner_mac[6];
-    __u8 pad[2];
+    __u8 pad_end[2];
 };
 
 struct stats {

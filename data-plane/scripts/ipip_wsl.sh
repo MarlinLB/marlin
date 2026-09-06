@@ -53,7 +53,15 @@
 # MACs are pinned (02:00:00:00:02:xx, locally administered) so tests can assert
 # emitted frames byte-for-byte.
 #
-# Usage:  sudo ./ipip_wsl.sh up | status | down
+# Usage:  sudo ./ipip_wsl.sh up | attach | reload | detach | status | down
+#
+#   up      build the topology (does not attach the program)
+#   attach  load marlin.bpf.o, pin it, attach to ${MARLIN_IF}
+#   reload  after a rebuild: detach, unpin, load the new object, attach
+#   detach  detach and remove the pins; the topology stays up
+#   down    tear the topology down (implies detach)
+#
+# Overridable: MARLIN_OBJ, MARLIN_PINDIR, XDP_MODE, BPFTOOL.
 #
 set -euo pipefail
 
@@ -87,6 +95,32 @@ NS_ALL=("${NS_RT}" "${NS_BE}" "${NS_CLI}")
 # last two normally die with their namespaces; they are listed so that a run of
 # up() that failed between creating a veth and moving it still cleans up.
 ROOT_DEVS=("${MARLIN_IF}" "${BE_IF}" "${CLI_IF}")
+
+# --- the BPF object, its pins, and the attach mode --------------------------
+#
+# Resolved from the script's own location, so the verbs work from any cwd. The
+# build writes to data-plane/build/ (data-plane/Makefile: BUILD_DIR := build).
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+OBJ="${MARLIN_OBJ:-${SCRIPT_DIR}/../build/marlin.bpf.o}"
+
+# Per-rig pin directory, not the /sys/fs/bpf/marlin default. This script's whole
+# premise is that its namespaces, devices, MACs and VIP are disjoint from the
+# other two rigs' so all three can be up at once; a shared pin directory would
+# break that on the first detach. DEPLOYMENT.md:62 makes the path a default
+# rather than an invariant, so this is in bounds.
+PINDIR="${MARLIN_PINDIR:-/sys/fs/bpf/mlipip}"
+
+# bpftool pins each program under its C function name, not its section name --
+# SEC("xdp") int xdp_main() pins as xdp_main (data-plane/src/main.c).
+PROG=xdp_main
+
+# xdpgeneric for the reason in this file's header. Overridable so the rig can be
+# pointed at a native attach on a kernel that has one; it will fail loudly there
+# rather than degrade, which is the behaviour docs/design/02-architecture.md:31
+# wants.
+XDP_MODE="${XDP_MODE:-xdpgeneric}"
+BPFFS=/sys/fs/bpf
+BPFTOOL="${BPFTOOL:-bpftool}"
 
 # The underlay carries the 20-byte outer header. docs/design/23-mtu.md's strategy
 # is jumbo frames on the Marlin->backend path; the client link stays at 1500 and
@@ -283,12 +317,11 @@ Values this rig implies for the maps:
   backend.mac                  unused — MAC swap, not a stored MAC
                                (docs/design/15-nexthop-l2dsr.md)
 
-Attach — xdpgeneric, because WSL2 veth has no native XDP:
+Attach — ${XDP_MODE}, because WSL2 veth has no native XDP:
 
-  mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
-  mkdir -p /sys/fs/bpf/marlin
-  bpftool prog loadall data-plane/marlin.bpf.o /sys/fs/bpf/marlin pinmaps /sys/fs/bpf/marlin
-  bpftool net attach xdpgeneric pinned /sys/fs/bpf/marlin/xdp_marlin dev ${MARLIN_IF}
+  sudo $0 attach          # load ${OBJ##*/}, pin under ${PINDIR}, attach
+  sudo $0 reload          # after a rebuild: detach, unpin, load, attach
+  sudo $0 detach          # detach and unpin; rig stays up
 
 Drive it:
 
@@ -300,12 +333,8 @@ Watch it, in path order:
   ip netns exec ${NS_RT} tcpdump -nei ${RT_A}            # in from client, back out encapsulated
   ip netns exec ${NS_BE} tcpdump -nei ${BE_IF} 'proto 4' # outer ${MARLIN_IP} -> ${BE_IP}
   ip netns exec ${NS_BE} tcpdump -nei ipip0              # after decapsulation, VIP intact
-  ip link show ${MARLIN_IF}                              # expect "xdpgeneric"
+  ip -d link show ${MARLIN_IF} | grep prog/xdp           # expect "${XDP_MODE}"
   bpftool map dump name drop_stats
-
-Detach, without tearing the rig down:
-
-  bpftool net detach xdpgeneric dev ${MARLIN_IF}
 EOF
 }
 
@@ -316,6 +345,14 @@ status() {
 	echo "== root ns =="
 	ip -br addr show "${MARLIN_IF}" 2>/dev/null || true
 	ip -d link show "${MARLIN_IF}" | sed -n '2,3p'
+	echo "== xdp =="
+	if xdp_attached; then
+		ip -d link show dev "${MARLIN_IF}" | grep 'prog/xdp'
+		echo "pins: ${PINDIR}"
+		find "${PINDIR}" -mindepth 1 -maxdepth 1 -printf '  %f\n' 2>/dev/null || true
+	else
+		echo "  no program attached to ${MARLIN_IF} (run '$0 attach')"
+	fi
 	for ns in "${NS_ALL[@]}"; do
 		echo "== ns ${ns} =="
 		ip netns exec "${ns}" ip -br addr
@@ -326,8 +363,7 @@ status() {
 
 # Idempotent: safe to run when nothing exists. up() calls it first.
 down_quiet() {
-	ip link set dev "${MARLIN_IF}" xdpgeneric off 2>/dev/null || true
-	ip link set dev "${MARLIN_IF}" xdp off 2>/dev/null || true
+	detach_quiet
 	for ns in "${NS_ALL[@]}"; do ip netns del "${ns}" 2>/dev/null || true; done
 	for d in "${ROOT_DEVS[@]}"; do ip link del "${d}" 2>/dev/null || true; done
 }
@@ -339,10 +375,123 @@ down() {
 }
 
 # ---------------------------------------------------------------------------
+# attach / detach / reload
+# ---------------------------------------------------------------------------
+
+ensure_bpffs() {
+	mountpoint -q "${BPFFS}" && return 0
+	mount -t bpf bpf "${BPFFS}" 2>/dev/null && return 0
+	echo "cannot mount bpffs at ${BPFFS}" >&2
+	return 1
+}
+
+# `ip -d` prints "prog/xdp id N ..." for an attached program regardless of mode.
+# Plain `ip link show` prints "xdpgeneric/id:N", whose spelling has moved between
+# iproute2 releases; the -d form has not.
+xdp_attached() {
+	ip -d link show dev "${MARLIN_IF}" 2>/dev/null | grep -q 'prog/xdp'
+}
+
+rig_up_or_die() {
+	local ns
+	ip link show "${MARLIN_IF}" >/dev/null 2>&1 || {
+		echo "${MARLIN_IF} does not exist -- run '$0 up' first" >&2; exit 1; }
+	for ns in "${NS_ALL[@]}"; do
+		ip netns list | grep -qw "${ns}" || {
+			echo "rig is incomplete (missing ns ${ns}) -- run '$0 up' first" >&2; exit 1; }
+	done
+}
+
+# No output, no root check, no failure. down_quiet(), detach() and reload() all
+# funnel through here so there is one definition of "cleaned up".
+#
+# Every mode is cleared explicitly, and a bare `xdp off` is NOT a substitute for
+# the mode-specific forms. dev_xdp_mode() in net/core/dev.c resolves a request
+# carrying no mode flag to XDP_MODE_DRV on any device with ndo_bpf -- veth has
+# it -- so `xdp off` targets the driver slot, finds it empty, and returns
+# success without touching a generic-mode program. The next attach then fails
+# with EBUSY "XDP program already attached", pointing at the wrong thing.
+detach_quiet() {
+	ip link set dev "${MARLIN_IF}" xdpgeneric off 2>/dev/null || true
+	ip link set dev "${MARLIN_IF}" xdpdrv off 2>/dev/null || true
+	ip link set dev "${MARLIN_IF}" xdp off 2>/dev/null || true
+	rm -rf "${PINDIR}"
+}
+
+# The load-and-attach core, without the guards. attach() and reload() differ
+# only in what they tolerate finding already in place.
+do_attach() {
+	[[ -f ${OBJ} ]] || {
+		echo "no object at ${OBJ}" >&2
+		echo "build it:  make -C ${SCRIPT_DIR}/.." >&2
+		exit 1
+	}
+	ensure_bpffs || exit 1
+
+	# Assert the interface is clear rather than letting the attach fail with
+	# EBUSY. A detach that silently no-ops is the failure mode this catches --
+	# see detach_quiet() for why that is not hypothetical.
+	if xdp_attached; then
+		echo "${MARLIN_IF} still has a program attached after detach:" >&2
+		ip -d link show dev "${MARLIN_IF}" | grep 'prog/xdp' >&2 || true
+		echo "clear it by hand, e.g. 'ip link set dev ${MARLIN_IF} xdpgeneric off'" >&2
+		exit 1
+	fi
+
+	# PINDIR is this rig's alone, so clearing it cannot disturb another rig.
+	# Without this, loadall fails with EEXIST against pins a previous run left
+	# behind -- detached but never unpinned, or killed mid-run.
+	rm -rf "${PINDIR}"
+	mkdir -p "${PINDIR}"
+
+	"${BPFTOOL}" prog loadall "${OBJ}" "${PINDIR}" pinmaps "${PINDIR}"
+	"${BPFTOOL}" net attach "${XDP_MODE}" pinned "${PINDIR}/${PROG}" dev "${MARLIN_IF}"
+}
+
+attach() {
+	need_root
+	rig_up_or_die
+	if xdp_attached; then
+		echo "${MARLIN_IF} already has an XDP program attached." >&2
+		echo "use '$0 reload' to replace it, or '$0 detach' first." >&2
+		exit 1
+	fi
+	do_attach
+	echo "attached ${PROG} to ${MARLIN_IF} (${XDP_MODE}), pinned under ${PINDIR}"
+}
+
+detach() {
+	need_root
+	local was_attached=0
+	# if/then, not `xdp_attached && was_attached=1`: under `set -e` an && list
+	# whose left side fails is a trap worth not setting.
+	if xdp_attached; then was_attached=1; fi
+	detach_quiet
+	if [[ ${was_attached} -eq 1 ]]; then
+		echo "detached from ${MARLIN_IF}, pins under ${PINDIR} removed. Rig still up."
+	else
+		echo "nothing was attached to ${MARLIN_IF}; pins under ${PINDIR} removed anyway."
+	fi
+}
+
+# The rebuild loop. Unpinning is the point: the pins hold the *old* program, so
+# a bare re-attach would put the pre-rebuild object back on the interface.
+reload() {
+	need_root
+	rig_up_or_die
+	detach_quiet
+	do_attach
+	echo "reloaded ${PROG} onto ${MARLIN_IF} (${XDP_MODE}) from ${OBJ}"
+}
+
+# ---------------------------------------------------------------------------
 
 case "${1:-}" in
 	up)     up ;;
+	attach) attach ;;
+	detach) detach ;;
+	reload) reload ;;
 	status) status ;;
 	down)   down ;;
-	*)      echo "usage: $0 {up|status|down}" >&2; exit 2 ;;
+	*)      echo "usage: $0 {up|attach|reload|detach|status|down}" >&2; exit 2 ;;
 esac
