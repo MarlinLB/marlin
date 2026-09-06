@@ -33,6 +33,15 @@ control plane is C#/.NET 10. Design is settled and pre-implementation.
 - **Run an adversarial verification pass** over your own output before presenting it, for
   anything non-trivial.
 
+## Code comments
+
+- **File header:** one short paragraph at the top of the file, no more.
+- **No phase/plan narration in code** — no "In phase 2b: ...", "this part handles ...", or
+  similar. That belongs in `PHASES.md`, not the source.
+- **Comment only what isn't self-explanatory**, and then explain *why* the code exists (the
+  constraint, bug, or requirement behind it), not what it does — the code already says that.
+- When editing existing code, remove comments that violate the above instead of leaving them.
+
 ## Traps specific to this codebase
 
 - `types.h` is ABI. The C# mirror is hand-written and nothing checks that the two agree, so a

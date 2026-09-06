@@ -197,8 +197,12 @@ datapath is feature-complete and further work is control-plane work.
 ### Deliverables
 
 - `parse.c`: IPv6 extension-header walking to `MAX_EXT_HDRS`, fragments in both families, ESP
-  and AH as `unsupported_proto`, the ICMP branch including the embedded-header path, and the
-  port-agnostic double lookup of `vip_map` (`docs/design/11-pipeline.md`).
+  and AH as `unsupported_proto`, and the ICMP branch including the embedded-header path
+  (`docs/design/11-pipeline.md`).
+- `balancer.c`'s VIP lookup: the port-agnostic double lookup of `vip_map` — the parsed
+  destination port first, then port 0 on a miss — both with a fully zeroed key
+  (`docs/design/11-pipeline.md`). `parse.c` has no access to `vip_map`; this is step 4, not
+  parsing.
 - **`parse.c` supplies what `VIP_HASH_5TUPLE` consumes.** The flag is inert without two
   additions, and both are silent if omitted rather than failing visibly:
   `MARLIN_CTX_F_FRAG_FIRST` set on the first fragment of a fragmented datagram — without it

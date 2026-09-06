@@ -21,3 +21,45 @@
 #endif
 
 #define MARLIN_IPV4_IHL_MIN 5
+
+#ifndef IP6_MF
+#define IP6_MF 0x0001
+#endif
+#ifndef IP6_OFFSET
+#define IP6_OFFSET 0xfff8
+#endif
+
+struct marlin_frag_hdr {
+    __u8 nexthdr;
+    __u8 reserved;
+    __be16 frag_off;
+    __be32 identification;
+};
+
+_Static_assert(sizeof(struct marlin_frag_hdr) == 8, "the IPv6 fragment header must stay 8 bytes: the walk advances by sizeof");
+
+#define ICMP_ECHOREPLY     0
+#define ICMP_DEST_UNREACH  3
+#define ICMP_ECHO          8
+#define ICMP_TIME_EXCEEDED 11
+#define ICMP_PARAMETERPROB 12
+
+/* Both families' error and echo messages share this layout to the end of the
+ * per-type word; the offending header (errors) or identifier/sequence (echo)
+ * follows.
+ */
+struct marlin_icmphdr {
+    __u8 type;
+    __u8 code;
+    __be16 checksum;
+    __be32 rest;
+};
+
+_Static_assert(sizeof(struct marlin_icmphdr) == 8, "the offending header follows the first 8 bytes of an ICMP error");
+
+struct marlin_l4_ports {
+    __be16 sport;
+    __be16 dport;
+};
+
+_Static_assert(sizeof(struct marlin_l4_ports) == 4, "marlin_l4_ports must overlay the first word of a TCP or UDP header");

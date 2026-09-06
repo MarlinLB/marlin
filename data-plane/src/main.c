@@ -34,10 +34,13 @@ static __always_inline int marlin_action(int rc)
     case MARLIN_PASS_ICMP_ECHO:
     case MARLIN_PASS_NOT_FORWARDED:
         return XDP_PASS;
+
     case MARLIN_OK_TX:
         return XDP_TX;
+
     case MARLIN_OK_REDIRECT:
         return XDP_REDIRECT;
+        
     default:
         return XDP_DROP;
     }
@@ -61,8 +64,11 @@ int xdp_main(struct xdp_md *ctx)
     marlin_count(rc);
 
     if(rc != MARLIN_OK) {
+        bpf_printk("Packet parsing failed: rc=%d\n", rc);
         return marlin_action(rc);
     }
+
+    bpf_printk("Processing packet, size=%u origin ip=%u\n", mctx.pkt_len, 0);
 
     return XDP_PASS;
 }

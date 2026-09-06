@@ -8,7 +8,10 @@
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <linux/in.h>
+#include <linux/in6.h>
+#include <linux/icmpv6.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
 #include <bpf/bpf_helpers.h>
@@ -20,6 +23,19 @@
 #include <marlin/parse.h>
 
 #define MARLIN_L3_OFF_ETH ((__u16)ETH_HLEN)
+
+/*
+ * Not crossing a translation unit, so this stays local rather than in
+ * marlin_ctx: everything downstream of parsing reads packet_tuple, not this.
+ */
+struct marlin_l3 {
+    __be32 src[4];
+    __be32 dst[4];
+    __u32 l4_off;
+    __u32 flags;
+    __u8 proto;
+    __u8 pad[3];
+};
 
 static __always_inline const struct ethhdr *marlin_parse_eth(const void *data, const void *data_end)
 {
@@ -45,75 +61,229 @@ static __always_inline __u32 marlin_parse_frag4(__be16 frag_off)
     return 0;
 }
 
-static __always_inline int marlin_parse_ipv4(const void *data, const void *data_end, __u16 l3_off, struct marlin_ctx *mctx,
-                                             __u32 *l4_off)
+static __always_inline __u32 marlin_parse_frag6(__be16 frag_off)
 {
-    const struct iphdr *iph = (const struct iphdr *)((const char *)data + l3_off);
-    __u32 hdr_len;
+    if((frag_off & bpf_htons(IP6_OFFSET)) != 0) {
+        return MARLIN_CTX_F_FRAG;
+    }
 
-    if((const void *)(iph + 1) > data_end) {
+    if((frag_off & bpf_htons(IP6_MF)) != 0) {
+        return MARLIN_CTX_F_FRAG_FIRST;
+    }
+
+    return 0;
+}
+
+static __always_inline int marlin_is_ext6(__u8 nexthdr)
+{
+    return nexthdr == IPPROTO_HOPOPTS || nexthdr == IPPROTO_ROUTING || nexthdr == IPPROTO_DSTOPTS || nexthdr == IPPROTO_FRAGMENT;
+}
+
+_Static_assert(MARLIN_L3_OFF_ETH + sizeof(struct ipv6hdr) + ((unsigned long)MAX_EXT_HDRS * 2048UL) < 0x10000UL,
+               "the IPv6 extension-header walk must not push l4_off past marlin_ctx.l4_off's width");
+
+static __always_inline int marlin_walk_ext6(const void *data, const void *data_end, __u32 off, __u8 nexthdr, __u32 max_ext,
+                                            struct marlin_l3 *out)
+{
+#pragma clang loop unroll(full)
+    for(__u32 i = 0; i <= MAX_EXT_HDRS; i++) {
+        const struct ipv6_opt_hdr *eh;
+        __u32 hdr_len;
+
+        if(nexthdr == IPPROTO_ESP || nexthdr == IPPROTO_AH) {
+            return MARLIN_DROP_UNSUPPORTED_PROTO;
+        }
+
+        if(!marlin_is_ext6(nexthdr)) {
+            out->proto = nexthdr;
+            out->l4_off = off;
+            return MARLIN_OK;
+        }
+
+        if(i >= max_ext) {
+            return MARLIN_DROP_EXT_HDR_LIMIT;
+        }
+
+        eh = (const struct ipv6_opt_hdr *)((const char *)data + off);
+
+        if((const void *)(eh + 1) > data_end) {
+            return MARLIN_DROP_PARSE_ERROR;
+        }
+
+        if(nexthdr == IPPROTO_FRAGMENT) {
+            const struct marlin_frag_hdr *fh = (const struct marlin_frag_hdr *)eh;
+
+            if((const void *)(fh + 1) > data_end) {
+                return MARLIN_DROP_PARSE_ERROR;
+            }
+
+            out->flags |= marlin_parse_frag6(fh->frag_off);
+
+            /* A non-first fragment carries payload beyond this point, not
+             * headers; continuing would misparse payload bytes as a chain.
+             * The fragment header's own nexthdr is the reassembled
+             * datagram's upper-layer protocol, matching IPv4's
+             * iph->protocol on the same path.
+             */
+            if((out->flags & MARLIN_CTX_F_FRAG) != 0U) {
+                out->proto = fh->nexthdr;
+                out->l4_off = off + sizeof(*fh);
+                return MARLIN_OK;
+            }
+
+            hdr_len = sizeof(*fh);
+        } else {
+            hdr_len = ((__u32)eh->hdrlen + 1U) * 8U;
+        }
+
+        nexthdr = eh->nexthdr;
+        off += hdr_len;
+    }
+
+    return MARLIN_DROP_EXT_HDR_LIMIT;
+}
+
+static __always_inline int marlin_parse_l3(const void *data, const void *data_end, __u32 l3_off, __u8 family, __u32 max_ext,
+                                           struct marlin_l3 *out)
+{
+    __builtin_memset(out, 0, sizeof(*out));
+
+    if(family == AF_INET) {
+        const struct iphdr *iph = (const struct iphdr *)((const char *)data + l3_off);
+        __u32 hdr_len;
+
+        if((const void *)(iph + 1) > data_end) {
+            return MARLIN_DROP_PARSE_ERROR;
+        }
+
+        if(iph->ihl < MARLIN_IPV4_IHL_MIN) {
+            return MARLIN_DROP_PARSE_ERROR;
+        }
+
+        hdr_len = (__u32)iph->ihl * 4U;
+
+        if((const void *)((const char *)iph + hdr_len) > data_end) {
+            return MARLIN_DROP_PARSE_ERROR;
+        }
+
+        out->src[0] = iph->saddr;
+        out->dst[0] = iph->daddr;
+        out->proto = iph->protocol;
+        out->l4_off = l3_off + hdr_len;
+        out->flags = marlin_parse_frag4(iph->frag_off);
+
+        return MARLIN_OK;
+    }
+
+    const struct ipv6hdr *ip6 = (const struct ipv6hdr *)((const char *)data + l3_off);
+
+    if((const void *)(ip6 + 1) > data_end) {
         return MARLIN_DROP_PARSE_ERROR;
     }
 
-    if(iph->ihl < MARLIN_IPV4_IHL_MIN) {
+    __builtin_memcpy(out->src, &ip6->saddr, sizeof(out->src));
+    __builtin_memcpy(out->dst, &ip6->daddr, sizeof(out->dst));
+
+    return marlin_walk_ext6(data, data_end, l3_off + sizeof(*ip6), ip6->nexthdr, max_ext, out);
+}
+
+static __always_inline int marlin_parse_ports(const void *data, const void *data_end, __u32 l4_off, __u8 proto, __be16 *sport,
+                                              __be16 *dport)
+{
+    const struct marlin_l4_ports *ports;
+
+    if(proto == IPPROTO_ESP || proto == IPPROTO_AH) {
+        return MARLIN_DROP_UNSUPPORTED_PROTO;
+    }
+
+    if(proto != IPPROTO_TCP && proto != IPPROTO_UDP) {
+        return MARLIN_PASS_NOT_FORWARDED;
+    }
+
+    ports = (const struct marlin_l4_ports *)((const char *)data + l4_off);
+
+    if((const void *)(ports + 1) > data_end) {
         return MARLIN_DROP_PARSE_ERROR;
     }
 
-    hdr_len = (__u32)iph->ihl * 4U;
-
-    if((const void *)((const char *)iph + hdr_len) > data_end) {
-        return MARLIN_DROP_PARSE_ERROR;
-    }
-
-    mctx->tuple.family = AF_INET;
-    mctx->tuple.proto = iph->protocol;
-    mctx->tuple.src[0] = iph->saddr; /* client */
-    mctx->tuple.dst[0] = iph->daddr; /* VIP    */
-    mctx->l3_off = l3_off;
-    mctx->l4_off = (__u16)((__u32)l3_off + hdr_len);
-    mctx->flags |= marlin_parse_frag4(iph->frag_off);
-
-    *l4_off = (__u32)l3_off + hdr_len;
+    *sport = ports->sport;
+    *dport = ports->dport;
 
     return MARLIN_OK;
 }
 
-static __always_inline int marlin_parse_l4(const void *data, const void *data_end, __u32 l4_off, struct marlin_ctx *mctx)
+static __always_inline int marlin_proto_is_icmp(__u8 family, __u8 proto)
 {
-    switch(mctx->tuple.proto) {
-    case IPPROTO_TCP: {
-        const struct tcphdr *tcp = (const struct tcphdr *)((const char *)data + l4_off);
+    return (family == AF_INET && proto == IPPROTO_ICMP) || (family == AF_INET6 && proto == IPPROTO_ICMPV6);
+}
 
-        if((const void *)(tcp + 1) > data_end) {
-            return MARLIN_DROP_PARSE_ERROR;
-        }
-
-        mctx->tuple.sport = tcp->source;
-        mctx->tuple.dport = tcp->dest;
-        return MARLIN_OK;
+static __always_inline int marlin_icmp_is_error(__u8 family, __u8 type)
+{
+    if(family == AF_INET) {
+        return type == ICMP_DEST_UNREACH || type == ICMP_TIME_EXCEEDED || type == ICMP_PARAMETERPROB;
     }
-    case IPPROTO_UDP: {
-        const struct udphdr *udp = (const struct udphdr *)((const char *)data + l4_off);
 
-        if((const void *)(udp + 1) > data_end) {
-            return MARLIN_DROP_PARSE_ERROR;
-        }
+    return type == ICMPV6_DEST_UNREACH || type == ICMPV6_PKT_TOOBIG || type == ICMPV6_TIME_EXCEED || type == ICMPV6_PARAMPROB;
+}
 
-        mctx->tuple.sport = udp->source;
-        mctx->tuple.dport = udp->dest;
-        return MARLIN_OK;
+static __always_inline int marlin_icmp_is_echo(__u8 family, __u8 type)
+{
+    if(family == AF_INET) {
+        return type == ICMP_ECHO || type == ICMP_ECHOREPLY;
     }
-    default:
-        return MARLIN_PASS_NOT_FORWARDED;
+
+    return type == ICMPV6_ECHO_REQUEST || type == ICMPV6_ECHO_REPLY;
+}
+
+static __always_inline int marlin_parse_icmp(const void *data, const void *data_end, __u32 l4_off, __u8 family, struct marlin_l3 *emb,
+                                             struct marlin_ctx *mctx)
+{
+    const struct marlin_icmphdr *icmp = (const struct marlin_icmphdr *)((const char *)data + l4_off);
+    __be16 emb_sport = 0;
+    __be16 emb_dport = 0;
+    int rc;
+
+    if((const void *)((const char *)icmp + 2) > data_end) {
+        return MARLIN_DROP_PARSE_ERROR;
     }
+
+    if(!marlin_icmp_is_error(family, icmp->type)) {
+        /* Neither an error nor echo -- ICMPv6 neighbour discovery and MLD
+         * chief among them -- must still reach the host stack.
+         */
+        return marlin_icmp_is_echo(family, icmp->type) ? MARLIN_PASS_ICMP_ECHO : MARLIN_PASS_NOT_FORWARDED;
+    }
+
+    if((const void *)(icmp + 1) > data_end) {
+        return MARLIN_DROP_ICMP_UNPARSEABLE;
+    }
+
+    rc = marlin_parse_l3(data, data_end, l4_off + sizeof(*icmp), family, 0, emb);
+
+    if(rc != MARLIN_OK) {
+        return MARLIN_DROP_ICMP_UNPARSEABLE;
+    }
+
+    if((emb->flags & MARLIN_CTX_F_FRAG) != 0U) {
+        return MARLIN_DROP_ICMP_UNPARSEABLE;
+    }
+
+    if(marlin_parse_ports(data, data_end, emb->l4_off, emb->proto, &emb_sport, &emb_dport) != MARLIN_OK) {
+        return MARLIN_DROP_ICMP_UNPARSEABLE;
+    }
+
+    __builtin_memcpy(mctx->tuple.dst, emb->src, sizeof(mctx->tuple.dst));
+    __builtin_memcpy(mctx->tuple.src, emb->dst, sizeof(mctx->tuple.src));
+    mctx->tuple.dport = emb_sport;
+    mctx->tuple.sport = emb_dport;
+    mctx->tuple.proto = emb->proto;
+    mctx->flags |= MARLIN_CTX_F_ICMP;
+
+    return MARLIN_OK;
 }
 
 int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
 {
-    /* A global subprogram's BTF struct-pointer argument is nullable below
-     * kernel 6.9 (__arg_nonnull); the 6.0 floor requires this check or the
-     * program is rejected at load (docs/design/01-scope.md).
-     */
     if(mctx == NULL) {
         return MARLIN_DROP_PARSE_ERROR;
     }
@@ -121,7 +291,8 @@ int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
     const void *data = (const void *)(unsigned long)ctx->data;         // NOLINT(performance-no-int-to-ptr)
     const void *data_end = (const void *)(unsigned long)ctx->data_end; // NOLINT(performance-no-int-to-ptr)
     const struct ethhdr *eth;
-    __u32 l4_off = 0;
+    struct marlin_l3 l3;
+    __u8 family;
     int rc;
 
     mctx->pkt_len = (__u16)(ctx->data_end - ctx->data);
@@ -132,19 +303,35 @@ int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
         return MARLIN_DROP_PARSE_ERROR;
     }
 
-    if(eth->h_proto != bpf_htons(ETH_P_IP)) {
+    if(eth->h_proto == bpf_htons(ETH_P_IP)) {
+        family = AF_INET;
+    } else if(eth->h_proto == bpf_htons(ETH_P_IPV6)) {
+        family = AF_INET6;
+    } else {
         return MARLIN_PASS_NOT_FORWARDED;
     }
 
-    rc = marlin_parse_ipv4(data, data_end, MARLIN_L3_OFF_ETH, mctx, &l4_off);
+    rc = marlin_parse_l3(data, data_end, MARLIN_L3_OFF_ETH, family, MAX_EXT_HDRS, &l3);
 
     if(rc != MARLIN_OK) {
         return rc;
     }
 
-    if((mctx->flags & MARLIN_CTX_F_FRAG_ANY) != 0U) {
-        return MARLIN_DROP_FRAG_UNSUPPORTED;
+    mctx->tuple.family = family;
+    mctx->tuple.proto = l3.proto;
+    __builtin_memcpy(mctx->tuple.src, l3.src, sizeof(mctx->tuple.src));
+    __builtin_memcpy(mctx->tuple.dst, l3.dst, sizeof(mctx->tuple.dst));
+    mctx->l3_off = MARLIN_L3_OFF_ETH;
+    mctx->l4_off = (__u16)l3.l4_off;
+    mctx->flags |= l3.flags;
+
+    if((mctx->flags & MARLIN_CTX_F_FRAG) != 0U) {
+        return marlin_proto_is_icmp(family, l3.proto) ? MARLIN_DROP_ICMP_UNPARSEABLE : MARLIN_OK;
     }
 
-    return marlin_parse_l4(data, data_end, l4_off, mctx);
+    if(marlin_proto_is_icmp(family, l3.proto)) {
+        return marlin_parse_icmp(data, data_end, l3.l4_off, family, &l3, mctx);
+    }
+
+    return marlin_parse_ports(data, data_end, l3.l4_off, l3.proto, &mctx->tuple.sport, &mctx->tuple.dport);
 }
