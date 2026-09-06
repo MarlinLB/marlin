@@ -27,6 +27,18 @@ struct vip_meta {  /* 24 bytes */
     __u8 hash_key[16];
 };
 
+struct backend { /* 32 bytes */
+    __be32 addr;
+    __u8 mac[6];
+    __be16 encap_dport;
+    __u8 flags;
+    __u8 pad[3];
+    __u32 egress_ifindex;
+    __u32 vni;
+    __u8 inner_mac[6];
+    __u8 pad[2];
+};
+
 struct stats {
     __u64 packets;
     __u64 bytes;
@@ -63,17 +75,12 @@ struct rl_bucket { /* 8 bytes */
 
 _Static_assert(sizeof(struct vip_key) == 20, "vip_key must stay 20 bytes");
 _Static_assert(sizeof(struct vip_meta) == 24, "vip_meta must stay 24 bytes");
-/*_Static_assert(sizeof(struct backend) == 32, "backend must stay 32 bytes");
-_Static_assert(__builtin_offsetof(struct backend, encap_dport) == 10,
-           "backend.encap_dport must follow mac with no hole");
-_Static_assert(__builtin_offsetof(struct backend, egress_ifindex) == 16,
-           "backend.egress_ifindex must follow pad with no hole");
-_Static_assert(__builtin_offsetof(struct backend, flags) == 12,
-           "backend.flags must stay where the C# side reads the mode byte");
-_Static_assert(__builtin_offsetof(struct backend, vni) == 20,
-           "backend.vni must follow egress_ifindex with no hole");
-_Static_assert(__builtin_offsetof(struct backend, inner_mac) == 24,
-           "backend.inner_mac must follow vni with no hole");*/
+_Static_assert(sizeof(struct backend) == 32, "backend must stay 32 bytes");
+_Static_assert(__builtin_offsetof(struct backend, encap_dport) == 10, "backend.encap_dport must follow mac with no hole");
+_Static_assert(__builtin_offsetof(struct backend, egress_ifindex) == 16, "backend.egress_ifindex must follow pad with no hole");
+_Static_assert(__builtin_offsetof(struct backend, flags) == 12, "backend.flags must stay where the C# side reads the mode byte");
+_Static_assert(__builtin_offsetof(struct backend, vni) == 20, "backend.vni must follow egress_ifindex with no hole");
+_Static_assert(__builtin_offsetof(struct backend, inner_mac) == 24, "backend.inner_mac must follow vni with no hole");
 
 _Static_assert(sizeof(struct stats) == 16, "stats must stay 16 bytes");
 _Static_assert(sizeof(struct marlin_config) == 20, "marlin_config must stay 20 bytes");

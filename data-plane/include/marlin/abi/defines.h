@@ -34,9 +34,11 @@
 #define MARLIN_BE_ENCAP_MODE_MASK      ((__u8)0x0f)
 #define MARLIN_BE_F_ENCAP_REQUIRED_BIT 4
 #define MARLIN_BE_F_FIB_BIT            5
-#define MARLIN_BE_ENCAP_REQUIRED       (1U << MARLIN_BE_F_ENCAP_REQUIRED_BIT)
-#define MARLIN_BE_F_FIB                (1U << 5)
-#define MARLIN_BE_F_RESERVED           ((__u8) ~(MARLIN_BE_ENCAP_MODE_MASK | (1U << MARLIN_BE_F_ENCAP_REQUIRED_BIT) | MARLIN_BE_F_FIB))
+#define MARLIN_BE_F_STATE_BIT          6
+#define MARLIN_BE_F_ENCAP_REQUIRED     (1U << MARLIN_BE_F_ENCAP_REQUIRED_BIT)
+#define MARLIN_BE_F_FIB                (1U << MARLIN_BE_F_FIB_BIT)
+#define MARLIN_BE_F_STATE              (1U << MARLIN_BE_F_STATE_BIT)
+#define MARLIN_BE_F_RESERVED           ((__u8) ~(MARLIN_BE_ENCAP_MODE_MASK | (MARLIN_BE_F_ENCAP_REQUIRED) | MARLIN_BE_F_FIB | MARLIN_BE_F_STATE))
 #define ENCAP_MODE(f)                  ((__u8)((f) & MARLIN_BE_ENCAP_MODE_MASK))
 
 /* The mode field of backendflags */
@@ -101,7 +103,8 @@ _Static_assert((MARLIN_BE_F_FIB & (MARLIN_BE_ENCAP_MODE_MASK | (1U << MARLIN_BE_
                "MARLIN_BE_F_FIB overlaps the flags mode field or ENCAP_REQUIRED_BIT");
 _Static_assert((MARLIN_MODE_L2DSR | MARLIN_MODE_IPIP | MARLIN_MODE_GUE | MARLIN_MODE_VXLAN) <= MARLIN_BE_ENCAP_MODE_MASK,
                "a MARLIN_MODE_* value no longer fits ENCAP_MODE_MASK");
-_Static_assert((MARLIN_BE_F_RESERVED & (MARLIN_BE_ENCAP_MODE_MASK | (1U << MARLIN_BE_F_ENCAP_REQUIRED_BIT) | MARLIN_BE_F_FIB)) == 0,
+_Static_assert((MARLIN_BE_F_RESERVED &
+                (MARLIN_BE_ENCAP_MODE_MASK | MARLIN_BE_F_STATE | MARLIN_BE_F_ENCAP_REQUIRED | MARLIN_BE_F_FIB)) == 0,
                "flags reserved bits overlap an assigned bit");
 
 _Static_assert((VIP_FLAGS_RESERVED & (VIP_RATELIMIT | VIP_HASH_5TUPLE)) == 0, "vip_meta.flags reserved mask overlaps an assigned bit");
