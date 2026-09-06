@@ -3,6 +3,7 @@
 SRC_DIR   := src
 INC_DIR   := include
 BUILD_DIR := build
+TEST_DIR  := tests
 
 # --- Overridable tools --------------------------------------------------------
 # CI pins versions here; check-toolchain's own tests inject stubs through
@@ -12,6 +13,18 @@ BPFTOOL      ?= bpftool
 READELF      ?=
 CLANG_FORMAT ?= clang-format
 CLANG_TIDY   ?= clang-tidy
+
+# The unit tests are host code, not BPF: HOST_CC defaults separately from
+# CLANG above so a cross-compiling CI job can still run tests natively.
+# -fno-sanitize=alignment: parser.c overlays wire structs directly onto a
+# byte buffer at arbitrary offsets (e.g. an iphdr at the 14-byte Ethernet
+# offset), which is unaligned by construction -- the same pattern the kernel
+# itself uses for packet parsing, and x86 tolerates it in hardware. UBSan's
+# alignment check flags every such access as UB; ASan and the rest of UBSan
+# stay on.
+HOST_CC       ?= $(CLANG)
+TEST_SANITIZE ?= -fsanitize=address,undefined -fno-sanitize=alignment
+TEST_CFLAGS   ?= -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer
 
 include mk/toolchain.mk
 
@@ -53,6 +66,14 @@ MARLIN_OBJ := $(BUILD_DIR)/marlin.bpf.o
 CC_JSON := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o.json,$(SRCS))
 COMPILE_COMMANDS := $(BUILD_DIR)/compile_commands.json
 
+# Native unit tests over parser.c (docs/design/24-testing.md). Deliberately
+# not part of $(SRCS): that wildcard is compiled -target bpf and linked into
+# marlin.bpf.o, and these are host binaries that #include the source
+# directly to reach its static helpers.
+TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
+TEST_HDRS := $(wildcard $(TEST_DIR)/*.h)
+TEST_BIN  := $(BUILD_DIR)/tests/marlin_tests
+
 .PHONY: all
 all: $(MARLIN_OBJ)
 
@@ -69,10 +90,26 @@ $(COMPILE_COMMANDS): $(OBJS)
 	@echo "generate $(notdir $@)"
 	@{ echo '['; cat $(CC_JSON) | sed '$$s/,$$//'; echo ']'; } > $@
 
+# All test cases live in one translation unit (it #includes src/parser.c, so
+# a second one would duplicate marlin_parse); depending on every header
+# under $(INC_DIR) is coarser than necessary but matches $(OBJS) above,
+# which has no per-file header dependency tracking either (no -MMD there).
+$(TEST_BIN): $(TEST_SRCS) $(TEST_HDRS) $(SRC_DIR)/parser.c $(HDRS)
+	@mkdir -p $(dir $@)
+	@echo "compile tests"
+	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) $(INCLUDES) -MMD -MP -o $@ $(TEST_SRCS)
+
+.PHONY: tests
+tests: $(TEST_BIN)
+	@$(TEST_BIN)
+
+-include $(TEST_BIN).d
+
 .PHONY: ci
 ci:
 	$(MAKE) check-toolchain
 	$(MAKE) all
+	$(MAKE) tests
 
 # check-toolchain is invoked as a recursive $(MAKE), not listed as a
 # prerequisite -- mk/toolchain.mk's MARLIN_CHECK_STRICT reads MAKECMDGOALS of

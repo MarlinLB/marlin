@@ -174,6 +174,20 @@ make
 
 See `docs/design/24-testing.md` for coverage details. This is the primary test path and is phase-gated; it needs no live network interface.
 
+### 5.3 Using the native unit tests (parser.c)
+
+Narrower than 5.2 and already in the tree: `data-plane/tests/` compiles `parser.c` with the host
+toolchain and calls its helpers directly, with no BPF object, no map, and no interface at all
+(`docs/design/24-testing.md`, "Native unit tests"). Runs in milliseconds:
+
+```bash
+cd data-plane
+make tests
+```
+
+Not part of `make all`; part of `make ci`. Use it to check a `parser.c` change before reaching
+for 5.2's packet harness.
+
 ---
 
 ## 6. Reading Counters and Statistics

@@ -89,6 +89,8 @@ version control. Phase 1 is largely about making what exists compile, load and b
   `WarningsAsErrors`.
 - Load and attach verified in a network namespace: `bpftool prog loadall` then
   `net attach xdpdrv`. The attach must fail rather than degrade to SKB mode (`docs/design/02-architecture.md`).
+- `make tests` builds and runs the native unit tests over `parser.c`
+  (`docs/design/24-testing.md`, "Native unit tests"). Not part of `make all`; part of `make ci`.
 
 ### Datapath — the vertical slice
 
@@ -365,6 +367,7 @@ section it affects, not in a document of its own.
 |---|---|---|
 | C# map access: `libbpf` P/Invoke or direct `bpf(2)` | Phase 1, "Control plane" above | 1 |
 | Indentation: `.clang-format`/`.editorconfig` say spaces, every source uses tabs | `.clang-format`/`.editorconfig` | 1 |
+| Whether `data-plane/tests/` joins `make format`/`make tidy`, or takes its own `.clang-format`/`.clang-tidy` | `docs/REPO-STRUCTURE.md` §7.2 | 1 |
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
 | `BPF_FIB_LOOKUP_DIRECT` has no configuration surface | `nexthop.c:206` | 2b |

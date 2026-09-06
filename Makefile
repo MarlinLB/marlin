@@ -10,7 +10,7 @@ MAKEFLAGS += --no-print-directory
 
 .DEFAULT_GOAL := all
 
-.PHONY: all data-plane check-toolchain ci format tidy clean help
+.PHONY: all data-plane check-toolchain ci format tidy clean tests help
 
 all: data-plane
 
@@ -22,9 +22,13 @@ data-plane:
 check-toolchain:
 	@$(MAKE) -C $(DATA_PLANE_DIR) check-toolchain
 
-## Run what CI runs: check-toolchain (strict) followed by a full build.
+## Run what CI runs: check-toolchain (strict), a full build, then the unit tests.
 ci:
 	@$(MAKE) -C $(DATA_PLANE_DIR) ci
+
+## Run the native unit tests over the data plane (not part of `all`; see PHASES.md).
+tests:
+	@$(MAKE) -C $(DATA_PLANE_DIR) tests
 
 ## Rewrite the data plane's .c/.h in place with clang-format (repo-root .clang-format).
 format:
@@ -48,7 +52,8 @@ help:
 	@echo "  format          Rewrite data-plane C sources/headers with clang-format"
 	@echo "  tidy            Run clang-tidy over the data-plane C sources"
 	@echo "  clean           Remove data-plane build artefacts"
+	@echo "  tests           Run the native unit tests over the data plane"
 	@echo "  help            Show this message"
 	@echo ""
-	@echo "control-plane and tests are not yet wired in here (no control-plane tree or test"
-	@echo "harness exists yet per docs/PHASES.md Phase 1's entry state)."
+	@echo "control-plane is not yet wired in here (no control-plane tree exists yet per"
+	@echo "docs/PHASES.md Phase 1's entry state)."

@@ -113,6 +113,29 @@ an allowlisted source at any rate is never `ratelimited`.
 compare-and-swap loop's contention behaviour and `rl_cas_exhausted` need the integration
 environment below with concurrent senders across multiple receive queues.
 
+## Native unit tests
+
+A second mechanism, alongside `bpf_prog_test_run` above, for the one translation unit where it
+is cheap: `data-plane/tests/` compiles `parser.c` with the host toolchain — no `-target bpf` — and
+`#include`s it directly to call its `static` helpers with real pointers. This is sound only
+because `parser.c` makes no `bpf_*` helper call and reads no map; it is a pure function of a byte
+buffer plus two offsets, so its behaviour does not depend on which target compiled it. No other
+translation unit has that property yet — `main.c` and the encapsulation units read and write maps,
+so a native build of those would test a different program than the one that loads.
+
+What it buys over the packet-level harness: the `static` helpers (`marlin_parse_frag6`,
+`marlin_walk_ext6`, `marlin_parse_icmp`, …) are otherwise unreachable except through
+`marlin_parse`'s one entry point, so a bug confined to one helper's boundary condition — an IPv6
+extension-header chain at exactly `MAX_EXT_HDRS`, a fragment header truncated to 3 of its 8 bytes —
+is exercised directly rather than inferred from `marlin_parse`'s return value. It also runs in
+milliseconds with no root privilege and no kernel involved, so it is the tier a change to
+`parser.c` should be checked against first.
+
+What it cannot do: assert an emitted frame, a map write, or anything downstream of
+`marlin_parse` — that stays with `bpf_prog_test_run`, which is the only tier that runs the code as
+compiled for the datapath. `make tests` (not part of `make all`; part of `make ci`) runs this tier;
+`docs/PHASES.md` tracks whether the mechanism extends past `parser.c`.
+
 ## Integration tests
 
 Network namespaces and veth pairs with real tunnel devices on simulated backends. Validates

@@ -29,6 +29,10 @@ The rules the layout follows, stated so a new file can be placed without re-deri
 5. **Tests are siblings of what they test, not children.** `docs/design/24-testing.md` makes
    packet-level tests a phase-0 artefact; nesting them under `data-plane/` invites treating
    them as build scaffolding.
+   **Exception: native C unit tests of a single translation unit.** `data-plane/tests/` holds
+   tests that `#include` a `data-plane/src/*.c` file directly to reach its `static` helpers —
+   they cannot be moved out of that tree without losing that access, so this principle applies
+   above the translation-unit level (`tests/packet/`, `tests/integration/`) and not below it.
 
 ---
 
@@ -62,20 +66,24 @@ marlin/
 │   │   ├── gue_encap.c
 │   │   ├── vxlan_encap.c
 │   │   └── nexthop.c
-│   └── include/
-│       ├── marlin.h                  # marlin_ctx, enum marlin_ret, marlin_* prototypes
-│       └── marlin/
-│           ├── abi/                  # every file here has a C# counterpart. Nothing else does.
-│           │   ├── types.h           # map key and value structs
-│           │   ├── limits.h          # docs/design/09-sizing.md constants — not in docs/design/03-translation-units.md, see §8
-│           │   └── enums.h           # modes, states, drop reasons, flag bits — see §8
-│           ├── maps.h
-│           ├── csum.h
-│           ├── entropy.h             # outer UDP source port entropy hash, shared by gue_encap.c and vxlan_encap.c
-│           ├── siphash.h
-│           ├── stats.h
-│           ├── acl.h
-│           └── ratelimit.h
+│   ├── include/
+│   │   ├── marlin.h                  # marlin_ctx, enum marlin_ret, marlin_* prototypes
+│   │   └── marlin/
+│   │       ├── abi/                  # every file here has a C# counterpart. Nothing else does.
+│   │       │   ├── types.h           # map key and value structs
+│   │       │   ├── limits.h          # docs/design/09-sizing.md constants — not in docs/design/03-translation-units.md, see §8
+│   │       │   └── enums.h           # modes, states, drop reasons, flag bits — see §8
+│   │       ├── maps.h
+│   │       ├── csum.h
+│   │       ├── entropy.h             # outer UDP source port entropy hash, shared by gue_encap.c and vxlan_encap.c
+│   │       ├── siphash.h
+│   │       ├── stats.h
+│   │       ├── acl.h
+│   │       └── ratelimit.h
+│   └── tests/                       # native unit tests, `make tests` — Principle 5's exception
+│       ├── parser_test.c            # #includes src/parser.c to reach its static helpers
+│       ├── packet.h                 # packet builder, reusable by tests/packet/ once that lands
+│       └── harness.h
 │
 ├── deploy/
 │   ├── marlin-load.sh                # the two commands of docs/design/02-architecture.md
@@ -253,6 +261,11 @@ than the repository and the design disagreeing from the first commit.
 | C + libbpf | shortest path to exact-byte assertions | a second test runner in CI |
 | C# P/Invoke | one runner; seeds maps through the hand-written structs, so a wrong offset fails a forwarding assertion instead of corrupting production | marshalling a syscall the control plane never makes |
 | Python + ctypes | fastest packet crafting | a third language in the tree |
+
+A related, narrower decision already has code waiting on it: whether `data-plane/tests/`
+(native C, landed ahead of this one — see Principle 5's exception) joins `make format`/`make tidy`
+against the root `.clang-format`/`.clang-tidy`, or takes its own, on the same reasoning this
+section already gives for `tests/packet/` wanting a longer `ColumnLimit`.
 
 **7.3 `Marlin.Bpf` interop.** libbpf P/Invoke matches the function names in
 `docs/design/19-control-plane.md` and gets `bpf_map_lookup_batch` for free; a raw `bpf()`

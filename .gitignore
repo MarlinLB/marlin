@@ -72,6 +72,10 @@ coverage*.xml
 *.pcap
 *.pcapng
 
+# data-plane/tests' native test binary carries no suffix, so the *.o/*.bpf.o
+# globs above miss it; ignore the whole build tree rather than name it alone.
+data-plane/build/
+
 # ---------------------------------------------------------------------------
 # VS Code — share the workspace config, ignore local state
 # ---------------------------------------------------------------------------
