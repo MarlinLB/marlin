@@ -19,7 +19,7 @@ own addresses describe the router and ICMP carries no ports at all:
 | `vip_key.proto` | embedded protocol |
 | selection hash input | embedded **destination** address, and its port under `VIP_HASH_5TUPLE` |
 
-**`parse.c` must recover the embedded destination port into `tuple.sport`, not only the source
+**`parser.c` must recover the embedded destination port into `tuple.sport`, not only the source
 port.** Address-only selection never needed it, so the requirement is new with
 `VIP_HASH_5TUPLE` (`docs/design/12-selection.md`): on a flagged VIP the hash covers `sport`, and
 an ICMP error carrying zero there hashes to a different row than the flow it belongs to, sending
@@ -38,6 +38,15 @@ carries the ports. Deriving the bits from the embedded header instead would have
 `VIP_HASH_5TUPLE` VIP drop precisely the `frag_needed` errors that path MTU discovery depends
 on, which is the opposite of the intent.
 
+**A fragmented ICMP packet is a separate case, and only its first fragment reaches the branch
+above.** A non-first fragment carries no ICMP header at all, so it is classifiable as neither an
+error nor an echo and there is no embedded header to recover a tuple from. It passes to the host
+stack as `not_forwarded`, which is where a fragmented echo request must arrive for the host to
+reassemble it; counting it `icmp_unparseable` would attribute ordinary reassembly traffic to the
+counter `docs/design/22-observability.md` reads as PMTUD errors being dropped. The first fragment
+takes the branch above unchanged and keeps `MARLIN_CTX_F_FRAG_FIRST`, because the bit describes
+the ICMP packet, which is genuinely fragmented.
+
 The embedded source is the VIP and its service port; the embedded destination is the client, so
 hashing it reproduces the original selection and steers the error to the backend that sent the
 offending packet. This is what makes path MTU discovery work for the encapsulation modes.
@@ -45,15 +54,15 @@ offending packet. This is what makes path MTU discovery work for the encapsulati
 The ICMP branch therefore **replaces step 2** of `docs/design/11-pipeline.md` rather than
 following it, and rejoins at step 3.
 
-It replaces step 2 only. The VIP lookup is **not** branched: `parse.c` normalises both paths to
+It replaces step 2 only. The VIP lookup is **not** branched: `parser.c` normalises both paths to
 one orientation, as below, so step 3 onward is a single shared path reached by ICMP and by
 TCP/UDP alike. Every stage after parsing therefore has exactly one call site — which is what
 makes the ACL of `docs/design/27-source-filtering.md` a single evaluation rather than one per path, and what keeps a future stage
 placed between parsing and selection from having to be duplicated.
 
-**`parse.c` owns the reversal, and normalises both paths to one orientation.** `packet_tuple`
+**`parser.c` owns the reversal, and normalises both paths to one orientation.** `packet_tuple`
 is always oriented client → VIP: `key.dst` is the VIP and `key.dport` its service port, `key.src`
-is the client. For an ICMP error `parse.c` fills them from the embedded header per the table
+is the client. For an ICMP error `parser.c` fills them from the embedded header per the table
 above — embedded source into `key.dst`, embedded destination into `key.src`. Everything after
 parsing therefore reads one shape, and neither the VIP lookup nor the selection hash needs an
 ICMP branch.

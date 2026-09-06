@@ -57,7 +57,7 @@ marlin/
 │   ├── src/
 │   │   ├── main.c                  # XDP entry point
 │   │   ├── balancer.c                # marlin_balance()
-│   │   ├── parse.c
+│   │   ├── parser.c
 │   │   ├── ipip_encap.c
 │   │   ├── gue_encap.c
 │   │   ├── vxlan_encap.c
@@ -264,13 +264,13 @@ surface by containment. Flattening to `include/marlin/{types,limits,enums}.h` ma
 into a sentence.
 
 **7.5 clang-format base style.** Kernel style — tabs, 8 wide, 80 columns — matches the BPF
-samples anyone reading `parse.c` will have read. `BasedOnStyle: LLVM` matches nothing else in
+samples anyone reading `parser.c` will have read. `BasedOnStyle: LLVM` matches nothing else in
 the repository but is less hostile to deep nesting.
 
 **7.6 The unnamed global subprograms.** `docs/design/04-calling-convention.md` names only
-`marlin_balance()`. The entries for `parse.c`, `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`
+`marlin_balance()`. The entries for `parser.c`, `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`
 and `nexthop.c` are the file-to-file contract and are unspecified; `nexthop.c` may be one or two.
-Left silent, the first person to write `parse.c` picks them.
+Left silent, the first person to write `parser.c` picks them.
 
 **7.7 An ABI parity test.** A `Marlin.Abi.Tests/` asserting `Marshal.SizeOf` and
 `Marshal.OffsetOf` against the byte offsets `docs/design/06-map-abi.md` requires in comments

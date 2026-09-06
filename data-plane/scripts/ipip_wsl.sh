@@ -370,7 +370,16 @@ status() {
 
 # Idempotent: safe to run when nothing exists. up() calls it first.
 down_quiet() {
+	local ns d pids
 	detach_quiet
+	# `ip netns del` unlinks the name, but the namespace itself lives on while a
+	# process is still attached to it. A leftover listener therefore survives a
+	# down/up cycle with nothing to show for it but the next failed bind.
+	# ${pids} is unquoted on purpose: it is a list.
+	for ns in "${NS_ALL[@]}"; do
+		pids=$(ip netns pids "${ns}" 2>/dev/null || true)
+		if [[ -n ${pids} ]]; then kill ${pids} 2>/dev/null || true; fi
+	done
 	for ns in "${NS_ALL[@]}"; do ip netns del "${ns}" 2>/dev/null || true; done
 	for d in "${ROOT_DEVS[@]}"; do ip link del "${d}" 2>/dev/null || true; done
 }
@@ -584,6 +593,10 @@ test_icmp_echo() {
 	return "${rc}"
 }
 
+be_port_busy() {
+	nsx "${NS_BE}" ss -lnt "sport = :${HTTP_PORT}" 2>/dev/null | grep -q LISTEN
+}
+
 # python3 -m http.server because it needs no configuration and is already the
 # dependency stats_read() carries. Nothing here depends on what it serves, only
 # that something completes the handshake from the backend namespace.
@@ -595,17 +608,44 @@ test_http_get() {
 		exit 1
 	}
 
-	local pid rc=0
-	nsx "${NS_BE}" python3 -m http.server "${HTTP_PORT}" >/dev/null 2>&1 &
-	pid=$!
-	# The kill has to survive a failing curl, a ^C and set -e alike: a listener
-	# that outlives the script holds the port and the next run cannot bind.
-	trap 'kill "${pid}" 2>/dev/null || true' EXIT
-	sleep 0.3
-	kill -0 "${pid}" 2>/dev/null || {
-		echo "listener failed to start in ns ${NS_BE} (port ${HTTP_PORT} busy?)" >&2
+	# Name the holder rather than guessing at it. A bind failure here is almost
+	# always a listener from an earlier run, and "Address already in use" out of
+	# a backgrounded process says nothing about whose.
+	if be_port_busy; then
+		echo "port ${HTTP_PORT} is already bound in ns ${NS_BE}:" >&2
+		nsx "${NS_BE}" ss -lntp "sport = :${HTTP_PORT}" >&2 || true
+		echo "kill that process, then retry" >&2
 		exit 1
-	}
+	fi
+
+	local err pid rc=0
+	err=$(mktemp)
+
+	# ip netns exec directly rather than nsx(): backgrounding a shell function
+	# makes $! the subshell's pid, and killing that leaves the python3 beneath
+	# it alive and still holding the port.
+	ip netns exec "${NS_BE}" python3 -m http.server "${HTTP_PORT}" >/dev/null 2>"${err}" &
+	pid=$!
+	# The cleanup has to survive a failing curl, a ^C and set -e alike: a
+	# listener that outlives the script holds the port and the next run cannot
+	# bind.
+	trap 'kill "${pid}" 2>/dev/null || true; rm -f "${err}"' EXIT
+
+	# Poll rather than sleep a fixed interval, which either races the bind or
+	# pads every run. A bind failure is immediate, so watch for the process
+	# dying too and stop waiting on something that is already gone.
+	local i
+	for i in $(seq 1 50); do
+		if be_port_busy; then break; fi
+		if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+		sleep 0.1
+	done
+
+	if ! be_port_busy; then
+		echo "listener did not come up in ns ${NS_BE}:" >&2
+		cat "${err}" >&2
+		exit 1
+	fi
 
 	stats_snapshot
 	nsx "${NS_CLI}" curl -sS --max-time 2 "http://${VIP}/" || rc=$?
@@ -613,6 +653,8 @@ test_http_get() {
 	stats_report
 
 	kill "${pid}" 2>/dev/null || true
+	wait "${pid}" 2>/dev/null || true
+	rm -f "${err}"
 	trap - EXIT
 	return "${rc}"
 }

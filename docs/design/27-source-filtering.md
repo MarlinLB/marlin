@@ -10,7 +10,7 @@ nothing else; L4 granularity is out of scope (`docs/design/01-scope.md`) and its
 read.
 
 `packet_tuple` is the tuple of the connection, not of the arriving packet (`docs/design/08-types.md`), and for an ICMP
-error `parse.c` reconstructs it from the embedded header (`docs/design/13-icmp.md`). `tuple.src` is therefore the
+error `parser.c` reconstructs it from the embedded header (`docs/design/13-icmp.md`). `tuple.src` is therefore the
 **client**, and the transit router that emitted the packet appears nowhere. The ACL consequently
 filters the connection an error concerns, not the sender of the error. This is correct:
 

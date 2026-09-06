@@ -32,7 +32,7 @@ property that holds is no per-flow state and deterministic output. Corrected in 
 **"The BPF stack limit is 512 bytes per frame."** Wrong: 512 bytes is the combined depth across
 the whole call chain. Corrected in `docs/design/05-budgets.md`, with a stated `marlin_ctx` budget.
 
-**"The ICMP branch replaces steps 2 and 3 of the pipeline."** Wrong once `parse.c` normalised
+**"The ICMP branch replaces steps 2 and 3 of the pipeline."** Wrong once `parser.c` normalised
 both orientations. Step 3 is the VIP lookup, and normalisation exists so that the lookup is
 *not* branched. The branch replaces step 2 only. Corrected in `docs/design/13-icmp.md`.
 

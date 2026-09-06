@@ -26,12 +26,12 @@ pointer invalidation bites.
   single-packet harness.
 - With the flag set, a first fragment and a non-first fragment both drop `frag_unsupported`. The
   first-fragment half is the assertion that `MARLIN_CTX_F_FRAG_FIRST` is actually produced by
-  `parse.c` — the failure it guards is a first fragment forwarded and reassembly state stranded,
+  `parser.c` — the failure it guards is a first fragment forwarded and reassembly state stranded,
   which no other test would notice.
 - With the flag clear, both fragments still forward, and to the same backend as an unfragmented
   packet of the same flow. This is the existing guarantee, and it must not move.
 - An ICMP error on a flagged VIP selects the same row as the flow it reports on. This fails
-  unless `parse.c` recovers the embedded destination port into `tuple.sport`
+  unless `parser.c` recovers the embedded destination port into `tuple.sport`
   (`docs/design/13-icmp.md`), and it is the only test that catches that omission.
 - `tuple.pad` non-zero changes the selected row on a flagged VIP and does not on an unflagged
   one — the assertion behind `docs/design/10-map-invariants.md`'s zeroing rule for a struct that

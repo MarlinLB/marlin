@@ -9,7 +9,7 @@
 
 #include <marlin.h>
 #include <marlin/maps.h>
-#include <marlin/parse.h>
+#include <marlin/parser.h>
 #include <marlin/stats.h>
 
 static __always_inline int xdp_load_config(struct marlin_ctx *ctx)

@@ -84,7 +84,7 @@ levels on every IPv4 lookup — the common case.
 **Matching the on-the-wire source rather than `packet_tuple.src`.** `docs/design/27-source-filtering.md`. It would let the ACL run
 before L4 and IPv6 extension-header parsing, so a blocked source would not pay for the
 extension-header walk — real if modest hardening, since that walk is bounded at `MAX_EXT_HDRS`
-and already counted. Rejected because it requires `parse.c` to publish a second, wire-oriented
+and already counted. Rejected because it requires `parser.c` to publish a second, wire-oriented
 address before the tuple is built, and `docs/design/13-icmp.md` collapses the two orientations into one precisely so
 that no stage after parsing needs an ICMP branch.
 

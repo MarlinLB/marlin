@@ -17,13 +17,14 @@
 
 #include <marlin/abi/types.h>
 #include <marlin/proto.h>
-#include <marlin/parse.h>
+#include <marlin/parser.h>
 
 #define MARLIN_L3_OFF_ETH        ((__u16)ETH_HLEN)
 
-/* RFC 8200 §4.1 permits at most a hop-by-hop header ahead of the fragment
- * header, and a router copies the offending packet verbatim; a chain longer
- * than that in an embedded header is not a datagram Marlin forwarded.
+/* The embedded header is a backend's reply to a client, which carries no
+ * extension headers in practice, and the walk is inlined a second time to
+ * read it -- each admitted header costs about forty instructions. An
+ * offending header chained deeper counts icmp_unparseable.
  */
 #define MARLIN_ICMP_EMB_EXT_HDRS 2
 
@@ -329,7 +330,11 @@ int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
     mctx->flags |= l3.flags;
 
     if((mctx->flags & MARLIN_CTX_F_FRAG) != 0U) {
-        return marlin_proto_is_icmp(family, l3.proto) ? MARLIN_DROP_ICMP_UNPARSEABLE : MARLIN_OK;
+        /* A fragment tail carries no ICMP header, so neither the echo pass nor
+         * the embedded-header path is reachable; counting it icmp_unparseable
+         * would attribute reassembly traffic to PMTUD failure.
+         */
+        return marlin_proto_is_icmp(family, l3.proto) ? MARLIN_PASS_NOT_FORWARDED : MARLIN_OK;
     }
 
     if(marlin_proto_is_icmp(family, l3.proto)) {
