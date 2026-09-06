@@ -72,7 +72,20 @@ COMPILE_COMMANDS := $(BUILD_DIR)/compile_commands.json
 # directly to reach its static helpers.
 TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
 TEST_HDRS := $(wildcard $(TEST_DIR)/*.h)
+TEST_OBJS := $(patsubst $(TEST_DIR)/%.c,$(BUILD_DIR)/tests/%.o,$(TEST_SRCS))
 TEST_BIN  := $(BUILD_DIR)/tests/marlin_tests
+
+# bpf_prog_test_run tests over the real marlin.bpf.o (docs/design/24-testing.md,
+# "Packet-level tests"). Needs root (or CAP_BPF+CAP_NET_ADMIN+CAP_PERFMON) to
+# load a program -- this box has kernel.unprivileged_bpf_disabled=2 -- so this
+# is a separate target from `tests`, which docs/design/24-testing.md:131 keeps
+# root-free.
+PACKET_TEST_DIR  := $(TEST_DIR)/packet
+PACKET_TEST_SRCS := $(wildcard $(PACKET_TEST_DIR)/*.c)
+PACKET_TEST_HDRS := $(wildcard $(PACKET_TEST_DIR)/*.h)
+PACKET_TEST_OBJS := $(patsubst $(PACKET_TEST_DIR)/%.c,$(BUILD_DIR)/tests/packet/%.o,$(PACKET_TEST_SRCS))
+PACKET_TEST_BIN  := $(BUILD_DIR)/tests/packet/marlin_packet_tests
+PACKET_TEST_LIBS := -lbpf
 
 .PHONY: all
 all: $(MARLIN_OBJ)
@@ -90,26 +103,59 @@ $(COMPILE_COMMANDS): $(OBJS)
 	@echo "generate $(notdir $@)"
 	@{ echo '['; cat $(CC_JSON) | sed '$$s/,$$//'; echo ']'; } > $@
 
-# All test cases live in one translation unit (it #includes src/parser.c, so
-# a second one would duplicate marlin_parse); depending on every header
-# under $(INC_DIR) is coarser than necessary but matches $(OBJS) above,
-# which has no per-file header dependency tracking either (no -MMD there).
-$(TEST_BIN): $(TEST_SRCS) $(TEST_HDRS) $(SRC_DIR)/parser.c $(HDRS)
-	@mkdir -p $(dir $@)
-	@echo "compile tests"
-	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) $(INCLUDES) -MMD -MP -o $@ $(TEST_SRCS)
+# Each test .c compiles separately, mirroring the BPF rule above; depending on
+# every header under $(INC_DIR) plus parser.c is coarser than necessary but
+# matches $(OBJS) above, which has no per-file header dependency tracking
+# either (no -MMD there) -- parser_test.c reaches parser.c's static helpers
+# by #include, so a change there must also invalidate this object.
+$(BUILD_DIR)/tests/%.o: $(TEST_DIR)/%.c $(TEST_HDRS) $(SRC_DIR)/parser.c $(HDRS)
+	@mkdir -p $(BUILD_DIR)/tests
+	@echo "compile $(notdir $<)"
+	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) $(INCLUDES) -MMD -MP -c -o $@ $<
+
+$(TEST_BIN): $(TEST_OBJS)
+	@echo "linking $(notdir $@)"
+	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) -o $@ $(TEST_OBJS)
 
 .PHONY: tests
 tests: $(TEST_BIN)
 	@$(TEST_BIN)
 
--include $(TEST_BIN).d
+-include $(TEST_OBJS:.o=.d)
+
+# Same host-compile shape as the native tier's rule above, but these link
+# against libbpf and load the real marlin.bpf.o rather than #include-ing
+# parser.c, so there is no parser.c prerequisite. TEST_SANITIZE is left off:
+# LeakSanitizer reports libbpf's own retained allocations as leaks, and ASan
+# under the sudo this tier needs is untested territory -- add
+# ASAN_OPTIONS=detect_leaks=0 to TEST_SANITIZE here if that changes.
+$(BUILD_DIR)/tests/packet/%.o: $(PACKET_TEST_DIR)/%.c $(PACKET_TEST_HDRS) $(TEST_HDRS) $(HDRS)
+	@mkdir -p $(BUILD_DIR)/tests/packet
+	@echo "compile $(notdir $<)"
+	@$(HOST_CC) $(TEST_CFLAGS) $(INCLUDES) -MMD -MP -c -o $@ $<
+
+$(PACKET_TEST_BIN): $(PACKET_TEST_OBJS)
+	@echo "linking $(notdir $@)"
+	@$(HOST_CC) $(TEST_CFLAGS) -o $@ $(PACKET_TEST_OBJS) $(PACKET_TEST_LIBS)
+
+-include $(PACKET_TEST_OBJS:.o=.d)
+
+# Needs root (or CAP_BPF+CAP_NET_ADMIN+CAP_PERFMON) to load an XDP program;
+# not a `tests` prerequisite for that reason (docs/design/24-testing.md:131).
+.PHONY: packet-tests
+packet-tests: $(MARLIN_OBJ) $(PACKET_TEST_BIN)
+	@$(PACKET_TEST_BIN) $(MARLIN_OBJ)
 
 .PHONY: ci
 ci:
 	$(MAKE) check-toolchain
 	$(MAKE) all
 	$(MAKE) tests
+	@if [ "$$(id -u)" = "0" ]; then \
+		$(MAKE) packet-tests; \
+	else \
+		echo "skip packet-tests: needs root (or CAP_BPF+CAP_NET_ADMIN+CAP_PERFMON) to load an XDP program -- run 'sudo make packet-tests' directly"; \
+	fi
 
 # check-toolchain is invoked as a recursive $(MAKE), not listed as a
 # prerequisite -- mk/toolchain.mk's MARLIN_CHECK_STRICT reads MAKECMDGOALS of

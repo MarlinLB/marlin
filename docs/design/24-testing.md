@@ -136,6 +136,28 @@ What it cannot do: assert an emitted frame, a map write, or anything downstream 
 compiled for the datapath. `make tests` (not part of `make all`; part of `make ci`) runs this tier;
 `docs/PHASES.md` tracks whether the mechanism extends past `parser.c`.
 
+This is also why a sub-`ETH_HLEN` truncation case cannot move to the packet-level harness: the
+kernel's XDP `BPF_PROG_TEST_RUN` path rejects `data_size_in` below `ETH_HLEN` (14 bytes) before
+the program ever runs, so `parser_test.c`'s 13-byte Ethernet truncation case is native-tier-only
+by construction, not by choice.
+
+`data-plane/tests/packet/` (`docs/REPO-STRUCTURE.md` §7.2) is the packet-level harness above,
+made concrete: it loads the real `marlin.bpf.o` and drives `xdp_main` through
+`bpf_prog_test_run_opts`, asserting `data_out` for the exact-byte half of this document's opening
+sentence. Coverage there is bounded by what `xdp_main` can satisfy before Phase 2's VIP lookup
+and forwarding land — parse verdicts, `drop_stats` deltas, and that a passing frame is not
+mutated — with the rest of this document's matrix registered as `MARLIN_SKIP` placeholders
+(`docs/PHASES.md`) that report as a named `skip` line rather than as a pass, so a green run is
+never mistaken for complete coverage.
+
+Passing `ctx_in` to `bpf_prog_test_run_opts` for an XDP program carries two kernel-enforced
+obligations easy to miss and silent to get wrong: `ctx->data_end` must equal `data_size_in`
+exactly, and a non-zero `ingress_ifindex` is only accepted for an interface with registered XDP
+rxq info — no interface in this harness has one, so it stays `0` until the netns/veth integration
+tier supplies a real one. Getting either wrong fails every case identically with `-EINVAL` before
+`xdp_main` ever runs, which reads as a wall of unrelated assertion failures rather than the one
+setup bug it is.
+
 ## Integration tests
 
 Network namespaces and veth pairs with real tunnel devices on simulated backends. Validates

@@ -91,6 +91,11 @@ version control. Phase 1 is largely about making what exists compile, load and b
   `net attach xdpdrv`. The attach must fail rather than degrade to SKB mode (`docs/design/02-architecture.md`).
 - `make tests` builds and runs the native unit tests over `parser.c`
   (`docs/design/24-testing.md`, "Native unit tests"). Not part of `make all`; part of `make ci`.
+- `make packet-tests` builds `marlin.bpf.o`, loads it, and drives it through `bpf_prog_test_run`
+  for what `xdp_main` can satisfy today — parse verdicts and `drop_stats` deltas
+  (`docs/design/24-testing.md`, "Packet-level tests"; `data-plane/tests/packet/`). Needs root or
+  `CAP_BPF`+`CAP_NET_ADMIN`+`CAP_PERFMON` to load a program, so it is not part of `make tests`;
+  `make ci` runs it only when invoked as root and prints an explicit skip line otherwise.
 
 ### Datapath — the vertical slice
 
@@ -119,9 +124,9 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 - `vip_map`, `fwd_table`, `backends`, `config` written over `bpf_obj_get` +
   `bpf_map_update_elem`.
 - Hand-written mirrors for `vip_key`, `vip_meta`, `backend` and `marlin_config`, under
-  `docs/design/06-map-abi.md`'s parity discipline. `vip_key`'s anonymous union is
-  `[StructLayout(Explicit)]` with both arms
-  at `FieldOffset(0)`; fixed-size arrays are `[InlineArray]` or `fixed`, never managed arrays.
+  `docs/design/06-map-abi.md`'s parity discipline: every struct is `[StructLayout(Explicit)]`
+  with `[FieldOffset]` stated per field, `vip_key`'s anonymous union has both arms at
+  `FieldOffset(0)`, and fixed-size arrays are `[InlineArray]` or `fixed`, never managed arrays.
 - No health checking, no reconciliation loop, no APIs, no netlink.
 
 **Two decisions are required in this phase.**
@@ -141,7 +146,10 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 1. `marlin.bpf.o` builds with BTF, loads, and attaches in `xdpdrv` mode in a netns.
 2. `bpf_prog_test_run` asserts exact output bytes for: a VIP hit rewriting the destination MAC
    and returning `XDP_TX`; a miss returning `XDP_PASS` counting `vip_miss`; `backend_id == 0`
-   dropping `no_backend`; `state != MARLIN_UP` dropping `backend_down`.
+   dropping `no_backend`; `state != MARLIN_UP` dropping `backend_down`. None of these are
+   reachable yet — `xdp_main` has no VIP lookup or forwarding path (`src/main.c`) — and are
+   registered in `data-plane/tests/packet/xdp_test.c` via `MARLIN_SKIP`, each naming this line,
+   so `make packet-tests` reports them as `skip`, not a pass, until Phase 2 lands the code.
 3. The C# service configures that VIP and backend from scratch on a running datapath, and the
    forwarding change is observed in `vip_stats` and `backend_stats` — not in service logs.
 4. Restarting the C# service disturbs neither the attachment nor forwarding
@@ -248,7 +256,11 @@ currently apply.
    `ipip`/`sit` devices, and a real `vxlan` device accept what Marlin emits, including the zero
    UDP checksum (`docs/design/24-testing.md`).
 3. An extension-header chain at `MAX_EXT_HDRS` and one beyond it are distinguishable —
-   `ext_hdr_limit`, not `parse_error`.
+   `ext_hdr_limit`, not `parse_error`. The harness and this exact assertion already exist
+   (`data-plane/tests/packet/xdp_test.c`,
+   `ext_hdr_limit_nine_headers_is_drop_and_distinct_from_parse_error`) — parsing does not depend
+   on Phase 2b's forwarding code, so what remains for this criterion is that forwarding not
+   regress it.
 4. A redirect to an ifindex absent from `tx_ports` is a countable `XDP_ABORTED`, not a silent
    loss (`docs/design/09-sizing.md`).
 5. Reported verifier complexity is inside budget with all four modes and both families
@@ -370,6 +382,7 @@ section it affects, not in a document of its own.
 | Whether `data-plane/tests/` joins `make format`/`make tidy`, or takes its own `.clang-format`/`.clang-tidy` | `docs/REPO-STRUCTURE.md` §7.2 | 1 |
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
+| Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
 | `BPF_FIB_LOOKUP_DIRECT` has no configuration surface | `nexthop.c:206` | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |

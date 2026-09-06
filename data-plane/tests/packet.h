@@ -1,8 +1,11 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * Packet builder for the native parser tests. Reusable as-is by a future
- * tests/packet/ bpf_prog_test_run harness (docs/REPO-STRUCTURE.md Sec7.2).
+ * Packet builder shared by the native (parser_test.c) and bpf_prog_test_run
+ * (tests/packet/xdp_test.c) tiers (docs/REPO-STRUCTURE.md Sec7.2). A builder
+ * only one tier's cases need is marked __attribute__((unused)) below, since
+ * -Wunused-function is per translation unit and each tier includes this
+ * header into its own.
  */
 
 #pragma once
@@ -55,7 +58,7 @@ static void pb_init_arena(void)
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
 
         if(p != MAP_FAILED) {
-            pb_arena = p;
+            pb_arena = (unsigned char *)p;
             break;
         }
     }
@@ -65,7 +68,7 @@ static void pb_init_arena(void)
         void *p = mmap(NULL, PB_ARENA_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
 
         if(p != MAP_FAILED) {
-            pb_arena = p;
+            pb_arena = (unsigned char *)p;
         }
     }
 #endif
@@ -165,7 +168,7 @@ static __u32 pb_ext6(__u8 nexthdr, __u8 hdrlen)
     return pb_len;
 }
 
-static __u32 pb_frag6(__u8 nexthdr, __u16 frag_off_host)
+static __attribute__((unused)) __u32 pb_frag6(__u8 nexthdr, __u16 frag_off_host)
 {
     struct marlin_frag_hdr fh;
 
@@ -208,7 +211,7 @@ static __u32 pb_truncate(__u32 n)
     return pb_len;
 }
 
-static void pb_xdp(struct xdp_md *ctx)
+static __attribute__((unused)) void pb_xdp(struct xdp_md *ctx)
 {
     memset(ctx, 0, sizeof(*ctx));
     ctx->data = (__u32)(unsigned long)pb_arena;

@@ -1,15 +1,18 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * Minimal native test runner for the data-plane unit tests. Included once
- * from parser_test.c, so the storage below is file-static rather than
- * extern -- there is no second translation unit to share it with.
+ * Minimal test runner shared by the native (parser_test.c) and
+ * bpf_prog_test_run (tests/packet/xdp_test.c) tiers. Each includes this
+ * header into its own translation unit, so the storage below is file-static
+ * rather than extern -- there is no sharing across TUs, only duplication.
  */
 
 #pragma once
 
 #include <stdio.h>
 #include <string.h>
+
+#include <linux/bpf.h>
 
 #include <marlin/marlin.h>
 
@@ -27,12 +30,15 @@ struct marlin_test_case {
 static struct marlin_test_case marlin_tests[MARLIN_TEST_MAX];
 static int marlin_test_count;
 static int marlin_case_failures;
+static const char *marlin_case_skip_reason;
 
 /* enum marlin_ret -> name, so a failure reads "expected MARLIN_DROP_..., got
  * MARLIN_OK" instead of "expected 9, got 0". Only the values parser.c can
  * return need a case; everything else falls through to the numeric default.
+ * Unused in the bpf_prog_test_run tier, which never sees marlin_parse's raw
+ * rc -- only the xdp_action it maps to and the drop_stats it increments.
  */
-static const char *marlin_ret_name(int ret)
+static __attribute__((unused)) const char *marlin_ret_name(int ret)
 {
     switch(ret) {
         case MARLIN_OK:
@@ -62,6 +68,29 @@ static const char *marlin_ret_name(int ret)
     }
 }
 
+/* enum xdp_action -> name, for the bpf_prog_test_run tier's verdict
+ * assertions (tests/packet/xdp_test.c). linux/bpf.h defines the enum;
+ * nothing here depends on marlin.h. Unused in the native tier, which asserts
+ * enum marlin_ret directly and never runs a program through the kernel.
+ */
+static __attribute__((unused)) const char *xdp_action_name(int action)
+{
+    switch(action) {
+        case XDP_ABORTED:
+            return "XDP_ABORTED";
+        case XDP_DROP:
+            return "XDP_DROP";
+        case XDP_PASS:
+            return "XDP_PASS";
+        case XDP_TX:
+            return "XDP_TX";
+        case XDP_REDIRECT:
+            return "XDP_REDIRECT";
+        default:
+            return "<unknown xdp_action>";
+    }
+}
+
 static void marlin_test_register(const char *name, marlin_test_fn fn)
 {
     if(marlin_test_count < MARLIN_TEST_MAX) {
@@ -88,6 +117,18 @@ static void marlin_test_register(const char *name, marlin_test_fn fn)
         marlin_case_failures++;                                                                                      \
     } while(0)
 
+/* Marks a case not yet implemented and returns from its body immediately --
+ * placed first (and alone) in the body, so a skipped case never also runs
+ * CHECK_* assertions against code that does not exist yet. `reason` should
+ * name the doc line the missing behaviour is tracked against, so `make
+ * packet-tests` output says exactly what is pending and where.
+ */
+#define MARLIN_SKIP(reason)                                                                                           \
+    do {                                                                                                             \
+        marlin_case_skip_reason = (reason);                                                                          \
+        return;                                                                                                      \
+    } while(0)
+
 /* Casts both sides to a common signed width rather than comparing the raw
  * argument types: the fields under test span __u8 to __be32, and mismatched
  * signedness between "expected" (usually a literal int) and "actual" (usually
@@ -112,6 +153,16 @@ static void marlin_test_register(const char *name, marlin_test_fn fn)
         }                                                                                                            \
     } while(0)
 
+#define CHECK_XDP(expected, actual)                                                                                   \
+    do {                                                                                                             \
+        int marlin_check_actual_ = (actual);                                                                         \
+        int marlin_check_expected_ = (expected);                                                                     \
+        if(marlin_check_actual_ != marlin_check_expected_) {                                                         \
+            MARLIN_FAIL("expected %s, got %s", xdp_action_name(marlin_check_expected_),                              \
+                        xdp_action_name(marlin_check_actual_));                                                      \
+        }                                                                                                            \
+    } while(0)
+
 #define CHECK_MEM(expected_ptr, actual_ptr, len)                                                                      \
     do {                                                                                                             \
         if(memcmp((expected_ptr), (actual_ptr), (len)) != 0) {                                                       \
@@ -129,13 +180,22 @@ static void marlin_test_register(const char *name, marlin_test_fn fn)
 static int marlin_tests_main(void)
 {
     int failed = 0;
+    int skipped = 0;
     int i;
 
     for(i = 0; i < marlin_test_count; i++) {
         marlin_case_failures = 0;
+        marlin_case_skip_reason = NULL;
         marlin_tests[i].fn();
 
-        if(marlin_case_failures == 0) {
+        if(marlin_case_skip_reason != NULL) {
+            /* Checked ahead of failures: MARLIN_SKIP returns before any
+             * CHECK_* in the case body can run, so a skip is never also a
+             * failure -- reporting both would double-count the same case.
+             */
+            printf("skip %s (%s)\n", marlin_tests[i].name, marlin_case_skip_reason);
+            skipped++;
+        } else if(marlin_case_failures == 0) {
             printf("ok   %s\n", marlin_tests[i].name);
         } else {
             printf("FAIL %s (%d check%s failed)\n", marlin_tests[i].name, marlin_case_failures,
@@ -144,6 +204,12 @@ static int marlin_tests_main(void)
         }
     }
 
-    printf("%d passed, %d failed, %d total\n", marlin_test_count - failed, failed, marlin_test_count);
+    if(skipped == 0) {
+        printf("%d passed, %d failed, %d total\n", marlin_test_count - failed, failed, marlin_test_count);
+    } else {
+        printf("%d passed, %d failed, %d skipped, %d total\n", marlin_test_count - failed - skipped, failed, skipped,
+               marlin_test_count);
+    }
+
     return failed == 0 ? 0 : 1;
 }

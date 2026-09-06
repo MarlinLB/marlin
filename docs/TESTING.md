@@ -2,7 +2,7 @@
 
 This document explains how developers set up an isolated test environment in WSL2 to test the Marlin BPF datapath without affecting production network interfaces.
 
-For the overall test strategy, see `docs/design/24-testing.md`. For packet-level unit tests using `bpf_prog_test_run`, see `tests/packet/`.
+For the overall test strategy, see `docs/design/24-testing.md`. For packet-level unit tests using `bpf_prog_test_run`, see `data-plane/tests/packet/` (§5.2 below).
 
 **WSL2 advantage:** You can create virtual test interfaces, load the XDP program onto them, and exercise them without touching the host's actual network adapters.
 
@@ -164,15 +164,20 @@ sendp(pkt, iface="veth_peer0")
 
 ### 5.2 Using bpf_prog_test_run (unit testing)
 
-For deterministic testing without needing a full network, use the packet harness in `tests/packet/`:
+For deterministic testing without needing a full network, use the packet harness in
+`data-plane/tests/packet/` (`docs/REPO-STRUCTURE.md` §7.2 settled this at `data-plane/tests/packet/`,
+C + libbpf, rather than the repo-root `tests/packet/` this section used to describe). It loads
+the real `marlin.bpf.o` and runs it through `bpf_prog_test_run`, so it needs root or
+`CAP_BPF`+`CAP_NET_ADMIN`+`CAP_PERFMON` to load the program -- not a live network interface:
 
 ```bash
-cd tests/packet
-make
-./run_tests
+cd data-plane
+sudo make packet-tests
 ```
 
-See `docs/design/24-testing.md` for coverage details. This is the primary test path and is phase-gated; it needs no live network interface.
+See `docs/design/24-testing.md` for coverage details. This is the primary test path and is
+phase-gated: coverage today is bounded by what `xdp_main` can satisfy before Phase 2's VIP
+lookup and forwarding land (`data-plane/tests/packet/xdp_test.c`).
 
 ### 5.3 Using the native unit tests (parser.c)
 
@@ -414,7 +419,7 @@ For now, development testing uses `bpf_prog_test_run` (§5.2) or manual map writ
 
 ## 12. Next Steps
 
-1. **Run the packet tests:** `cd tests/packet && make && ./run_tests`
+1. **Run the packet tests:** `cd data-plane && sudo make packet-tests`
 2. **Inspect the datapath code:** `data-plane/src/marlin.c` and callees
 3. **Read the design:** `docs/design/README.md` for the forwarding pipeline
 4. **Set up continuous monitoring:** Background a `trace_pipe` tail and watch real-time trace output while forwarding
