@@ -66,6 +66,8 @@ static __attribute__((unused)) const char *marlin_ret_name(int ret)
             return "MARLIN_PASS_NOT_FORWARDED";
         case MARLIN_DROP_ACL_BLOCKED:
             return "MARLIN_DROP_ACL_BLOCKED";
+        case MARLIN_DROP_FRAME_TOO_BIG:
+            return "MARLIN_DROP_FRAME_TOO_BIG";
         default:
             return "<unknown enum marlin_ret>";
     }
