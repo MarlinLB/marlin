@@ -126,7 +126,7 @@ SpacesInSquareBrackets: false
 # --- Blank lines --------------------------------------------------------------
 KeepEmptyLinesAtTheStartOfBlocks: false
 MaxEmptyLinesToKeep: 1
-SeparateDefinitionBlocks: Always
+SeparateDefinitionBlocks: Leave
 
 # --- Includes -----------------------------------------------------------------
 # NEVER sort. vmlinux.h is not in use here (types.h) — the sources include UAPI
