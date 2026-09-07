@@ -1,14 +1,18 @@
 # Marlin — Design
 
 **Status:** design settled, pre-implementation
-**Last updated:** 2026-09-04
-**Revision:** 8 — VXLAN's outer Ethernet header specified (`14-forwarding-modes.md` §7.4):
-`vxlan_encap.c` writes it, because the MAC-swap default (`15-nexthop-l2dsr.md`) cannot once the
-arriving header has been consumed as the inner one; `backend.vni`'s host byte order and
-conversion site are stated. Revision 7 added VXLAN as a fourth per-backend forwarding mode —
-`struct backend` gained `vni` and `inner_mac`, the rendezvous score (`12-selection.md`) became
-keyed on `addr`, `vni` and `inner_mac` together, and the stack budget target was raised to
-accommodate the wider struct (`05-budgets.md`)
+**Last updated:** 2026-09-06
+**Revision:** 9 — QUIC connection-ID steering added (`30-quic.md`): `VIP_QUIC` decodes a
+`backend_id` a cooperating backend embeds in its connection IDs, steering short-header packets
+around client address migration without a hash. Reserved in the ABI (`vip_meta.flags` bits 3
+and 8–12, `08-types.md`) and implemented in `parser.c` (classification only; the steering step
+in `balancer.c` is not yet written). Revision 8 — VXLAN's outer Ethernet header specified
+(`14-forwarding-modes.md` §7.4): `vxlan_encap.c` writes it, because the MAC-swap default
+(`15-nexthop-l2dsr.md`) cannot once the arriving header has been consumed as the inner one;
+`backend.vni`'s host byte order and conversion site are stated. Revision 7 added VXLAN as a
+fourth per-backend forwarding mode — `struct backend` gained `vni` and `inner_mac`, the
+rendezvous score (`12-selection.md`) became keyed on `addr`, `vni` and `inner_mac` together, and
+the stack budget target was raised to accommodate the wider struct (`05-budgets.md`)
 
 Marlin is an eBPF/XDP layer-4 load balancer. The datapath is C compiled with clang and
 attached as a native-mode XDP program. The control plane is a C#/.NET 10 service.
@@ -47,3 +51,4 @@ provisioning are the integrator's responsibility; see `DEPLOYMENT.md`.
 | 27-source-filtering.md | ACL matching, precedence, evaluation, and lockout risk |
 | 28-rate-limiting.md | Token-bucket rate limiting design and update algorithm |
 | 29-versions.md | Minimum kernel and toolchain version requirements |
+| 30-quic.md | QUIC connection-ID steering: wire format, ABI, and the backend contract |

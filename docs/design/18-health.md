@@ -1,8 +1,8 @@
 # Marlin — Health Checking
 
 
-The control plane performs active probes and drives `backend.state`. The datapath has no
-health logic.
+The control plane performs active probes and drives the `MARLIN_BE_F_STATE` bit of
+`backend.flags`. The datapath has no health logic.
 
 **Probes must exercise the forwarding path, not bypass it.** A TCP connect to a backend's real
 address proves the backend is alive but says nothing about whether the configuration Marlin

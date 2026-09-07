@@ -15,7 +15,7 @@ Global subprograms are verified independently of their callers and are restricte
 
 ```c
 struct marlin_ctx {          /* 104 bytes */
-    struct packet_tuple tuple; /* 40 — written by parse.c, read by everything after */
+    struct packet_tuple tuple; /* 40 — written by parser.c, read by everything after */
     struct backend backend;  /* 32 — written by balancer.c, read by the encap units */
     struct marlin_config cfg;/* 20 — written by marlin.c, read by balancer.c and the encap units */
     __u32 flags;             /*  4 */

@@ -33,12 +33,21 @@ control plane is C#/.NET 10. Design is settled and pre-implementation.
 - **Run an adversarial verification pass** over your own output before presenting it, for
   anything non-trivial.
 
+## Code comments
+
+- **File header:** one short paragraph at the top of the file, no more.
+- **No phase/plan narration in code** — no "In phase 2b: ...", "this part handles ...", or
+  similar. That belongs in `PHASES.md`, not the source.
+- **Comment only what isn't self-explanatory**, and then explain *why* the code exists (the
+  constraint, bug, or requirement behind it), not what it does — the code already says that.
+- When editing existing code, remove comments that violate the above instead of leaving them.
+
 ## Traps specific to this codebase
 
 - `types.h` is ABI. The C# mirror is hand-written and nothing checks that the two agree, so a
   divergence is silent memory corruption. Change both in the same commit.
 - `enum marlin_ret` values are `drop_stats` indices from first release. Append, never reorder.
-- The BPF stack is 512 bytes **combined across the whole call chain**. `marlin_ctx` is 92.
+- The BPF stack is 512 bytes **combined across the whole call chain**. `marlin_ctx` is 104.
 - Never hold a packet pointer across a `marlin_*` call, and re-read `data`/`data_end` after
   every `bpf_xdp_adjust_head()`.
 - Every source file is tab-indented while `.clang-format` and `.editorconfig` mandate spaces.

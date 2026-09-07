@@ -13,7 +13,7 @@ holds a resolved copy of `struct backend` (32 bytes) rather than accumulating sc
 **104 of the 108 are used**, sixteen of them spent widening `struct backend` for
 `egress_ifindex`, `vni` and `inner_mac` (`docs/design/16-fib-lookup.md`, `docs/design/08-types.md`).
 The remaining four are not spare capacity: `nexthop.c`'s
-`struct bpf_fib_lookup` is 64 bytes of the chain's share on its own, and `parse.c`'s
+`struct bpf_fib_lookup` is 64 bytes of the chain's share on its own, and `parser.c`'s
 extension-header walk and the entropy hash shared by GUE and VXLAN have not been written. The
 target was raised from 96 to 108 by decision, not by measurement — the project owner's explicit
 sanction for `struct backend`'s growth to carry VXLAN's overlay identity — and that is the honest
@@ -40,7 +40,7 @@ function. Inside `balancer.c` only `marlin_balance()` is global; its stage funct
 `static __always_inline` and are verified as one body with it. That is deliberate — the
 selection path is branch-light, and factoring it into global subprograms would have cost a
 call frame and the output-parameter convention for no reduction in path count. What remains
-independently verified is where the explosion actually lives: `parse.c`, the three
+independently verified is where the explosion actually lives: `parser.c`, the three
 encapsulation units, and `nexthop.c` with its seven FIB return codes and its two next-hop
 paths, one of which branches again on whether the MAC-swap default applies
 (`docs/design/15-nexthop-l2dsr.md`).

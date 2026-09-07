@@ -114,11 +114,11 @@ traffic does not fragment — TCP with MSS clamping, in practice — and is a lo
 one whose traffic does. No validation can tell the two apart, so nothing rejects the mistake and
 only the counter reveals it (`DEPLOYMENT.md`).
 
-### Why there is no third option
+### Why there is no third option, among hash inputs
 
 Any hash input richer than what appears in *every* fragment must either drop fragments or split
 them, and nothing without per-flow state can do otherwise. That closes the design space to the
-two positions above:
+two positions above, for a hash-based input:
 
 - **Hashing ports with fragments falling back to the address** splits one datagram across two
   backends silently — strictly worse than either position, and rejected in
@@ -129,6 +129,17 @@ two positions above:
   not per row, and reseeding remaps every client on the VIP while breaking the cross-instance
   agreement `docs/design/21-active-active.md` requires.
 
+**A QUIC connection ID is a third selection input, and it is not a hash input at all.**
+`VIP_QUIC` (`docs/design/30-quic.md`) steers short-header packets by decoding a `backend_id`
+the *server* embedded in the connection ID, bypassing `siphash(...) % TABLE_SIZE` and
+`fwd_table` for the packets it steers. It survives client address migration, which no hash
+input can: RFC 9000 §9.5 requires the connection ID to change whenever the client does, so
+nothing observable in a migrated packet is both constant across the connection and
+discriminating between connections. It is admitted on a different ground than the two
+positions above — not because it solves the fragment problem, but because the backend
+cooperates in generating the value. That cooperation is the actual cost; see
+`docs/design/30-quic.md` and `docs/design/25-rejected.md`.
+
 ### Prior art
 
 Meta's Katran hashes the 5-tuple by default and narrows it per VIP through the same kind of flag
@@ -138,6 +149,11 @@ default is the inverse, because a load balancer that silently breaks large UDP i
 default than one that distributes shared egresses poorly, but the mechanism and its fragment
 cost are the same. GitHub's GLB hashes packet data with a primary/secondary pair, which requires
 the secondary mechanism `docs/design/25-rejected.md` rejects.
+
+**Katran's `QUIC_VIP` is not only a hash-narrowing flag.** It also gates a connection-ID decode
+paired with mvfst, Meta's own QUIC implementation, emitting Katran-format connection IDs by
+default. `docs/design/30-quic.md` adopts that half of the mechanism as `VIP_QUIC`, on the same
+backend-cooperation terms Katran requires.
 
 `VIP_HASH_5TUPLE` is hash input, so every instance serving the VIP must set it identically
 (`docs/design/21-active-active.md`). It does not affect table generation: it selects a row, and

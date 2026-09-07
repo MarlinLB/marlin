@@ -5,7 +5,7 @@
 
 - Own the configuration of record and reconcile the maps to it.
 - Generate `fwd_table` per VIP from the stored `table_seed` and member set, and write it.
-- Health-check backends and maintain `backend.state`.
+- Health-check backends and maintain the `MARLIN_BE_F_STATE` bit of `backend.flags`.
 - Populate and refresh `backend.mac` from the kernel neighbour table.
 - **Populate `backend.vni` and `backend.inner_mac` for every VXLAN backend, from configuration.**
   Unlike `backend.mac`, these come from the operator's configuration store, never from the

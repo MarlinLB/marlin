@@ -26,16 +26,37 @@ pointer invalidation bites.
   single-packet harness.
 - With the flag set, a first fragment and a non-first fragment both drop `frag_unsupported`. The
   first-fragment half is the assertion that `MARLIN_CTX_F_FRAG_FIRST` is actually produced by
-  `parse.c` — the failure it guards is a first fragment forwarded and reassembly state stranded,
+  `parser.c` — the failure it guards is a first fragment forwarded and reassembly state stranded,
   which no other test would notice.
 - With the flag clear, both fragments still forward, and to the same backend as an unfragmented
   packet of the same flow. This is the existing guarantee, and it must not move.
 - An ICMP error on a flagged VIP selects the same row as the flow it reports on. This fails
-  unless `parse.c` recovers the embedded destination port into `tuple.sport`
+  unless `parser.c` recovers the embedded destination port into `tuple.sport`
   (`docs/design/13-icmp.md`), and it is the only test that catches that omission.
 - `tuple.pad` non-zero changes the selected row on a flagged VIP and does not on an unflagged
   one — the assertion behind `docs/design/10-map-invariants.md`'s zeroing rule for a struct that
   is hashed whole rather than used as a map key.
+
+**`VIP_QUIC` steers a flagged short-header packet by connection ID instead of the hash, once
+`balancer.c` exists** (`docs/design/30-quic.md`). `parser.c`'s classification is native-unit-tested
+today (`data-plane/tests/parser_test.c`); the assertions below are packet-level and register as
+`MARLIN_SKIP` placeholders (`docs/PHASES.md`) until the steering step lands:
+
+- Two packets with the same connection ID and different source addresses select the same
+  backend — the migration assertion, and the whole point of the feature.
+- The same two packets on a VIP without `VIP_QUIC` select by hash and may therefore differ —
+  proving the flag is what does it.
+- A connection ID whose check field fails, or whose decoded `backend_id` is 0, `>= MAX_BACKENDS`,
+  or not `MARLIN_UP`, falls through to the hash path and counts — never an out-of-bounds
+  `backends[]` read.
+- A non-QUIC UDP packet and a long-header QUIC packet on a `VIP_QUIC` VIP both route by hash,
+  unchanged.
+- An ICMP error on a `VIP_QUIC` VIP routes by hash: an embedded header carries at most 8 bytes of
+  L4 (`data-plane/include/marlin/proto.h`) and never a connection ID. A known gap, asserted
+  rather than fixed.
+- A fragmented UDP datagram on a `VIP_QUIC` VIP routes by hash. QUIC's 1200-byte floor and
+  DPLPMTUD keep it unfragmented in practice (`docs/design/23-mtu.md`), but the path must be
+  explicit.
 
 **The `NO_NEIGH` fallback fires only on its exact conditions.** Five cases against one flagged
 L2 DSR backend with a stored MAC and no neighbour entry: on-link route, FIB returns the ingress
@@ -112,6 +133,51 @@ an allowlisted source at any rate is never `ratelimited`.
 **Concurrency is out of reach of `bpf_prog_test_run`**, which is single-threaded. The
 compare-and-swap loop's contention behaviour and `rl_cas_exhausted` need the integration
 environment below with concurrent senders across multiple receive queues.
+
+## Native unit tests
+
+A second mechanism, alongside `bpf_prog_test_run` above, for the one translation unit where it
+is cheap: `data-plane/tests/` compiles `parser.c` with the host toolchain — no `-target bpf` — and
+`#include`s it directly to call its `static` helpers with real pointers. This is sound only
+because `parser.c` makes no `bpf_*` helper call and reads no map; it is a pure function of a byte
+buffer plus two offsets, so its behaviour does not depend on which target compiled it. No other
+translation unit has that property yet — `main.c` and the encapsulation units read and write maps,
+so a native build of those would test a different program than the one that loads.
+
+What it buys over the packet-level harness: the `static` helpers (`marlin_parse_frag6`,
+`marlin_walk_ext6`, `marlin_parse_icmp`, …) are otherwise unreachable except through
+`marlin_parse`'s one entry point, so a bug confined to one helper's boundary condition — an IPv6
+extension-header chain at exactly `MAX_EXT_HDRS`, a fragment header truncated to 3 of its 8 bytes —
+is exercised directly rather than inferred from `marlin_parse`'s return value. It also runs in
+milliseconds with no root privilege and no kernel involved, so it is the tier a change to
+`parser.c` should be checked against first.
+
+What it cannot do: assert an emitted frame, a map write, or anything downstream of
+`marlin_parse` — that stays with `bpf_prog_test_run`, which is the only tier that runs the code as
+compiled for the datapath. `make tests` (not part of `make all`; part of `make ci`) runs this tier;
+`docs/PHASES.md` tracks whether the mechanism extends past `parser.c`.
+
+This is also why a sub-`ETH_HLEN` truncation case cannot move to the packet-level harness: the
+kernel's XDP `BPF_PROG_TEST_RUN` path rejects `data_size_in` below `ETH_HLEN` (14 bytes) before
+the program ever runs, so `parser_test.c`'s 13-byte Ethernet truncation case is native-tier-only
+by construction, not by choice.
+
+`data-plane/tests/packet/` (`docs/REPO-STRUCTURE.md` §7.2) is the packet-level harness above,
+made concrete: it loads the real `marlin.bpf.o` and drives `xdp_main` through
+`bpf_prog_test_run_opts`, asserting `data_out` for the exact-byte half of this document's opening
+sentence. Coverage there is bounded by what `xdp_main` can satisfy before Phase 2's VIP lookup
+and forwarding land — parse verdicts, `drop_stats` deltas, and that a passing frame is not
+mutated — with the rest of this document's matrix registered as `MARLIN_SKIP` placeholders
+(`docs/PHASES.md`) that report as a named `skip` line rather than as a pass, so a green run is
+never mistaken for complete coverage.
+
+Passing `ctx_in` to `bpf_prog_test_run_opts` for an XDP program carries two kernel-enforced
+obligations easy to miss and silent to get wrong: `ctx->data_end` must equal `data_size_in`
+exactly, and a non-zero `ingress_ifindex` is only accepted for an interface with registered XDP
+rxq info — no interface in this harness has one, so it stays `0` until the netns/veth integration
+tier supplies a real one. Getting either wrong fails every case identically with `-EINVAL` before
+`xdp_main` ever runs, which reads as a wall of unrelated assertion failures rather than the one
+setup bug it is.
 
 ## Integration tests
 

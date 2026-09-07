@@ -3,9 +3,10 @@
 
 ## Backend state
 
-`backend.state` is `MARLIN_UP` or `MARLIN_DOWN`. `MARLIN_UP` is non-zero so a zeroed slot
-reads as not-UP (`docs/design/10-map-invariants.md`). State changes are a single `backends[id]` write and take effect across
-every VIP the backend serves simultaneously.
+`backend.flags` bit `MARLIN_BE_F_STATE` is set for `MARLIN_UP`, clear for `MARLIN_DOWN`.
+`MARLIN_UP` is non-zero so a zeroed slot reads as not-UP (`docs/design/10-map-invariants.md`).
+State changes are a single `backends[id]` write and take effect across every VIP the backend
+serves simultaneously.
 
 A per-VIP down-set was considered, allowing a backend to be down for one VIP and up for
 another. Rejected: the control plane health-checks backends rather than per-VIP endpoints, so
@@ -23,11 +24,11 @@ concept, is control-plane metadata with no datapath meaning. See `docs/design/25
 `bpf_map_update_elem()` on an `ARRAY` copies the whole 32-byte value and is **not** atomic
 against a concurrent datapath read, so a reader may observe a torn value.
 
-This is harmless, but not for a reason to do with alignment. Only `state`, `flags` and
-`egress_ifindex` ever change at runtime, and the control plane writes the full struct with every
-other field carrying its existing value. A torn read therefore observes either the old or the new
-value of those, with every other field correct — because those bytes were rewritten with the
-values they already held.
+This is harmless, but not for a reason to do with alignment. Only `flags` (its state and FIB
+bits) and `egress_ifindex` ever change at runtime, and the control plane writes the full struct
+with every other field carrying its existing value. A torn read therefore observes either the
+old or the new value of those, with every other field correct — because those bytes were
+rewritten with the values they already held.
 
 `egress_ifindex` is mutable because topology is: a bond failover or a re-cabling changes which
 interface reaches a backend without changing the backend. It tolerates tearing better than the
@@ -41,8 +42,8 @@ read-modify-write of the complete struct. Constructing a partial `struct backend
 would corrupt `addr`, `mac`, `encap_dport`, `vni` or `inner_mac` in a way that a torn read could
 expose.
 
-`addr`, `mac`, `encap_dport`, `vni`, `inner_mac` and `mode` are never modified in place; changing
-any of them is a removal followed by an addition under a new backend ID.
+`addr`, `mac`, `encap_dport`, `vni`, `inner_mac` and the mode bits of `flags` are never modified
+in place; changing any of them is a removal followed by an addition under a new backend ID.
 
 ## Rows pointing at a down backend drop
 
@@ -84,9 +85,9 @@ non-idempotent requests in flight.
 
 ## Mode changes
 
-A backend's `mode` is never edited in place. Changing it is a removal followed by an addition
-under a new backend ID. Editing in place would switch live flows to a different encapsulation
-mid-connection, and would violate the single-8-byte-word invariant above.
+A backend's mode (the low bits of `flags`) is never edited in place. Changing it is a removal
+followed by an addition under a new backend ID. Editing in place would switch live flows to a
+different encapsulation mid-connection, and would violate the single-8-byte-word invariant above.
 
 ## Table regeneration
 

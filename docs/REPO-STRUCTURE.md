@@ -20,8 +20,11 @@ The rules the layout follows, stated so a new file can be placed without re-deri
    boundary between them would put that commit across two histories.
 2. **A directory per deployed piece**, not a flat tree. The pieces are independent artefacts
    with different toolchains, not one program.
-3. **The map ABI is a delimited surface.** Nothing in the build detects a divergence between
-   `types.h` and its C# mirror, and review by reading is the only mechanism
+3. **The map ABI is a delimited surface.** `Explicit` layout with `[FieldOffset]` on every
+   C# field lets the CLR catch a struct whose fields no longer fit, but a mistranscription
+   from `types.h`, a reordering of two same-sized fields, or a value correct in layout but
+   wrong in kind (host order for network order, an unapplied scale) is still undetected by
+   the build, and review by reading is the mechanism for that residue
    (`docs/design/06-map-abi.md`). Both halves therefore live in directories whose entire
    content is ABI, so the review is a two-directory diff.
 4. **Nothing depends on the interop layer for a type.** `Marlin.Abi` carries no project or
@@ -29,6 +32,13 @@ The rules the layout follows, stated so a new file can be placed without re-deri
 5. **Tests are siblings of what they test, not children.** `docs/design/24-testing.md` makes
    packet-level tests a phase-0 artefact; nesting them under `data-plane/` invites treating
    them as build scaffolding.
+   **Exception: native C unit tests of a single translation unit, and the packet-level harness
+   that reuses them.** `data-plane/tests/` holds tests that `#include` a `data-plane/src/*.c`
+   file directly to reach its `static` helpers — they cannot be moved out of that tree without
+   losing that access. `data-plane/tests/packet/` (§7.2) extends the exception for a narrower
+   reason: it reuses that tree's `packet.h` and `harness.h` as-is and shares its Makefile, not
+   because it needs the same `#include` access. `tests/integration/` has neither reason and
+   stays outside `data-plane/`, at the repo root.
 
 ---
 
@@ -45,7 +55,7 @@ marlin/
 ├── .gitignore
 │
 ├── docs/                             # see §6 on migrating the existing documents
-│   ├── design/                       # README.md plus 29 numbered per-topic files, replacing DESIGN.md
+│   ├── design/                       # README.md plus 30 numbered per-topic files, replacing DESIGN.md
 │   ├── DEPLOYMENT.md
 │   ├── PHASES.md
 │   └── REPO-STRUCTURE.md
@@ -57,25 +67,33 @@ marlin/
 │   ├── src/
 │   │   ├── main.c                  # XDP entry point
 │   │   ├── balancer.c                # marlin_balance()
-│   │   ├── parse.c
+│   │   ├── parser.c
 │   │   ├── ipip_encap.c
 │   │   ├── gue_encap.c
 │   │   ├── vxlan_encap.c
 │   │   └── nexthop.c
-│   └── include/
-│       ├── marlin.h                  # marlin_ctx, enum marlin_ret, marlin_* prototypes
-│       └── marlin/
-│           ├── abi/                  # every file here has a C# counterpart. Nothing else does.
-│           │   ├── types.h           # map key and value structs
-│           │   ├── limits.h          # docs/design/09-sizing.md constants — not in docs/design/03-translation-units.md, see §8
-│           │   └── enums.h           # modes, states, drop reasons, flag bits — see §8
-│           ├── maps.h
-│           ├── csum.h
-│           ├── entropy.h             # outer UDP source port entropy hash, shared by gue_encap.c and vxlan_encap.c
-│           ├── siphash.h
-│           ├── stats.h
-│           ├── acl.h
-│           └── ratelimit.h
+│   ├── include/
+│   │   ├── marlin.h                  # marlin_ctx, enum marlin_ret, marlin_* prototypes
+│   │   └── marlin/
+│   │       ├── abi/                  # every file here has a C# counterpart. Nothing else does.
+│   │       │   ├── types.h           # map key and value structs
+│   │       │   ├── limits.h          # docs/design/09-sizing.md constants — not in docs/design/03-translation-units.md, see §8
+│   │       │   └── enums.h           # modes, states, drop reasons, flag bits — see §8
+│   │       ├── maps.h
+│   │       ├── csum.h
+│   │       ├── entropy.h             # outer UDP source port entropy hash, shared by gue_encap.c and vxlan_encap.c
+│   │       ├── siphash.h
+│   │       ├── stats.h
+│   │       ├── acl.h
+│   │       └── ratelimit.h
+│   └── tests/                       # native unit tests, `make tests` — Principle 5's exception
+│       ├── parser_test.c            # #includes src/parser.c to reach its static helpers
+│       ├── packet.h                 # packet builder, shared with tests/packet/ below
+│       ├── harness.h                # shared with tests/packet/ below
+│       └── packet/                  # bpf_prog_test_run, exact bytes — §7.2: landed here, not the repo root
+│           ├── xdp_test.c           # cases + main()
+│           ├── prog.h               # load/run wrapper over libbpf
+│           └── maps.h               # map fd lookup, seeding, drop_stats reads
 │
 ├── deploy/
 │   ├── marlin-load.sh                # the two commands of docs/design/02-architecture.md
@@ -97,8 +115,7 @@ marlin/
 │   ├── Marlin.Netlink/                # neighbour and link events (docs/design/15-nexthop-l2dsr.md, docs/design/19-control-plane.md)
 │   └── Marlin.Api/                    # ASP.NET Core host; configuration and status APIs
 │
-├── tests/
-│   ├── packet/                        # bpf_prog_test_run, exact output bytes (docs/design/24-testing.md)
+├── tests/                             # packet/ lives at data-plane/tests/packet/ instead (§7.2)
 │   ├── integration/                   # netns, veth, real ipip/sit/FOU/vxlan devices
 │   └── unit/
 │       ├── Marlin.Core.Tests/
@@ -148,7 +165,7 @@ two that are boundaries for a reason beyond tidiness:
 
 - **`Marlin.Abi` is separate from `Marlin.Bpf`** because four projects need the struct
   vocabulary — `Core` for `fwd_table` generation (`docs/design/12-selection.md`) and validation,
-  `Health` to write `backend.state`, `Api` for the flag bits and drop-reason labels that
+  `Health` to write the state bit of `backend.flags`, `Api` for the flag bits and drop-reason labels that
   `docs/design/08-types.md` calls part of the control-plane API surface, and `Bpf` for map I/O.
   Merging the two would make all three others reference the interop project to see a struct
   definition, pulling libbpf P/Invoke and syscall marshalling into projects that should
@@ -187,14 +204,14 @@ arrays. That is design-mandated, so the analyzer exceptions are scoped to that o
 | `/control-plane/.editorconfig` | all C#: naming, file-scoped namespaces, `dotnet_diagnostic.*` severities |
 | `/control-plane/Marlin.Abi/.editorconfig` | narrow exceptions for `[InlineArray]`, `fixed`, `unsafe` |
 | `/tests/unit/.editorconfig` | test method naming, magic numbers permitted |
-| `/tests/packet/.clang-format`, `.clang-tidy` | only if the harness is C — §7 |
+| `/data-plane/tests/packet/.clang-format`, `.clang-tidy` | only if `data-plane/tests/` takes its own rather than joining the root's — open, `docs/PHASES.md` |
 | `/deploy/.shellcheckrc` | `marlin-load.sh` is a shipped artefact (`docs/design/02-architecture.md`) |
 
 Three practical points:
 
 - **`.clang-format` belongs in `data-plane/`, not at the root.** clang-format searches
   upward from the file being formatted, so this scopes the datapath rules without reaching
-  `tests/packet/`, which normally wants a longer line limit than production C.
+  `data-plane/tests/packet/`, which normally wants a longer line limit than production C.
 - **`.clang-tidy` is inert without a compile database.** `data-plane/Makefile` must emit
   `compile_commands.json` — concatenated `clang -MJ` fragments, or `bear --`. Without it
   clang-tidy cannot resolve `-target bpf` or the BPF headers, and every file fails to parse
@@ -246,13 +263,23 @@ design's vocabulary; `datapath/` + `control-plane/` matches it and reads as mism
 `data-plane/` stands, the design documents need a terminology pass in the same change rather
 than the repository and the design disagreeing from the first commit.
 
-**7.2 Packet-harness language.** Decides whether `tests/packet/` needs its own clang files.
+**7.2 Packet-harness language: C + libbpf.** Settled at `data-plane/tests/packet/`, not the
+repo root's `tests/packet/` — `data-plane/tests/` had already landed there (Principle 5's
+exception) by the time this decision closed, and a second Makefile plus a
+`../data-plane/include` reach-around bought nothing. It `#include`s the native tier's `packet.h`
+and `harness.h` directly and links `-lbpf`, which the other two options could not do:
 
 | Option | For | Against |
 |---|---|---|
-| C + libbpf | shortest path to exact-byte assertions | a second test runner in CI |
-| C# P/Invoke | one runner; seeds maps through the hand-written structs, so a wrong offset fails a forwarding assertion instead of corrupting production | marshalling a syscall the control plane never makes |
-| Python + ctypes | fastest packet crafting | a third language in the tree |
+| C + libbpf (chosen) | shortest path to exact-byte assertions; reuses `data-plane/tests/packet.h` and `harness.h` as-is | a second test runner in CI alongside the native one |
+| C# P/Invoke | one runner; seeds maps through the hand-written structs, so a wrong offset fails a forwarding assertion instead of corrupting production | marshalling a syscall the control plane never makes; discards `packet.h` |
+| Python + ctypes | fastest packet crafting | a third language in the tree; discards `packet.h` |
+
+A related, narrower decision still has code waiting on it: whether `data-plane/tests/`
+(native C, landed ahead of this one — see Principle 5's exception) joins `make format`/`make tidy`
+against the root `.clang-format`/`.clang-tidy`, or takes its own — on the same reasoning this
+section gave for `tests/packet/` wanting a longer `ColumnLimit`, now extending to
+`data-plane/tests/packet/` as well.
 
 **7.3 `Marlin.Bpf` interop.** libbpf P/Invoke matches the function names in
 `docs/design/19-control-plane.md` and gets `bpf_map_lookup_batch` for free; a raw `bpf()`
@@ -264,20 +291,26 @@ surface by containment. Flattening to `include/marlin/{types,limits,enums}.h` ma
 into a sentence.
 
 **7.5 clang-format base style.** Kernel style — tabs, 8 wide, 80 columns — matches the BPF
-samples anyone reading `parse.c` will have read. `BasedOnStyle: LLVM` matches nothing else in
+samples anyone reading `parser.c` will have read. `BasedOnStyle: LLVM` matches nothing else in
 the repository but is less hostile to deep nesting.
 
 **7.6 The unnamed global subprograms.** `docs/design/04-calling-convention.md` names only
-`marlin_balance()`. The entries for `parse.c`, `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`
+`marlin_balance()`. The entries for `parser.c`, `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`
 and `nexthop.c` are the file-to-file contract and are unspecified; `nexthop.c` may be one or two.
-Left silent, the first person to write `parse.c` picks them.
+Left silent, the first person to write `parser.c` picks them.
 
-**7.7 An ABI parity test.** A `Marlin.Abi.Tests/` asserting `Marshal.SizeOf` and
-`Marshal.OffsetOf` against the byte offsets `docs/design/06-map-abi.md` requires in comments
-would catch size and offset drift, though not a reordering of two same-sized fields. It is
-absent from §2 deliberately: `docs/design/06-map-abi.md` states that nothing in the build
-detects divergence and that review is the only mechanism, so adding it contradicts the design
-as written and requires that `docs/design/06-map-abi.md` change first.
+**7.7 An ABI parity test.** `docs/design/06-map-abi.md` now requires every mirrored struct to
+be `[StructLayout(Explicit)]` with `[FieldOffset]` per field, so the CLR already refuses a
+struct whose fields do not fit its declared `Size` — the size/offset-drift class a
+`Marlin.Abi.Tests/` asserting `Marshal.SizeOf`/`Marshal.OffsetOf` would have caught. What no
+runtime check catches is a reordering of two same-sized fields on the C side with the C# side
+left unchanged, since the C# offsets are transcribed by hand and a self-consistent
+mistranscription loads without error. Closing that gap needs an oracle outside both
+hand-written declarations — a CI step comparing `bpftool btf dump`'s member offsets against
+the C# `[FieldOffset]` set, in both directions — and is undecided (`docs/PHASES.md`'s
+open-decision table, phase 2a). It is not the BTF-to-C# generation `docs/design/26-superseded.md`
+rejects: a two-column offset comparison models no C# syntax and emits no code, where
+generation would have to model both.
 
 ---
 

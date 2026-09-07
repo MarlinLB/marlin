@@ -2,21 +2,29 @@
 
 ## Active/active
 
-**Three configuration values must be identical on every instance serving a VIP:
-`hash_key`, `table_seed` and the `VIP_HASH_5TUPLE` bit of `vip_meta.flags`.** They fail
-differently and all three fail silently.
+**Five configuration values must be identical on every instance serving a VIP:
+`hash_key`, `table_seed`, the `VIP_HASH_5TUPLE` bit, the `VIP_QUIC` bit and the QUIC
+connection-ID length, all in `vip_meta.flags`.** They fail differently and all five fail
+silently.
 
 | Value | Where it acts | Effect of a mismatch |
 |---|---|---|
-| `vip_meta.hash_key` | datapath, `docs/design/12-selection.md` | instances map the same client to different *rows* |
+| `vip_meta.hash_key` | datapath, `docs/design/12-selection.md`, `docs/design/30-quic.md` | instances map the same client to different *rows*, and decode a QUIC connection ID's check field differently |
 | `table_seed` | control plane, `docs/design/12-selection.md` | instances map the same *row* to different backends |
 | `VIP_HASH_5TUPLE` | datapath, `docs/design/12-selection.md` | instances hash different *fields*, so the same client reaches different rows — and one instance drops the VIP's fragments while another forwards them |
+| `VIP_QUIC` | datapath, `docs/design/30-quic.md` | one instance steers short-header packets by connection ID while the other hashes them — a different backend, not merely a different row |
+| QUIC connection-ID length | datapath, `docs/design/30-quic.md` | instances read the check and `backend_id` fields at different offsets, decoding a different backend from the same connection ID |
 
 Matching one without the others buys nothing: a client that reaches the same row on two
 instances is still forwarded to two different backends if their tables were generated under
 different seeds, and a client that would reach the same row under one hash input reaches a
-different one under the other. All three must match, and affinity is lost before any of
+different one under the other. All five must match, and affinity is lost before any of
 `docs/design/17-reconfiguration.md`'s failure modes apply if any does not.
+
+`VIP_QUIC` and the connection-ID length fail worse than the other three: a mismatch there does
+not lose affinity, it routes deterministically to the wrong backend, because the two instances
+disagree about what a steered packet's `backend_id` even is
+(`docs/design/30-quic.md`).
 
 `VIP_HASH_5TUPLE` joins the list on the general principle `docs/design/12-selection.md` states
 for hash input: the generation is deterministic in the seed, the member set and the hash input,

@@ -53,3 +53,12 @@ rather than guessed; see `PHASES.md`'s open-decision table, closed by Phase 2b.
 - PROXY protocol — unnecessary, since DSR preserves the client address natively.
 - Preserving connections across a datapath upgrade. Control plane upgrades are
   non-disruptive; datapath upgrades may drop connections.
+
+**QUIC connection-ID classification is not layer 7 processing.** `docs/design/30-quic.md`'s
+`VIP_QUIC` reads one fixed-offset byte of UDP payload to classify a QUIC header form (RFC 8999,
+the one part of the wire format every QUIC version keeps invariant), and later a fixed-width
+connection-ID field to decode a `backend_id` — no protocol state, no version awareness, no
+decryption. It is shallower than a read the datapath already performs: `parser.c`'s ICMP branch
+reconstructs an IP header, up to two extension headers, and a ports word from inside an ICMP
+message's payload. The non-goal above is application awareness — TLS, HTTP — not a fixed-offset
+transport read.

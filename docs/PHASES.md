@@ -74,7 +74,7 @@ configuration there. Nothing beyond that.
 
 Sources exist ahead of any build: `marlin.c`, `balancer.c`, `nexthop.c`, and every header
 `docs/design/03-translation-units.md` names except `csum.h` and `entropy.h`. Not yet written:
-`parse.c`, `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`, `csum.h` and `entropy.h`;
+`parser.c`, `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`, `csum.h` and `entropy.h`;
 `marlin-load.sh` and its systemd unit; and CI, whose obligations `docs/design/24-testing.md` states
 without naming a system. There is no build system, no test harness, no control-plane tree and no
 version control. Phase 1 is largely about making what exists compile, load and be driven.
@@ -89,6 +89,13 @@ version control. Phase 1 is largely about making what exists compile, load and b
   `WarningsAsErrors`.
 - Load and attach verified in a network namespace: `bpftool prog loadall` then
   `net attach xdpdrv`. The attach must fail rather than degrade to SKB mode (`docs/design/02-architecture.md`).
+- `make tests` builds and runs the native unit tests over `parser.c`
+  (`docs/design/24-testing.md`, "Native unit tests"). Not part of `make all`; part of `make ci`.
+- `make packet-tests` builds `marlin.bpf.o`, loads it, and drives it through `bpf_prog_test_run`
+  for what `xdp_main` can satisfy today — parse verdicts and `drop_stats` deltas
+  (`docs/design/24-testing.md`, "Packet-level tests"; `data-plane/tests/packet/`). Needs root or
+  `CAP_BPF`+`CAP_NET_ADMIN`+`CAP_PERFMON` to load a program, so it is not part of `make tests`;
+  `make ci` runs it only when invoked as root and prints an explicit skip line otherwise.
 
 ### Datapath — the vertical slice
 
@@ -117,9 +124,9 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 - `vip_map`, `fwd_table`, `backends`, `config` written over `bpf_obj_get` +
   `bpf_map_update_elem`.
 - Hand-written mirrors for `vip_key`, `vip_meta`, `backend` and `marlin_config`, under
-  `docs/design/06-map-abi.md`'s parity discipline. `vip_key`'s anonymous union is
-  `[StructLayout(Explicit)]` with both arms
-  at `FieldOffset(0)`; fixed-size arrays are `[InlineArray]` or `fixed`, never managed arrays.
+  `docs/design/06-map-abi.md`'s parity discipline: every struct is `[StructLayout(Explicit)]`
+  with `[FieldOffset]` stated per field, `vip_key`'s anonymous union has both arms at
+  `FieldOffset(0)`, and fixed-size arrays are `[InlineArray]` or `fixed`, never managed arrays.
 - No health checking, no reconciliation loop, no APIs, no netlink.
 
 **Two decisions are required in this phase.**
@@ -139,7 +146,10 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 1. `marlin.bpf.o` builds with BTF, loads, and attaches in `xdpdrv` mode in a netns.
 2. `bpf_prog_test_run` asserts exact output bytes for: a VIP hit rewriting the destination MAC
    and returning `XDP_TX`; a miss returning `XDP_PASS` counting `vip_miss`; `backend_id == 0`
-   dropping `no_backend`; `state != MARLIN_UP` dropping `backend_down`.
+   dropping `no_backend`; `state != MARLIN_UP` dropping `backend_down`. None of these are
+   reachable yet — `xdp_main` has no VIP lookup or forwarding path (`src/main.c`) — and are
+   registered in `data-plane/tests/packet/xdp_test.c` via `MARLIN_SKIP`, each naming this line,
+   so `make packet-tests` reports them as `skip`, not a pass, until Phase 2 lands the code.
 3. The C# service configures that VIP and backend from scratch on a running datapath, and the
    forwarding change is observed in `vip_stats` and `backend_stats` — not in service logs.
 4. Restarting the C# service disturbs neither the attachment nor forwarding
@@ -155,13 +165,14 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 
 **Goal:** `types.h` stops changing, and the C# mirror is known to match it by review.
 
-Two open decisions must close here, because both alter layout or index meaning and neither is
+Three open decisions must close here, because all three alter layout or index meaning and none is
 revisable once a control plane has recorded a counter or read a struct in the field.
 
 | Decision | Where | Question |
 |---|---|---|
 | D4 | `types.h:203` | `backend.mac` straddles the 8-byte boundary at bytes 4-9. `docs/design/17-reconfiguration.md` calls `mac` immutable; `docs/design/15-nexthop-l2dsr.md` and `docs/design/19-control-plane.md` refresh it from neighbour events. If it is mutable, a torn read yields four bytes of the new MAC and two of the old. Field order is `docs/design/08-types.md`'s as written, pending this. |
-| D6 | `marlin.h:147` | `MAP_BOUNDS`, `NO_TX_PORT`, `ENCAP_LENGTH`, `FIB_UNSPEC` and the counted ICMP echo pass are in `enum marlin_ret` but not in `docs/design/22-observability.md`'s enumerated list of 23 reasons. |
+| D6 | `marlin.h:44` | `MAP_BOUNDS`, `NO_TX_PORT`, `ENCAP_LENGTH`, `FIB_UNSPEC`, `NOT_FORWARDED`, `FRAG_UNSUPPORTED` and the counted ICMP echo pass are in `enum marlin_ret` but not in `docs/design/22-observability.md`'s enumerated list of 23 reasons. |
+| D7 | `defines.h:35` | `MARLIN_BE_F_ENCAP_REQUIRED` (bit 4 of `backend.flags`) is defined and mirrored in `Marlin.Abi`'s `BackendFlags`, but nothing in the datapath reads it and no document assigns it a meaning. Either give it semantics before Phase 2a closes or remove the bit. |
 
 ### Deliverables
 
@@ -172,6 +183,10 @@ revisable once a control plane has recorded a counter or read a struct in the fi
   post-freeze `types.h` change under exit criterion 4. The datapath half is already written —
   `balancer.c`'s `marlin_balance_frag()` and `marlin_balance_hash()` — and the flag stays
   unusable until Phase 2b supplies its producer, below.
+- `VIP_QUIC` and the CID-length field land here or not at all (`docs/design/30-quic.md`), on the
+  same freeze logic as `VIP_HASH_5TUPLE` above. Unlike that flag, `parser.c`'s half —
+  `marlin_parse_quic()`, classifying short- from long-header packets — is already written; the
+  steering step that consumes the flag is `balancer.c`'s, in Phase 2b.
 - Byte offsets stated in comments on both the C and C# sides for every mirrored struct, so
   parity is reviewable by reading — which `docs/design/06-map-abi.md` records as the only mechanism there is.
 - `drop_stats` enumerators appended from here, never reordered (`marlin.h:142`).
@@ -179,8 +194,9 @@ revisable once a control plane has recorded a counter or read a struct in the fi
 
 ### Exit criteria
 
-1. D4 and D6 closed, with the resolution written into `docs/design/08-types.md` (D4) and
-   `docs/design/22-observability.md` (D6), and the header comment replaced rather than annotated.
+1. D4, D6 and D7 closed, with the resolution written into `docs/design/08-types.md` (D4 and D7)
+   and `docs/design/22-observability.md` (D6), and the header comment replaced rather than
+   annotated.
 2. `docs/design/22-observability.md`'s reason list and `enum marlin_ret` agree, and `DROP_REASON_MAX` still bounds them.
 3. Every mirrored struct carries byte offsets on both sides and has been reviewed for parity
    as a single commit spanning both languages (`docs/design/06-map-abi.md`).
@@ -196,10 +212,14 @@ datapath is feature-complete and further work is control-plane work.
 
 ### Deliverables
 
-- `parse.c`: IPv6 extension-header walking to `MAX_EXT_HDRS`, fragments in both families, ESP
-  and AH as `unsupported_proto`, the ICMP branch including the embedded-header path, and the
-  port-agnostic double lookup of `vip_map` (`docs/design/11-pipeline.md`).
-- **`parse.c` supplies what `VIP_HASH_5TUPLE` consumes.** The flag is inert without two
+- `parser.c`: IPv6 extension-header walking to `MAX_EXT_HDRS`, fragments in both families, ESP
+  and AH as `unsupported_proto`, and the ICMP branch including the embedded-header path
+  (`docs/design/11-pipeline.md`).
+- `balancer.c`'s VIP lookup: the port-agnostic double lookup of `vip_map` — the parsed
+  destination port first, then port 0 on a miss — both with a fully zeroed key
+  (`docs/design/11-pipeline.md`). `parser.c` has no access to `vip_map`; this is step 4, not
+  parsing.
+- **`parser.c` supplies what `VIP_HASH_5TUPLE` consumes.** The flag is inert without two
   additions, and both are silent if omitted rather than failing visibly:
   `MARLIN_CTX_F_FRAG_FIRST` set on the first fragment of a fragmented datagram — without it
   `marlin_balance_frag()` admits first fragments and strands reassembly state on the backend —
@@ -209,6 +229,12 @@ datapath is feature-complete and further work is control-plane work.
   `icmp_unparseable` threshold moves from two bytes of embedded L4 header to four with it.
   `tuple.pad` must stay zero, because the flag hashes the tuple whole
   (`docs/design/10-map-invariants.md`).
+- **`balancer.c`'s `VIP_QUIC` steering step.** On a `VIP_QUIC` VIP, a `MARLIN_CTX_F_QUIC` packet
+  decodes a `backend_id` from its connection ID and indexes `backends[]` directly, bypassing
+  `fwd_table`; any decode failure — check mismatch, an out-of-range or unpopulated
+  `backend_id`, or a backend not `MARLIN_UP` — falls through to the existing hash path, uncounted
+  as a drop (`docs/design/30-quic.md`). The four `MARLIN_COUNT_*` counters this needs are
+  reserved but not yet in `enum marlin_ret` (`docs/design/22-observability.md`).
 - `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`, `csum.h`, `entropy.h`: IPIP, GUE and VXLAN,
   IPv6 inner over IPv4 outer, VXLAN's VNI, its inner Ethernet header rewrite and its outer
   Ethernet header, the entropy source port shared by GUE and VXLAN, and the zero UDP checksum
@@ -242,7 +268,11 @@ currently apply.
    `ipip`/`sit` devices, and a real `vxlan` device accept what Marlin emits, including the zero
    UDP checksum (`docs/design/24-testing.md`).
 3. An extension-header chain at `MAX_EXT_HDRS` and one beyond it are distinguishable —
-   `ext_hdr_limit`, not `parse_error`.
+   `ext_hdr_limit`, not `parse_error`. The harness and this exact assertion already exist
+   (`data-plane/tests/packet/xdp_test.c`,
+   `ext_hdr_limit_nine_headers_is_drop_and_distinct_from_parse_error`) — parsing does not depend
+   on Phase 2b's forwarding code, so what remains for this criterion is that forwarding not
+   regress it.
 4. A redirect to an ifindex absent from `tx_ports` is a countable `XDP_ABORTED`, not a silent
    loss (`docs/design/09-sizing.md`).
 5. Reported verifier complexity is inside budget with all four modes and both families
@@ -281,7 +311,12 @@ rate-limiter conversion.
 - **Configuration validation** — every rule in `docs/design/20-configuration-validation.md`, rejected at configuration time.
 - **Configuration and status APIs**, including the per-VIP non-reversible digest of
   `hash_key` and `table_seed` that makes active/active divergence detectable
+  (`docs/design/21-active-active.md`). Extended to cover `VIP_QUIC`, the connection-ID length
+  and `hash_key`'s QUIC use once Phase 2b lands the steering step
   (`docs/design/21-active-active.md`).
+- **`VIP_QUIC` backend distribution.** Assigning and distributing `backend_id`, `hash_key` and
+  the connection-ID length to each backend's QUIC server, and the rotation story
+  (`docs/design/30-quic.md`; `DEPLOYMENT.md` §1.7.2).
 
 ### Exit criteria
 
@@ -361,10 +396,15 @@ section it affects, not in a document of its own.
 |---|---|---|
 | C# map access: `libbpf` P/Invoke or direct `bpf(2)` | Phase 1, "Control plane" above | 1 |
 | Indentation: `.clang-format`/`.editorconfig` say spaces, every source uses tabs | `.clang-format`/`.editorconfig` | 1 |
+| Whether `data-plane/tests/` joins `make format`/`make tidy`, or takes its own `.clang-format`/`.clang-tidy` | `docs/REPO-STRUCTURE.md` §7.2 | 1 |
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
-| D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:147` | 2a |
+| D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
+| D7 — `MARLIN_BE_F_ENCAP_REQUIRED` has no assigned meaning and no reader | `defines.h:35` | 2a |
+| Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
 | `BPF_FIB_LOOKUP_DIRECT` has no configuration surface | `nexthop.c:206` | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
+| Whether a connection ID naming a `DOWN` backend falls through to hash or drops | `docs/design/30-quic.md` | 2b |
+| Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |
 
 ---
