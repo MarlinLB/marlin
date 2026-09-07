@@ -58,8 +58,7 @@ static __always_inline void marlin_nexthop_check_egress(const struct backend *be
     }
 }
 
-_Static_assert(sizeof(struct bpf_fib_lookup) == 64,
-               "bpf_fib_lookup must fit within the stack budget");
+_Static_assert(sizeof(struct bpf_fib_lookup) == 64, "bpf_fib_lookup must fit within the stack budget");
 
 static __always_inline int marlin_nexthop_fib(struct xdp_md *ctx, struct marlin_ctx *mctx, struct ethhdr *eth,
                                               enum marlin_nh_discipline disc)
