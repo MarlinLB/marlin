@@ -25,7 +25,7 @@ clients, there is no reverse path and no classifier.
    step 6 to steer on. A long header is never flagged: RFC 9000 §9 forbids migrating before
    the handshake completes, so every long-header packet is safe on the hash path
    (`docs/design/30-quic.md`).
-3. **ACL** — `marlin_acl()`. An allow match admits and suppresses step 5; a block match drops
+3. **ACL** — `marlin_acl_check()`. An allow match admits and suppresses step 5; a block match drops
    with reason `acl_blocked`. `docs/design/27-source-filtering.md`.
 4. **VIP lookup** — `vip_map` → `vip_num`, `flags`, `hash_key`. Miss → `XDP_PASS`.
 5. **Rate limit** — `marlin_ratelimit()`, if `VIP_RATELIMIT` is set and step 3 did not admit
@@ -48,7 +48,7 @@ clients, there is no reverse path and no classifier.
 
 Steps 1–7 are identical for all four modes. Steps 8 and 9 both diverge on `ENCAP_MODE(backend.flags)`:
 step 8 between the three encapsulation units and L2 DSR's empty case, step 9 between
-`marlin_nexthop_l2dsr()` and `marlin_nexthop_encap()` — and, inside the latter, once more on
+`marlin_nexthop_l2dsr()` and `marlin_nexthop_encapsulate()` — and, inside the latter, once more on
 whether the MAC-swap default applies, which it does for IPIP and GUE and does not for VXLAN
 (`docs/design/15-nexthop-l2dsr.md`).
 

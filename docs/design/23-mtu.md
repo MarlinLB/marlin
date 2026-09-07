@@ -24,7 +24,7 @@ is covered only by jumbo frames.
 dropped, which is what makes the misconfiguration diagnosable (`docs/design/22-observability.md`).
 
 **They do not cover the default path.** The zero-lookup next-hop default — MAC swap under IPIP
-and GUE, `vxlan_encap.c`'s own outer header under VXLAN (`docs/design/15-nexthop-l2dsr.md`) —
+and GUE, `vxlan.c`'s own outer header under VXLAN (`docs/design/15-nexthop-l2dsr.md`) —
 performs no FIB lookup, so `RET_FRAG_NEEDED` never fires there. The datapath
 therefore checks the emitted frame against `config.max_frame` before transmitting, and drops
 with reason `frame_too_big`. A 1500-byte inner packet leaves as 1532 under GUE and, as the new

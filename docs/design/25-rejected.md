@@ -164,7 +164,7 @@ is needed. Cheap in isolation — a bounds check and pointer arithmetic — and 
 suits a program that is one translation unit of inlined helpers, which Marlin is not. Rejected
 on two counts. It is *more* expensive against the combined stack budget than one snapshot,
 because each unit's local copy occupies a frame that coexists with the others on the chain
-(`xdp_marlin` → `marlin_balance()` → `marlin_gue_encap()` would hold two copies where the entry
+(`xdp_marlin` → `marlin_balance()` → `marlin_gue_encapsulate()` would hold two copies where the entry
 frame holds one). And it reopens the cross-generation read: two units could observe
 `marlin_config` either side of a control-plane write within one packet, which would have to be
 re-argued field by field rather than closed once.

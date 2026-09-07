@@ -8,7 +8,7 @@ Global subprograms are verified independently of their callers and are restricte
 
 - **Prefix.** `marlin_*` marks a pipeline stage, not a linkage class. Every global
   subprogram carries it, and so do the `static` stage functions inside a unit —
-  `marlin_balance_process_packet()`, `marlin_balance_encap()`. Globals share one
+  `marlin_balance_process_packet()`, `marlin_balance_encapsulate()`. Globals share one
   namespace across the linked object and the linker rejects duplicates.
 - **Output parameters, not returns.** One per-packet context struct is allocated in the
   entry frame and threaded through as a pointer.
@@ -47,7 +47,7 @@ int marlin_balance(struct xdp_md *ctx, struct marlin_ctx *mctx);
 
 - **`cfg` is the per-packet configuration snapshot, taken once in `marlin.c`.** It qualifies by
   the same test as everything else here: four units read it — `balancer.c` for `flags` and
-  `max_frame`, `ipip_encap.c`, `gue_encap.c` and `vxlan_encap.c` for `tunnel_src` (`docs/design/14-forwarding-modes.md`). No unit other
+  `max_frame`, `ipip.c`, `gue.c` and `vxlan.c` for `tunnel_src` (`docs/design/14-forwarding-modes.md`). No unit other
   than `marlin.c` looks the `config` map up.
 
   Two things follow from taking it once rather than per unit. **One generation per packet:** the

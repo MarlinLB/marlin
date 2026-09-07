@@ -100,9 +100,11 @@ an interface the FIB does not choose, where that interface *is* in `tx_ports`, m
 the frame on the FIB's interface with the counter incremented. Assert both halves: a test that
 only checks the counter would pass an implementation that dropped, which is the failure mode `docs/design/16-fib-lookup.md`
 rejects. A second case with the FIB's interface absent from `tx_ports` must increment
-`egress_mismatch` *and* drop `no_tx_port` — the counter is not a claim that the frame left.
+`egress_mismatch` *and* count `no_tx_port` — an `XDP_ABORTED` verdict, not `XDP_DROP`
+(`docs/PHASES.md`'s Phase 2b exit criterion 4), so that a redirect to an unregistered interface
+is distinguishable from every other drop reason. The counter is not a claim that the frame left.
 
-**The ACL preserves this property and needs no exemption.** `marlin_acl()` is a pure function of
+**The ACL preserves this property and needs no exemption.** `marlin_acl_check()` is a pure function of
 `packet_tuple.src` and map contents. Coverage: block and allow matched and missed in both
 families; longest-prefix selection, a `/32` block inside a `/8` and a `/24` inside a `/8`; allow
 beating block at every relative specificity including a `/8` allow over a `/32` block;

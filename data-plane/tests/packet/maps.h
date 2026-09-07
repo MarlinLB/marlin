@@ -99,3 +99,60 @@ static __u64 xdp_drop_stats_total(int rc)
     free(percpu);
     return total;
 }
+
+/* Builds the key from struct acl_key4/acl_key6 rather than a local
+ * re-declaration, same as every other helper here -- a types.h layout change
+ * must fail a test, not corrupt a map write silently.
+ */
+static __attribute__((unused)) void xdp_acl_add4(const char *map, __u32 prefixlen, __be32 addr, __u32 rule_id)
+{
+    struct acl_key4 key;
+    int fd = xdp_map_fd(map);
+
+    key.prefixlen = prefixlen;
+    key.addr = addr;
+
+    if(bpf_map_update_elem(fd, &key, &rule_id, BPF_ANY) != 0) {
+        fprintf(stderr, "packet-tests: failed to seed %s: %s\n", map, strerror(errno));
+        exit(1);
+    }
+}
+
+static __attribute__((unused)) void xdp_acl_add6(const char *map, __u32 prefixlen, const unsigned char addr16[16], __u32 rule_id)
+{
+    struct acl_key6 key;
+    int fd = xdp_map_fd(map);
+
+    key.prefixlen = prefixlen;
+    memcpy(key.addr, addr16, sizeof(key.addr));
+
+    if(bpf_map_update_elem(fd, &key, &rule_id, BPF_ANY) != 0) {
+        fprintf(stderr, "packet-tests: failed to seed %s: %s\n", map, strerror(errno));
+        exit(1);
+    }
+}
+
+/* BPF_F_NO_PREALLOC tries have no fixed slot set to zero between cases --
+ * bpf_map_get_next_key() walks whatever the previous case left, so each ACL
+ * case must clear its own trie rather than relying on a zeroed baseline.
+ * The largest key in this file (acl_key6) sized the buffer; a smaller key
+ * (acl_key4) leaves it partially unused, which get_next_key ignores since it
+ * takes key_size from the map itself, not from this buffer's size.
+ */
+static __attribute__((unused)) void xdp_acl_clear(const char *map)
+{
+    int fd = xdp_map_fd(map);
+    unsigned char next[sizeof(struct acl_key6)];
+
+    /* Re-querying with prev_key == NULL each pass rather than advancing
+     * from `next`: this map has no fixed key we could re-seed as a
+     * sentinel, and re-querying "the first key still present" drains the
+     * trie in max_entries iterations without needing one.
+     */
+    while(bpf_map_get_next_key(fd, NULL, next) == 0) {
+        if(bpf_map_delete_elem(fd, next) != 0) {
+            fprintf(stderr, "packet-tests: failed to clear an entry from %s: %s\n", map, strerror(errno));
+            exit(1);
+        }
+    }
+}

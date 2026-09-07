@@ -8,6 +8,7 @@
 #include <bpf/bpf_helpers.h>
 
 #include <marlin.h>
+#include <marlin/acl.h>
 #include <marlin/maps.h>
 #include <marlin/parser.h>
 #include <marlin/stats.h>
@@ -41,6 +42,14 @@ static __always_inline int marlin_action(int rc)
     case MARLIN_OK_REDIRECT:
         return XDP_REDIRECT;
 
+    /* A redirect to an ifindex absent from tx_ports is a countable
+     * XDP_ABORTED, not a silent loss (docs/PHASES.md's Phase 2b exit
+     * criterion 4) -- distinct from every other DROP_* reason below, which
+     * fall to the default XDP_DROP.
+     */
+    case MARLIN_DROP_NO_TX_PORT:
+        return XDP_ABORTED;
+
     default:
         return XDP_DROP;
     }
@@ -67,6 +76,14 @@ int xdp_main(struct xdp_md *ctx)
 
     if(rc != MARLIN_OK) {
         bpf_printk("Packet parsing failed: rc=%d\n", rc);
+        return marlin_action(rc);
+    }
+
+    mctx.acl_verdict = (__u8)marlin_acl_check(&mctx);
+
+    if(mctx.acl_verdict == MARLIN_ACL_BLOCK) {
+        rc = MARLIN_DROP_ACL_BLOCKED;
+        marlin_count(rc);
         return marlin_action(rc);
     }
 

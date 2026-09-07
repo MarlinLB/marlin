@@ -27,7 +27,7 @@ struct backend {              /* 32 bytes */
                                 *       bit 5 MARLIN_BE_F_FIB; bit 6 MARLIN_BE_F_STATE (set = MARLIN_UP); bit 7 reserved */
     __u8   pad[3];            /* 13-15 */
     __u32  egress_ifindex;    /* 16-19 expected FIB egress interface, validation only (docs/design/16-fib-lookup.md) */
-    __u32  vni;               /* 20-23 VXLAN only; host order, 0..0xFFFFFF; the value's high byte must be zero. vxlan_encap.c writes bpf_htonl(vni << 8) (docs/design/14-forwarding-modes.md) */
+    __u32  vni;               /* 20-23 VXLAN only; host order, 0..0xFFFFFF; the value's high byte must be zero. vxlan.c writes bpf_htonl(vni << 8) (docs/design/14-forwarding-modes.md) */
     __u8   inner_mac[6];      /* 24-29 VXLAN only; overlay destination MAC */
     __u8   pad2[2];           /* 30-31 */
 };

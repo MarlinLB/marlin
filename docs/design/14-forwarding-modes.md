@@ -93,7 +93,7 @@ backend's `vxlan` device is bound to; Marlin does not interpret it beyond writin
 header.
 
 `backend.vni` is a **host-order** `__u32` holding a plain 0…0xFFFFFF integer, unlike `addr` and
-`encap_dport`, which the control plane stores already in wire order. `vxlan_encap.c` converts,
+`encap_dport`, which the control plane stores already in wire order. `vxlan.c` converts,
 in one 4-byte store of `bpf_htonl(vni << 8)` covering the header's 3-byte VNI and the reserved
 byte behind it, which the shift zeroes.
 
@@ -121,7 +121,7 @@ frame set it, `ETH_P_IP` or `ETH_P_IPV6`, and that is what lets one `vxlan` devi
 inner families: the receiving kernel demultiplexes on it, the way GUE demultiplexes on its own
 header field rather than on which listener received the packet.
 
-**The outer Ethernet header is written by `vxlan_encap.c`, not by the step-9 MAC swap.** This is
+**The outer Ethernet header is written by `vxlan.c`, not by the step-9 MAC swap.** This is
 the one place VXLAN cannot share the encapsulating modes' next-hop default
 (`docs/design/15-nexthop-l2dsr.md`), and the paragraph above is the reason: that default swaps
 the arriving frame's source and destination, and under VXLAN the arriving frame's Ethernet
@@ -130,7 +130,7 @@ been overwritten, so the upstream router's MAC — which the outer destination m
 nowhere in the frame by the time step 9 runs (`docs/design/11-pipeline.md`, step 8 precedes step
 9).
 
-`vxlan_encap.c` therefore reads both arriving addresses **before** `bpf_xdp_adjust_head()`,
+`vxlan.c` therefore reads both arriving addresses **before** `bpf_xdp_adjust_head()`,
 carries them across the call as values — copies, not pointers, so the rule against holding a
 packet pointer across a header adjustment is not in play — and writes them into the outer header
 at the new frame start: destination the arriving source, which is the router; source the
@@ -140,7 +140,7 @@ earlier and out of saved values rather than out of bytes that no longer hold the
 
 Two consequences, stated rather than left to be rediscovered:
 
-- **The ordering inside `vxlan_encap.c` is load-bearing.** Both arriving addresses must be read
+- **The ordering inside `vxlan.c` is load-bearing.** Both arriving addresses must be read
   before either is overwritten. An implementation that rewrites the inner header first destroys
   the router's MAC and has nothing left to address the outer header with — a failure no other
   mode can produce, because no other mode consumes the arriving header.
