@@ -53,17 +53,36 @@
 # MACs are pinned (02:00:00:00:02:xx, locally administered) so tests can assert
 # emitted frames byte-for-byte.
 #
-# Usage:  sudo ./ipip_wsl.sh up | attach | reload | detach | status | down
-#                           | test_icmp_echo | test_http_get
+# Usage:  sudo ./ipip_wsl.sh up | attach | seed | reload | detach | status | down
+#                           | listen | trace | test_icmp_echo | test_http_get
 #
 #   up              build the topology (does not attach the program)
 #   attach          load marlin.bpf.o, pin it, attach to ${MARLIN_IF}
+#   seed            write config and backends[0]; nothing forwards until then
+#   unseed          zero backends[0] again; the program stays attached
 #   reload          after a rebuild: detach, unpin, load the new object, attach
 #   detach          detach and remove the pins; the topology stays up
 #   down            tear the topology down (implies detach)
+#   listen          serve HTTP on the VIP from the backend namespace until ^C
+#   trace           follow the kernel trace pipe — xdp_main's bpf_printk output
 #   test_icmp_echo  ping the VIP from the client namespace
 #   test_http_get   GET the VIP from the client namespace, against a throwaway
 #                   listener started in the backend namespace
+#
+# The working order is up, attach, seed, listen. Seeding is not optional: BPF
+# array maps come up zero-filled, and an all-zero backends[0] has
+# MARLIN_BE_F_STATE clear, which xdp_interim_nexthop() (src/main.c) reads as
+# "not mine" and passes. An attached program with unseeded maps forwards
+# nothing and looks exactly like a broken datapath.
+#
+# Nothing is encapsulated yet. marlin_nexthop_encapsulate() (src/nexthop.c)
+# MAC-swaps and XDP_TX's, and no bpf_xdp_adjust_head() exists anywhere in the
+# datapath, so the packet reaches miprt-a with the client's own header intact.
+# The router then routes the VIP back to Marlin and the frame circulates until
+# its TTL runs out. Until the encapsulation lands (docs/PHASES.md, Phase 2b),
+# this rig exercises the attach, the parse and the MAC swap; a completed GET is
+# not among the things it can show, and drop_stats plus a tcpdump on miprt-a are
+# where the evidence is.
 #
 # Overridable: MARLIN_OBJ, MARLIN_PINDIR, XDP_MODE, BPFTOOL.
 #
@@ -95,7 +114,8 @@ NS_BE=mipbe
 NS_CLI=mipcli
 NS_ALL=("${NS_RT}" "${NS_BE}" "${NS_CLI}")
 
-HTTP_PORT=80                 # test_http_get; the VIP carries no port of its own
+HTTP_PORT=80                 # listen and test_http_get; no VIP lookup exists yet,
+                             # so the port is the listener's alone (src/main.c)
 
 # Root-namespace devices this script owns. down() deletes exactly these. The
 # last two normally die with their namespaces; they are listed so that a run of
@@ -145,6 +165,16 @@ MAX_FRAME=$((MTU_UNDERLAY + 14))
 
 need_root() {
 	[[ ${EUID} -eq 0 ]] || { echo "must run as root (sudo)" >&2; exit 1; }
+}
+
+# Fail by name, up front. Without this a missing ss or curl surfaces halfway
+# through a verb, with a namespace already built and a listener already bound.
+need_cmd() {
+	local c
+	for c in "$@"; do
+		command -v "${c}" >/dev/null 2>&1 || {
+			echo "${c} not found -- required by this verb" >&2; exit 1; }
+	done
 }
 
 nsx() { # run a command in a namespace, or in the root ns when given "-"
@@ -199,6 +229,7 @@ backend_vip() {
 
 up() {
 	need_root
+	need_cmd ip ethtool
 	down_quiet
 
 	modprobe -q veth 2>/dev/null || true
@@ -329,19 +360,30 @@ Attach — ${XDP_MODE}, because WSL2 veth has no native XDP:
   sudo $0 reload          # after a rebuild: detach, unpin, load, attach
   sudo $0 detach          # detach and unpin; rig stays up
 
-Drive it:
+Seed — an attached program forwards nothing until backends[0] is written:
 
-  sudo $0 test_icmp_echo  # ip netns exec ${NS_CLI} ping -c1 ${VIP}
-  sudo $0 test_http_get   # ip netns exec ${NS_CLI} curl -sS --max-time 2 http://${VIP}/
-                          # ...against python3 -m http.server in ns ${NS_BE}
+  sudo $0 seed            # write config and backends[0] with the values above
+  sudo $0 unseed          # zero backends[0] again, to watch forwarding stop
+
+Drive it — but see the file header: the encapsulation is not written yet, so a
+completed request is not among the things this rig can show today.
+
+  sudo $0 listen          # serve ${VIP}:${HTTP_PORT} from ns ${NS_BE} until ^C,
+                          # bound to the VIP alone so only tunnelled packets arrive
+  sudo $0 test_http_get   # one GET from ns ${NS_CLI} against a throwaway listener
+  sudo $0 test_icmp_echo  # ping the VIP. No reply is the correct outcome: echo
+                          # passes to the host stack (docs/design/13-icmp.md), so
+                          # the evidence is icmp_echo moving in drop_stats
 
 Watch it, in path order:
 
+  sudo $0 trace                                         # ${PROG}'s bpf_printk output
   ip netns exec ${NS_RT} tcpdump -nei ${RT_A}            # in from client, back out encapsulated
   ip netns exec ${NS_BE} tcpdump -nei ${BE_IF} 'proto 4' # outer ${MARLIN_IP} -> ${BE_IP}
   ip netns exec ${NS_BE} tcpdump -nei ipip0              # after decapsulation, VIP intact
   ip -d link show ${MARLIN_IF} | grep prog/xdp           # expect "${XDP_MODE}"
-  bpftool map dump name drop_stats
+  ${BPFTOOL} map dump pinned ${PINDIR}/drop_stats        # 'name drop_stats' would
+                                                         # match every rig's map
 EOF
 }
 
@@ -360,6 +402,15 @@ status() {
 	else
 		echo "  no program attached to ${MARLIN_IF} (run '$0 attach')"
 	fi
+	echo "== maps =="
+	if [[ -e ${PINDIR}/backends ]]; then
+		config_show || echo "  config not seeded (run '$0 seed')"
+		backend_show || echo "  backends[0] not seeded (run '$0 seed')"
+	else
+		echo "  no pins under ${PINDIR} (run '$0 attach')"
+	fi
+	echo "== ns ${NS_BE} listeners =="
+	nsx "${NS_BE}" ss -lnt 2>/dev/null || echo "  ss not available"
 	for ns in "${NS_ALL[@]}"; do
 		echo "== ns ${ns} =="
 		ip netns exec "${ns}" ip -br addr
@@ -437,6 +488,7 @@ detach_quiet() {
 # The load-and-attach core, without the guards. attach() and reload() differ
 # only in what they tolerate finding already in place.
 do_attach() {
+	need_cmd "${BPFTOOL}"
 	[[ -f ${OBJ} ]] || {
 		echo "no object at ${OBJ}" >&2
 		echo "build it:  make -C ${SCRIPT_DIR}/.." >&2
@@ -474,6 +526,7 @@ attach() {
 	fi
 	do_attach
 	echo "attached ${PROG} to ${MARLIN_IF} (${XDP_MODE}), pinned under ${PINDIR}"
+	echo "next: '$0 seed' -- until config and backends[0] are written, every packet passes"
 }
 
 detach() {
@@ -498,6 +551,223 @@ reload() {
 	detach_quiet
 	do_attach
 	echo "reloaded ${PROG} onto ${MARLIN_IF} (${XDP_MODE}) from ${OBJ}"
+}
+
+# ---------------------------------------------------------------------------
+# Map seeding
+# ---------------------------------------------------------------------------
+#
+# What the C# service will write once it can (docs/design/19-control-plane.md).
+# Until then manual map writes are the sanctioned route (docs/TESTING.md §10),
+# and without them an attached program passes every packet.
+#
+# Both config and backends[0] are written here, unlike the L2 DSR rig: an
+# encapsulating backend reads config.tunnel_src for the outer source address and
+# config.max_frame for the post-encapsulation size check
+# (docs/design/20-configuration-validation.md, docs/design/23-mtu.md).
+#
+# vip_map and fwd_table are not written, because nothing reads them yet --
+# xdp_interim_nexthop() takes backends[0] directly (src/main.c). They become
+# required when selection lands (docs/PHASES.md, Phase 2b).
+
+ABI_HDR="${SCRIPT_DIR}/../include/marlin/abi/defines.h"
+
+# One #define, read out of the ABI header at run time. Copying the values here
+# would make this a third hand-written mirror of the ABI with nothing checking
+# it against the other two.
+abi_define() {
+	local name=$1 v
+	v=$(sed -n "s/^#define[[:space:]]\+${name}[[:space:]]\+\([0-9]\+\)[[:space:]]*\$/\1/p" "${ABI_HDR}")
+	[[ -n ${v} ]] || { echo "cannot read ${name} from ${ABI_HDR}" >&2; exit 1; }
+	echo "${v}"
+}
+
+# struct backend and struct marlin_config as the byte lists `bpftool map update`
+# takes. python3 rather than shell arithmetic because both structs mix
+# network-order addresses with host-order words, and struct.pack states which is
+# which instead of assuming the host's endianness.
+pack_backend() {
+	python3 - "$@" <<'PY'
+import socket, struct, sys
+
+addr, mac, flags = sys.argv[1], sys.argv[2], int(sys.argv[3])
+mac_b = bytes(int(x, 16) for x in mac.split(":")) if mac else b"\0" * 6
+
+raw = (socket.inet_aton(addr)     # __be32 addr
+       + mac_b                    # __u8   mac[6]
+       + struct.pack("!H", 0)     # __be16 encap_dport — IPIP has no outer port
+       + struct.pack("B", flags)  # __u8   flags
+       + b"\0" * 3                # __u8   pad[3]
+       + struct.pack("=I", 0)     # __u32  egress_ifindex — 0 disables the check
+       + struct.pack("=I", 0)     # __u32  vni
+       + b"\0" * 6                # __u8   inner_mac[6]
+       + b"\0" * 2)               # __u8   pad_end[2]
+
+if len(raw) != 32:
+    sys.exit("struct backend must pack to 32 bytes, got %d" % len(raw))
+
+print(" ".join("0x%02x" % b for b in raw))
+PY
+}
+
+pack_config() {
+	python3 - "$@" <<'PY'
+import socket, struct, sys
+
+tunnel_src, max_frame = sys.argv[1], int(sys.argv[2])
+
+raw = (socket.inet_aton(tunnel_src)      # __be32 tunnel_src
+       + struct.pack("=I", 0)            # __u32  flags — ACL and RL off
+       + struct.pack("=H", max_frame)    # __u16  max_frame
+       + struct.pack("=H", 0)            # __u16  acl_lists
+       + struct.pack("=I", 0)            # __u32  rl_refill
+       + struct.pack("=I", 0))           # __u32  rl_burst
+
+if len(raw) != 20:
+    sys.exit("struct marlin_config must pack to 20 bytes, got %d" % len(raw))
+
+print(" ".join("0x%02x" % b for b in raw))
+PY
+}
+
+# Decode backends[0] as bpftool returns it, and exit non-zero when the entry is
+# not seeded.
+#
+# The offsets below are a third mirror of struct backend
+# (include/marlin/abi/types.h) and would drift silently, which is the failure
+# CLAUDE.md warns about. The object's own BTF is the only independent witness a
+# shell script has, so where bpftool names the fields the named values are
+# checked against the offsets rather than trusted.
+backend_show() {
+	local bit
+	bit=$(abi_define MARLIN_BE_F_STATE_BIT)
+	[[ -e ${PINDIR}/backends ]] || { echo "  no pins under ${PINDIR}"; return 1; }
+	"${BPFTOOL}" -j map dump pinned "${PINDIR}/backends" 2>/dev/null | python3 -c '
+import json, socket, struct, sys
+
+state_bit = int(sys.argv[1])
+
+try:
+    entry = json.load(sys.stdin)[0]
+except (ValueError, IndexError):
+    print("  backends is unreadable -- is the object still loaded?")
+    sys.exit(1)
+
+raw = bytes(int(b, 16) for b in entry["value"])
+addr, mac, flags = raw[0:4], raw[4:10], raw[12]
+
+btf = entry.get("formatted", {}).get("value")
+if btf is not None:
+    if struct.pack("=I", btf["addr"] & 0xffffffff) != addr or int(btf["flags"]) != flags:
+        print("  BTF disagrees with the offsets this script packs: struct backend moved",
+              file=sys.stderr)
+        sys.exit(2)
+
+up = (flags >> state_bit) & 1
+print("  addr   %s" % socket.inet_ntoa(addr))
+print("  mac    %s" % ":".join("%02x" % b for b in mac))
+print("  flags  0x%02x  mode %u, state %s" % (flags, flags & 0x0f, "UP" if up else "DOWN"))
+sys.exit(0 if up else 1)
+' "${bit}"
+}
+
+config_show() {
+	[[ -e ${PINDIR}/config ]] || { echo "  no pins under ${PINDIR}"; return 1; }
+	"${BPFTOOL}" -j map dump pinned "${PINDIR}/config" 2>/dev/null | python3 -c '
+import json, socket, struct, sys
+
+try:
+    entry = json.load(sys.stdin)[0]
+except (ValueError, IndexError):
+    print("  config is unreadable -- is the object still loaded?")
+    sys.exit(1)
+
+raw = bytes(int(b, 16) for b in entry["value"])
+tunnel_src = raw[0:4]
+max_frame = struct.unpack("=H", raw[8:10])[0]
+
+btf = entry.get("formatted", {}).get("value")
+if btf is not None:
+    if struct.pack("=I", btf["tunnel_src"] & 0xffffffff) != tunnel_src or int(btf["max_frame"]) != max_frame:
+        print("  BTF disagrees with the offsets this script packs: struct marlin_config moved",
+              file=sys.stderr)
+        sys.exit(2)
+
+print("  tunnel_src  %s" % socket.inet_ntoa(tunnel_src))
+print("  max_frame   %u" % max_frame)
+sys.exit(0 if tunnel_src != b"\0" * 4 else 1)
+'
+}
+
+backend_seeded() {
+	backend_show >/dev/null 2>&1
+}
+
+seed_or_die() {
+	[[ -e ${PINDIR}/backends ]] || {
+		echo "no pinned maps under ${PINDIR} -- run '$0 attach' first" >&2; exit 1; }
+}
+
+seed() {
+	need_root
+	need_cmd python3 "${BPFTOOL}"
+	rig_up_or_die
+	seed_or_die
+
+	local mode bit flags value
+	mode=$(abi_define MARLIN_MODE_IPIP)
+	bit=$(abi_define MARLIN_BE_F_STATE_BIT)
+	# MARLIN_BE_F_FIB stays clear, so the nexthop is the MAC swap back at the
+	# router rather than a FIB lookup (docs/design/15-nexthop-l2dsr.md).
+	flags=$(( mode | (1 << bit) ))
+
+	# backend.mac stays zero: the encapsulating path swaps the frame's own
+	# addresses and never reads it (src/nexthop.c).
+	value=$(pack_backend "${BE_IP}" "" "${flags}")
+	# Unquoted on purpose: bpftool takes the value as separate byte arguments.
+	# shellcheck disable=SC2086
+	"${BPFTOOL}" map update pinned "${PINDIR}/backends" key 0 0 0 0 value ${value}
+
+	value=$(pack_config "${MARLIN_IP}" "${MAX_FRAME}")
+	# shellcheck disable=SC2086
+	"${BPFTOOL}" map update pinned "${PINDIR}/config" key 0 0 0 0 value ${value}
+
+	echo "seeded config:"
+	config_show
+	echo "seeded backends[0]:"
+	backend_show
+}
+
+unseed() {
+	need_root
+	need_cmd python3 "${BPFTOOL}"
+	seed_or_die
+
+	local value
+	value=$(pack_backend 0.0.0.0 "" 0)
+	# shellcheck disable=SC2086
+	"${BPFTOOL}" map update pinned "${PINDIR}/backends" key 0 0 0 0 value ${value}
+	echo "backends[0] zeroed; ${PROG} passes every packet again."
+	echo "config left in place: it is read on every packet, before the backend lookup."
+}
+
+# ---------------------------------------------------------------------------
+# trace
+# ---------------------------------------------------------------------------
+#
+# xdp_main writes a bpf_printk line per packet (src/main.c), which lands in the
+# kernel trace pipe and nowhere else.
+trace() {
+	need_root
+	local p
+	for p in /sys/kernel/tracing/trace_pipe /sys/kernel/debug/tracing/trace_pipe; do
+		if [[ -r ${p} ]]; then exec cat "${p}"; fi
+	done
+	if mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null; then
+		exec cat /sys/kernel/tracing/trace_pipe
+	fi
+	echo "no readable trace_pipe; mount tracefs at /sys/kernel/tracing" >&2
+	exit 1
 }
 
 # ---------------------------------------------------------------------------
@@ -580,9 +850,14 @@ stats_report() {
 	(( moved )) || echo "  nothing moved"
 }
 
+# An echo request to a VIP is XDP_PASS by design (docs/design/13-icmp.md, and
+# marlin_parse() returns MARLIN_PASS_ICMP_ECHO for it), and the root namespace
+# does not hold the VIP -- so no reply is the correct outcome and a non-zero
+# exit here is not a fault. The evidence is icmp_echo moving, not a reply.
 test_icmp_echo() {
 	need_root
 	rig_up_or_die
+	need_cmd ping
 	stats_snapshot
 	local rc=0
 	# -W bounds the wait. Nothing answers the VIP until the datapath forwards,
@@ -590,23 +865,132 @@ test_icmp_echo() {
 	nsx "${NS_CLI}" ping -c1 -W2 "${VIP}" || rc=$?
 	echo
 	stats_report
+	echo "(no reply is expected: echo passes to the host stack, it is not forwarded)"
 	return "${rc}"
 }
 
 be_port_busy() {
-	nsx "${NS_BE}" ss -lnt "sport = :${HTTP_PORT}" 2>/dev/null | grep -q LISTEN
+	local port=${1:-${HTTP_PORT}}
+	nsx "${NS_BE}" ss -lnt "sport = :${port}" 2>/dev/null | grep -q LISTEN
 }
 
+# The encapsulation this rig exists to exercise does not exist yet; see the file
+# header. Printed by listen() and test_http_get() rather than left for the reader
+# to rediscover as a hung curl.
+encap_caveat() {
+	cat >&2 <<EOF
+note: nothing is encapsulated yet -- marlin_nexthop_encapsulate() (src/nexthop.c)
+      MAC-swaps without prepending an outer header, so the packet returns to
+      ${RT_A} carrying the client's own header and the router sends it straight
+      back to Marlin. Expect the request to fail; the evidence this rig can give
+      today is in drop_stats and in a tcpdump on ${RT_A}.
+
+EOF
+}
+
+# The listener argv, shared by listen() and test_http_get() so the two cannot
+# come to disagree about what the backend serves or what it binds.
+#
+# --bind ${VIP} is the load-bearing part. The decapsulated packet still carries
+# the VIP as destination (docs/design/14-forwarding-modes.md §7.2), and the VIP
+# is what the backend holds on lo -- so a listener bound there answers only
+# traffic that arrived through the tunnel, while a wildcard listener would also
+# answer anything that reached ${BE_IP} by ordinary routing.
+#
 # python3 -m http.server because it needs no configuration and is already the
-# dependency stats_read() carries. Nothing here depends on what it serves, only
-# that something completes the handshake from the backend namespace.
+# dependency stats_read() carries.
+BE_HTTP_ARGV=()
+
+be_http_argv() {
+	BE_HTTP_ARGV=(python3 -m http.server "$1" --bind "${VIP}" --directory "$2")
+}
+
+# A document root whose index names the rig, so a reply identifies which backend
+# answered rather than only that something did.
+be_docroot() {
+	local d
+	d=$(mktemp -d)
+	cat >"${d}/index.html" <<EOF
+<!doctype html>
+<title>marlin ipip rig</title>
+<pre>
+rig       ipip_wsl.sh (IPIP, docs/design/14-forwarding-modes.md 7.2)
+backend   ns ${NS_BE}, ${BE_IF} ${BE_IP}, tunnel ipip0 local ${BE_IP} remote ${MARLIN_IP}
+bound to  ${VIP} -- the VIP, on lo; reached only through the tunnel
+</pre>
+EOF
+	echo "${d}"
+}
+
+# Held open until ^C, with each request logged as it arrives. The rig's own
+# state is checked first, because an unattached or unseeded datapath presents
+# exactly as a hung curl.
+listen() {
+	need_root
+	rig_up_or_die
+	need_cmd python3 ss
+	local port=${1:-${HTTP_PORT}} root rc=0
+
+	[[ ${port} =~ ^[0-9]+$ ]] || {
+		echo "port must be a number, got '${port}'" >&2; exit 1; }
+
+	if ! xdp_attached; then
+		echo "note: nothing is attached to ${MARLIN_IF} -- run '$0 attach' then '$0 seed'," >&2
+		echo "      or the client cannot reach ${VIP} at all." >&2
+	elif ! backend_seeded; then
+		echo "note: backends[0] is not seeded -- ${PROG} passes every packet" >&2
+		echo "      (src/main.c). Run '$0 seed' in another terminal." >&2
+	fi
+	encap_caveat
+
+	if be_port_busy "${port}"; then
+		echo "port ${port} is already bound in ns ${NS_BE}:" >&2
+		nsx "${NS_BE}" ss -lntp "sport = :${port}" >&2 || true
+		echo "kill that process, then retry" >&2
+		exit 1
+	fi
+
+	root=$(be_docroot)
+	trap 'rm -rf "${root}"' EXIT
+	be_http_argv "${port}" "${root}"
+
+	cat <<EOF
+listening on ${VIP}:${port} in ns ${NS_BE} -- ^C to stop.
+
+Drive it from the client:
+
+  ip netns exec ${NS_CLI} curl -sS --max-time 2 http://${VIP}:${port}/
+
+Nothing else reaches it. ${BE_IP}:${port} is not bound, so a request that
+arrived by ordinary routing rather than through the tunnel is refused.
+
+Watch it, in path order:
+
+  sudo $0 trace
+  ip netns exec ${NS_RT} tcpdump -nei ${RT_A}             # in from the client, back out
+  ip netns exec ${NS_BE} tcpdump -nei ${BE_IF} 'proto 4'  # outer ${MARLIN_IP} -> ${BE_IP}
+  ip netns exec ${NS_BE} tcpdump -nei ipip0               # after decapsulation
+  ${BPFTOOL} map dump pinned ${PINDIR}/drop_stats
+
+EOF
+	ip netns exec "${NS_BE}" "${BE_HTTP_ARGV[@]}" || rc=$?
+	rm -rf "${root}"
+	trap - EXIT
+	# http.server exits 0 on ^C; 130 is the same interrupt seen through a shell
+	# that did not install its own handler. Neither is a failure of the rig.
+	if [[ ${rc} -eq 0 || ${rc} -eq 130 ]]; then
+		echo "listener stopped."
+		return 0
+	fi
+	return "${rc}"
+}
+
+# One GET against a throwaway instance of the same listener. Nothing here depends
+# on what is served, only that the handshake completes from the backend namespace.
 test_http_get() {
 	need_root
 	rig_up_or_die
-	command -v python3 >/dev/null 2>&1 || {
-		echo "python3 not found -- needed for the throwaway backend listener" >&2
-		exit 1
-	}
+	need_cmd python3 ss curl
 
 	# Name the holder rather than guessing at it. A bind failure here is almost
 	# always a listener from an earlier run, and "Address already in use" out of
@@ -618,18 +1002,20 @@ test_http_get() {
 		exit 1
 	fi
 
-	local err pid rc=0
+	local err pid root rc=0
 	err=$(mktemp)
+	root=$(be_docroot)
+	be_http_argv "${HTTP_PORT}" "${root}"
 
 	# ip netns exec directly rather than nsx(): backgrounding a shell function
 	# makes $! the subshell's pid, and killing that leaves the python3 beneath
 	# it alive and still holding the port.
-	ip netns exec "${NS_BE}" python3 -m http.server "${HTTP_PORT}" >/dev/null 2>"${err}" &
+	ip netns exec "${NS_BE}" "${BE_HTTP_ARGV[@]}" >/dev/null 2>"${err}" &
 	pid=$!
 	# The cleanup has to survive a failing curl, a ^C and set -e alike: a
 	# listener that outlives the script holds the port and the next run cannot
 	# bind.
-	trap 'kill "${pid}" 2>/dev/null || true; rm -f "${err}"' EXIT
+	trap 'kill "${pid}" 2>/dev/null || true; rm -rf "${err}" "${root}"' EXIT
 
 	# Poll rather than sleep a fixed interval, which either races the bind or
 	# pads every run. A bind failure is immediate, so watch for the process
@@ -647,6 +1033,11 @@ test_http_get() {
 		exit 1
 	fi
 
+	if ! backend_seeded; then
+		echo "note: backends[0] is not seeded -- expect this GET to time out" >&2
+	fi
+	encap_caveat
+
 	stats_snapshot
 	nsx "${NS_CLI}" curl -sS --max-time 2 "http://${VIP}/" || rc=$?
 	echo
@@ -654,7 +1045,7 @@ test_http_get() {
 
 	kill "${pid}" 2>/dev/null || true
 	wait "${pid}" 2>/dev/null || true
-	rm -f "${err}"
+	rm -rf "${err}" "${root}"
 	trap - EXIT
 	return "${rc}"
 }
@@ -666,12 +1057,16 @@ case "${1:-}" in
 	attach)         attach ;;
 	detach)         detach ;;
 	reload)         reload ;;
+	seed)           seed ;;
+	unseed)         unseed ;;
 	status)         status ;;
 	down)           down ;;
+	listen)         shift; listen "$@" ;;
+	trace)          trace ;;
 	test_icmp_echo) test_icmp_echo ;;
 	test_http_get)  test_http_get ;;
 	*)
-		echo "usage: $0 {up|attach|reload|detach|status|down|test_icmp_echo|test_http_get}" >&2
+		echo "usage: $0 {up|attach|seed|unseed|reload|detach|status|down|listen|trace|test_icmp_echo|test_http_get}" >&2
 		exit 2
 		;;
 esac
