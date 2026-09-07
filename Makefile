@@ -26,12 +26,12 @@ check-toolchain:
 ci:
 	@$(MAKE) -C $(DATA_PLANE_DIR) ci
 
-## Run the native unit tests over the data plane (not part of `all`; see PHASES.md).
+## Run the native unit tests over the data plane (not part of `all`).
 tests:
 	@$(MAKE) -C $(DATA_PLANE_DIR) tests
 
 ## Run bpf_prog_test_run tests against the real marlin.bpf.o. Needs root (or
-## CAP_BPF+CAP_NET_ADMIN+CAP_PERFMON); not part of `tests` or `all` (see PHASES.md).
+## CAP_BPF+CAP_NET_ADMIN+CAP_PERFMON); not part of `tests` or `all`.
 packet-tests:
 	@$(MAKE) -C $(DATA_PLANE_DIR) packet-tests
 
@@ -61,5 +61,4 @@ help:
 	@echo "  packet-tests    Run bpf_prog_test_run tests over marlin.bpf.o (needs root)"
 	@echo "  help            Show this message"
 	@echo ""
-	@echo "control-plane is not yet wired in here (no control-plane tree exists yet per"
-	@echo "docs/PHASES.md Phase 1's entry state)."
+	@echo "control-plane is not yet wired in here."

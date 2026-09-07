@@ -1,52 +1,30 @@
-# Toolchain preflight for the data-plane build.
+# Toolchain preflight for the data-plane build. Split out of ../Makefile
+# because the probe logic below is well past inline-length.
 #
-# See docs/design/29-versions.md "Toolchain" (lines 30-37) for the floors
-# probed below, and docs/design/03-translation-units.md's "Linking" section
-# for why BTF is required on every input. This file exists separately from
-# ../Makefile because the probe logic below is well past the ~80-line
-# threshold the task set for staying inline -- a deviation from
-# docs/REPO-STRUCTURE.md Sec2, which lists no data-plane/mk/ directory.
+# check-toolchain has two severities (MARLIN_CHECK_STRICT below): standalone
+# makes every probe fatal; as a prerequisite, Group A stays fatal but Group B (format/tidy) only warns.
 #
-# check-toolchain has two invocations with different severities for the same
-# probes (see MARLIN_CHECK_STRICT below): standalone (`make check-toolchain`,
-# what CI runs to gate a build matrix) makes every probe fatal; used only as
-# another target's order-only prerequisite (a normal build), Group A (clang,
-# bpftool, BTF) stays fatal but Group B (clang-format, clang-tidy) merely
-# warns, because a release/packaging host has no reason to carry clang-tidy.
-# Implemented as one target with a severity switch rather than two targets so
-# the nine probes are not duplicated.
+# No cache/stamp file: every probe re-runs each invocation so it cannot go
+# stale. check-toolchain is .PHONY for that reason.
 #
-# No cache, no generated .mk, no stamp file: every probe re-runs on each
-# invocation and therefore cannot go stale (decided against a CMake-style
-# cached try_compile). check-toolchain is .PHONY for exactly that reason.
-#
-# .ONESHELL is required, not cosmetic: without it, make runs each *physical*
-# line of a recipe (after macro expansion, not just as written) as its own
-# separate shell invocation, which shreds the single multi-line script
-# assembled below into dozens of one-line commands -- the heredoc that hands
-# the script to `sh -s` would never see its own body. With .ONESHELL the
-# whole expansion of one recipe line is handed to a single shell.
+# .ONESHELL is required: without it make runs each physical recipe line as
+# its own shell invocation, shredding the heredoc script below.
 .ONESHELL:
 
-# Standalone means the user or CI named check-toolchain explicitly on the
-# command line -- MAKECMDGOALS is a plain list of the goals given there, so
-# this is a text check, not a $(shell ...) capability probe run at parse
-# time (which would fire for `make clean` and a bare `make -n` too).
+# Standalone means check-toolchain was named explicitly on the command line;
+# a MAKECMDGOALS text check, not a parse-time capability probe.
 ifneq ($(filter check-toolchain,$(MAKECMDGOALS)),)
 MARLIN_CHECK_STRICT := 1
 else
 MARLIN_CHECK_STRICT := 0
 endif
 
-# The repository root, so probes 8 and 9 can point --style=file: and
-# --config-file= at the real .clang-format/.clang-tidy explicitly. Both
-# tools search upward from the file being formatted/linted, so running them
-# from a bare temp directory would find nothing and pass vacuously.
+# The repo root, so probes 8/9 can point --style=file:/--config-file= at the
+# real configs explicitly; both tools search upward and would pass vacuously otherwise.
 MARLIN_REPO_ROOT := $(abspath $(CURDIR)/..)
 
-# The probe script. POSIX sh; every configurable piece (tool paths, the
-# repository root, the severity switch) arrives via the environment so this
-# text needs no editing to test with stubs -- see data-plane's tests.
+# The probe script. POSIX sh; every configurable piece arrives via the
+# environment so this text needs no editing to test with stubs.
 define MARLIN_CHECK_TOOLCHAIN_SCRIPT
 set -u
 
@@ -86,11 +64,8 @@ fail() {
 	overall=1
 }
 
-# Locate a section/content inspection tool for probes 2 and 4: an explicit
-# READELF override, else the first of llvm-readelf, readelf, llvm-objdump
-# found on PATH. Echoes "<tool>:<kind>" where kind is "readelf" or "objdump"
-# (the two accept different flags for the same job). Empty output means none
-# found -- that is its own diagnosis, kept apart from "section absent".
+# Locate a readelf/objdump-family tool for probes 2 and 4 (READELF override,
+# else first found on PATH); echoes "<tool>:<kind>", empty if none found.
 find_inspect_tool() {
 	if [ -n "$$READELF" ]; then
 		if command -v "$$READELF" >/dev/null 2>&1; then
@@ -128,7 +103,7 @@ if "$$CLANG" -target bpf -c "$$p1_src" -o "$$p1_obj" >"$$tmpdir/p1.log" 2>&1; th
 	pass
 	p1_ok=1
 else
-	fail "clang must compile for -target bpf (docs/design/29-versions.md:34)" \
+	fail "clang must compile for -target bpf" \
 		"$$CLANG -target bpf -c $$p1_src -o $$p1_obj" "$$tmpdir/p1.log" \
 		"install/upgrade clang with the BPF backend built in (LLVM >= 12); Debian/Ubuntu: apt install clang"
 	p1_ok=0
@@ -146,15 +121,12 @@ __u64 marlin_toolchain_probe_cas(__u64 *p, __u64 old, __u64 new)
 }
 EOF
 if ! "$$CLANG" -target bpf -mcpu=v3 -c "$$p2_src" -o "$$p2_obj" >"$$tmpdir/p2.log" 2>&1; then
-	fail "clang must accept -mcpu=v3 (docs/design/29-versions.md:35, required by ratelimit.h's compare-and-swap)" \
+	fail "clang must accept -mcpu=v3 (required by ratelimit.h's compare-and-swap)" \
 		"$$CLANG -target bpf -mcpu=v3 -c $$p2_src -o $$p2_obj" "$$tmpdir/p2.log" \
 		"upgrade clang -- -mcpu=v3 needs LLVM's BPF v3 ISA support"
 else
-	# Compiling is not proof: some clang builds accept an unrecognised -mcpu
-	# with only a warning and silently fall back to a default that has no
-	# atomic compare-and-swap, so the flag would be "accepted" while emitting
-	# the wrong instructions -- a correctness bug, not a build failure.
-	# Inspect the actual bytes instead of trusting the exit code.
+	# Compiling is not proof: some clang accepts an unrecognised -mcpu with only
+	# a warning and silently falls back, so inspect the actual bytes.
 	tool_spec=$$(find_inspect_tool)
 	if [ -z "$$tool_spec" ]; then
 		fail "no readelf/objdump-family tool found to verify BPF_CMPXCHG codegen" \
@@ -168,9 +140,8 @@ else
 		else
 			hex=$$("$$tool" -x .text "$$p2_obj" 2>"$$tmpdir/p2insp.log" | awk '/0x[0-9a-f]+ /{ $$1=""; NF--; print }' | tr -d ' \n')
 		fi
-		# BPF_ATOMIC opcode (0xdb 64-bit / 0xc3 32-bit) followed by the
-		# regs+offset byte and BPF_CMPXCHG's low imm byte (0xf1). Encoding:
-		# linux/bpf.h BPF_STX|BPF_ATOMIC|{BPF_DW,BPF_W}, imm = BPF_CMPXCHG.
+		# BPF_ATOMIC opcode (0xdb 64-bit / 0xc3 32-bit), regs+offset byte, then
+		# BPF_CMPXCHG's imm byte (0xf1) -- linux/bpf.h's encoding.
 		if printf '%s' "$$hex" | grep -Eqi '(db|c3)[0-9a-f]{6}f1'; then
 			pass
 		else
@@ -188,14 +159,12 @@ p3_src="$$tmpdir/p3.c"
 cat >"$$p3_src" <<'EOF'
 #include <bpf/bpf_helpers.h>
 EOF
-# -E: preprocess only. This checks header *search path* resolution, which is
-# the libbpf-dev package's job, without also requiring __u64 and friends to
-# already be in scope (linux/types.h) -- a separate, unrelated concern that a
-# real translation unit resolves itself and this probe should not conflate.
+# -E: preprocess only, to check header search-path resolution without also
+# requiring __u64 and friends already in scope (a separate concern).
 if "$$CLANG" -target bpf -E "$$p3_src" -o /dev/null >"$$tmpdir/p3.log" 2>&1; then
 	pass
 else
-	fail "<bpf/bpf_helpers.h> does not resolve (docs/design/03-translation-units.md's marlin.h prototypes and every marlin_* translation unit need it)" \
+	fail "<bpf/bpf_helpers.h> does not resolve (every marlin_* translation unit needs it)" \
 		"$$CLANG -target bpf -E $$p3_src -o /dev/null" "$$tmpdir/p3.log" \
 		"install libbpf-dev (Debian/Ubuntu) / libbpf-devel (Fedora/RHEL), or add -I to its headers"
 fi
@@ -210,7 +179,7 @@ struct marlin_toolchain_probe_ctx { __u64 data; __u64 data_end; };
 int marlin_toolchain_probe_xdp(struct marlin_toolchain_probe_ctx *ctx) { return 2; }
 EOF
 if ! "$$CLANG" -target bpf -g -c "$$p4_src" -o "$$p4_obj" >"$$tmpdir/p4.log" 2>&1; then
-	fail "clang -g must compile for -target bpf (docs/design/29-versions.md:34)" \
+	fail "clang -g must compile for -target bpf" \
 		"$$CLANG -target bpf -g -c $$p4_src -o $$p4_obj" "$$tmpdir/p4.log" \
 		"same fix as probe 1 -- this is the same clang, with debug info turned on"
 else
@@ -230,7 +199,7 @@ else
 		if printf '%s' "$$sections" | grep -q '\.BTF'; then
 			pass
 		else
-			fail "clang -g produced no .BTF section (docs/design/03-translation-units.md's Linking requires BTF on every input)" \
+			fail "clang -g produced no .BTF section (BTF is required on every input)" \
 				"$$tool -S $$p4_obj  (or -h for llvm-objdump)" "$$tmpdir/p4insp.log" \
 				"upgrade clang -- BTF-from-DWARF generation for the bpf target needs LLVM >= 12"
 		fi
@@ -244,7 +213,7 @@ if [ "$${p1_ok}" = 1 ] && [ -s "$$p4_obj" ]; then
 	if "$$BPFTOOL" gen object "$$p5_out" "$$p4_obj" >"$$tmpdir/p5.log" 2>&1; then
 		pass
 	else
-		fail "bpftool gen object must link a BTF-carrying .o (docs/design/29-versions.md:36-37; libbpf's bpf_linker)" \
+		fail "bpftool gen object must link a BTF-carrying .o (libbpf's bpf_linker)" \
 			"$$BPFTOOL gen object $$p5_out $$p4_obj" "$$tmpdir/p5.log" \
 			"upgrade bpftool/libbpf -- gen object needs libbpf >= 0.4's static linker; on Debian/Ubuntu: apt install linux-tools-\$$(uname -r) or bpftool from your kernel's linux-tools package"
 	fi
@@ -327,11 +296,8 @@ if ! command -v "$$CLANG_FORMAT" >/dev/null 2>&1; then
 	style_fail "skipped -- clang-format is not present (see probe 6)" "(skipped)" /dev/null \
 		"fix probe 6 first"
 else
-	# Both tools search upward from the file being formatted/linted, so a
-	# probe run from a bare temp directory would find nothing and pass
-	# vacuously. Point --style=file: at the real config explicitly, and
-	# format one real byte of C so a silent "no diagnostics, also did
-	# nothing" cannot pass as success.
+	# Point --style=file: at the real config explicitly (a bare temp dir would
+	# find nothing and pass vacuously); format one real byte so no-op can't pass.
 	p8_c="$$tmpdir/p8.c"
 	printf 'int x;\n' >"$$p8_c"
 	if "$$CLANG_FORMAT" "--style=file:$${REPO_ROOT}/.clang-format" "$$p8_c" >"$$tmpdir/p8.out" 2>"$$tmpdir/p8.log"; then
@@ -375,11 +341,8 @@ exit 0
 
 endef
 
-# One recipe line: sh reads the script above from its own heredoc. This
-# keeps every probe's shell code in one file without fighting make's
-# "recipe lines must start with a tab" rule for the script's own lines --
-# only *this* line needs the tab; the heredoc body is a macro expansion, not
-# separate source lines make has to parse as recipe.
+# One recipe line: sh reads the script from its own heredoc, keeping every
+# probe's shell code in one file without breaking make's recipe-tab rule.
 define MARLIN_CHECK_TOOLCHAIN_INVOKE
 sh -s <<'MARLIN_CHECK_TOOLCHAIN_EOF'
 $(MARLIN_CHECK_TOOLCHAIN_SCRIPT)

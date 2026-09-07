@@ -17,18 +17,6 @@
 
 #include <marlin/marlin.h>
 
-/* pkt_len already includes ETH_HLEN (parser.c sets it from data_end -
- * data), and so does max_frame ("egress MTU + ETH_HLEN",
- * docs/design/08-types.md), so the two compare directly with no width
- * adjustment on either side. The sum is done in __u32 so pkt_len + overhead
- * cannot wrap the way it could in __u16.
- *
- * Callers must call this before bpf_xdp_adjust_head() and before updating
- * pkt_len: it is the ingress length this check needs, not the emitted one.
- * max_frame == 0 means the control plane has not set it yet, and disables
- * the check rather than dropping every encapsulated packet
- * (docs/design/23-mtu.md).
- */
 static __always_inline int marlin_frame_fits(const struct marlin_ctx *mctx, __u16 overhead)
 {
     if(mctx->cfg.max_frame == 0) {
