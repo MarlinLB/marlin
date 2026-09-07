@@ -1,13 +1,8 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * The outer UDP source port entropy hash shared by gue.c and vxlan.c
- * (docs/design/14-forwarding-modes.md SS7.3). Deliberately not the
- * selection hash (docs/design/12-selection.md), which reads the client
- * address only and would collapse every connection from one client onto a
- * single path and receive queue if reused here. A header, not a translation
- * unit: it takes only a BTF struct pointer already resolved by the caller
- * and reads no packet bytes (docs/design/03-translation-units.md).
+ * Outer UDP source port entropy hash for GUE and VXLAN encapsulation.
+ * Header only: takes a resolved BTF struct pointer and reads no packet bytes.
  */
 
 #pragma once
@@ -22,11 +17,7 @@
 #define MARLIN_ENTROPY_SPORT_MIN   49152U /* IANA ephemeral range floor */
 #define MARLIN_ENTROPY_SPORT_RANGE 16384U /* MIN + RANGE - 1 == 65535 */
 
-/* MurmurHash3's 32-bit finalizer, applied as a running mix per field rather
- * than only once at the end: each call both folds v into h and re-avalanches
- * h, so the single unavoidable final pass below still de-correlates the
- * output from whichever field happens to be mixed in last.
- */
+/* MurmurHash3 running mix: fold and re-avalanche per field. */
 static __always_inline __u32 marlin_entropy_mix(__u32 h, __u32 v)
 {
     h ^= v;
@@ -35,12 +26,8 @@ static __always_inline __u32 marlin_entropy_mix(__u32 h, __u32 v)
     return h;
 }
 
-/* Hashes the five named 5-tuple fields explicitly -- never
- * sizeof(struct packet_tuple) whole. tuple.pad's zeroing invariant belongs
- * to the selection hash (docs/design/10-map-invariants.md), and hashing it
- * here too would make this a second consumer of that invariant for no
- * reason; family is already implied by which of src/dst's trailing words
- * are zero, so leaving it out with pad costs nothing.
+/* Hash the five 5-tuple fields individually, not the whole struct. Skip
+ * tuple.pad and family: family is implied by src/dst trailing zeros.
  */
 static __always_inline __be16 marlin_entropy_sport(const struct packet_tuple *tuple)
 {
@@ -58,10 +45,7 @@ static __always_inline __be16 marlin_entropy_sport(const struct packet_tuple *tu
     h = marlin_entropy_mix(h, ((__u32)tuple->sport << 16) | tuple->dport);
     h = marlin_entropy_mix(h, tuple->proto);
 
-    /* The rest of MurmurHash3's finalizer: without this final avalanche the
-     * low bits fed to the modulo below would be a near-linear function of
-     * whichever field was mixed in last.
-     */
+    /* MurmurHash3 final avalanche to decorrelate output from last input. */
     h ^= h >> 16;
     h *= 0x85ebca6bU;
     h ^= h >> 13;

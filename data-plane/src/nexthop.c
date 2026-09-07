@@ -1,12 +1,9 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * Next-hop resolution. XDP emits a finished Ethernet frame, so the
- * destination MAC must be supplied here. Two global subprograms, one per
- * next-hop discipline: marlin_nexthop_l2dsr() uses the stored backend MAC
- * or falls back to bpf_fib_lookup(); marlin_nexthop_encapsulate() swaps the
- * arriving Ethernet addresses (IPIP and GUE only) or takes the same FIB
- * fallback. balancer.c dispatches between them on ENCAP_MODE(backend.flags).
+ * Next-hop resolution and Ethernet MAC assignment. Provides two disciplines:
+ * L2DSR uses stored backend MAC or falls back to bpf_fib_lookup(); encapsulation
+ * swaps Ethernet addresses (IPIP/GUE) or takes the same FIB fallback.
  */
 
 #include <linux/bpf.h>
@@ -62,7 +59,7 @@ static __always_inline void marlin_nexthop_check_egress(const struct backend *be
 }
 
 _Static_assert(sizeof(struct bpf_fib_lookup) == 64,
-               "struct bpf_fib_lookup no longer fits nexthop.c's share of the stack budget (docs/design/05-budgets.md)");
+               "bpf_fib_lookup must fit within the stack budget");
 
 static __always_inline int marlin_nexthop_fib(struct xdp_md *ctx, struct marlin_ctx *mctx, struct ethhdr *eth,
                                               enum marlin_nh_discipline disc)

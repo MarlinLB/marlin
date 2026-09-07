@@ -1,12 +1,8 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * Map definitions for the Marlin data plane application. Every map is
- * declared weak: more than one translation unit includes this header, and
- * without it `bpftool gen object` refuses the link with "conflicting
- * non-weak symbol" the moment a second .c file references a map, rather
- * than merging the identical definitions as docs/design/03-translation-units.md's
- * "Linking" section assumes.
+ * BPF map definitions. All maps are declared weak to support multi-file
+ * linking without symbol conflicts.
  */
 
 #pragma once
@@ -44,11 +40,9 @@ __attribute__((weak)) struct {
     __uint(max_entries, MAX_VIPS);
 } vip_map SEC(".maps");
 
-/* Keyed by kernel ifindex: bpf_fib_lookup()'s egress ifindex is the
- * redirect key directly. DEVMAP_HASH rather than DEVMAP because a host
- * ifindex may exceed MAX_TX_PORTS -- it is a capacity bound, not an index
- * space (docs/design/09-sizing.md). The ingress interface is deliberately
- * absent: transmitting back out it needs no devmap.
+/* Keyed by kernel ifindex from bpf_fib_lookup() egress result. DEVMAP_HASH
+ * used because host ifindex may exceed MAX_TX_PORTS. Ingress interface
+ * is omitted: no devmap needed for transmission back out.
  */
 __attribute__((weak)) struct {
     __uint(type, BPF_MAP_TYPE_DEVMAP_HASH);

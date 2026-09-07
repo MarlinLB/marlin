@@ -1,10 +1,8 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * Source-filtering verdict and the marlin_acl_check() prototype
- * (docs/design/27-source-filtering.md, docs/design/03-translation-units.md).
- * Only marlin_acl_check() is a global subprogram; the per-family checks are
- * static to acl.c.
+ * Source-filtering verdict types and the marlin_acl_check() prototype.
+ * Per-family checks are static to acl.c.
  */
 
 #pragma once

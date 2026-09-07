@@ -1,12 +1,9 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * The frame_too_big check of docs/design/23-mtu.md: the zero-lookup encap
- * default performs no bpf_fib_lookup(), so RET_FRAG_NEEDED never fires for
- * it, and something has to catch an emitted frame that will not fit the
- * egress MTU. A header, not a translation unit: it takes only mctx -- a BTF
- * struct pointer already resolved by the caller -- and reads no packet
- * bytes (docs/design/03-translation-units.md).
+ * Frame size checking for encapsulated packets. Validates that the final
+ * frame size does not exceed the egress MTU. Header only: takes a resolved
+ * BTF struct pointer and reads no packet bytes.
  */
 
 #pragma once
