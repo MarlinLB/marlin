@@ -20,9 +20,9 @@ packet onward using its own table.
 
 **VXLAN does not take this path.** Its encapsulation consumes the arriving Ethernet header as
 the frame's *inner* header and overwrites both addresses, so by the time next-hop resolution
-runs there is nothing left to swap and the router's MAC is gone. `vxlan_encap.c` writes the
+runs there is nothing left to swap and the router's MAC is gone. `vxlan.c` writes the
 outer header itself, from addresses saved ahead of the header adjustment, reaching the same
-result one step earlier (`docs/design/14-forwarding-modes.md` §7.4). `marlin_nexthop_encap()`
+result one step earlier (`docs/design/14-forwarding-modes.md` §7.4). `marlin_nexthop_encapsulate()`
 therefore applies the swap above for IPIP and GUE and skips it for VXLAN.
 
 The FIB path below is common to all three regardless: where `bpf_fib_lookup()` resolves the next
@@ -35,7 +35,10 @@ L2 DSR cannot MAC-swap: the destination is the backend itself, not a router.
 1. `MARLIN_BE_F_FIB` set → `bpf_fib_lookup()` on `backend.addr`. Checked *first*, ahead of the
    stored MAC, and `mac_fallback` is not incremented — nothing has fallen back.
 2. `backend.mac` non-zero → use it. No lookup.
-3. `backend.mac` all-zero → `bpf_fib_lookup()` on `backend.addr`, and increment `mac_fallback`.
+3. `backend.mac` all-zero → `bpf_fib_lookup()` on `backend.addr`, and increment `mac_fallback` —
+   except when `backend.addr` is also zero, where rule 4 below drops `backend_unresolved` before
+   the counter is reached. The suppression exists so the one misconfiguration is not
+   double-reported under two reasons.
 4. `backend.addr` zero on any path that reaches the lookup → drop `backend_unresolved`. Note
    this is `addr` alone, not "both zero": a flagged backend goes to the helper with its MAC
    resolved and unread, so a missing `addr` drops it even though a usable MAC exists. `docs/design/20-configuration-validation.md`

@@ -7,7 +7,7 @@
 around client address migration without a hash. Reserved in the ABI (`vip_meta.flags` bits 3
 and 8–12, `08-types.md`) and implemented in `parser.c` (classification only; the steering step
 in `balancer.c` is not yet written). Revision 8 — VXLAN's outer Ethernet header specified
-(`14-forwarding-modes.md` §7.4): `vxlan_encap.c` writes it, because the MAC-swap default
+(`14-forwarding-modes.md` §7.4): `vxlan.c` writes it, because the MAC-swap default
 (`15-nexthop-l2dsr.md`) cannot once the arriving header has been consumed as the inner one;
 `backend.vni`'s host byte order and conversion site are stated. Revision 7 added VXLAN as a
 fourth per-backend forwarding mode — `struct backend` gained `vni` and `inner_mac`, the

@@ -27,10 +27,13 @@ next hop differs from `backend.addr`. This is what makes `docs/design/14-forward
 enforced rather than merely stated.
 
 **`backend.egress_ifindex` validates, it does not steer.** On every path that emits a frame —
-including the `NO_NEIGH` fallback below — a recorded expectation is compared against the
-`ifindex` the FIB returned and a difference increments `egress_mismatch`. Not on the drop paths,
-which hold a valid `ifindex` too: a packet dropped `fib_gatewayed` or `fib_no_neigh` already
-carries a reason naming its cause, and a second counter would double-report one event. The FIB result is authoritative and the mismatch never changes the verdict:
+including the `NO_NEIGH` fallback below, and the L2 DSR stored-MAC and encapsulation
+zero-lookup fast paths, which hold no FIB result at all — a recorded expectation is compared
+against an actual egress: the `ifindex` the FIB returned where there was a lookup, the ingress
+interface where there was not, since those paths commit to `XDP_TX` out of it. A difference
+increments `egress_mismatch`. Not on the drop paths, which hold a valid `ifindex` too: a packet
+dropped `fib_gatewayed` or `fib_no_neigh` already carries a reason naming its cause, and a
+second counter would double-report one event. The FIB result is authoritative and the mismatch never changes the verdict:
 a stale expectation must be visible without becoming an outage. Zero means no expectation was
 recorded and the check is skipped. This counter is what makes `MARLIN_BE_F_FIB` safe to depend
 on — the flag is control-plane belief about reachability, and this is how belief that is wrong

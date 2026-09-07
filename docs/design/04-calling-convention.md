@@ -8,7 +8,7 @@ Global subprograms are verified independently of their callers and are restricte
 
 - **Prefix.** `marlin_*` marks a pipeline stage, not a linkage class. Every global
   subprogram carries it, and so do the `static` stage functions inside a unit —
-  `marlin_balance_process_packet()`, `marlin_balance_encap()`. Globals share one
+  `marlin_balance_process_packet()`, `marlin_balance_encapsulate()`. Globals share one
   namespace across the linked object and the linker rejects duplicates.
 - **Output parameters, not returns.** One per-packet context struct is allocated in the
   entry frame and threaded through as a pointer.
@@ -19,9 +19,9 @@ struct marlin_ctx {          /* 104 bytes */
     struct backend backend;  /* 32 — written by balancer.c, read by the encap units */
     struct marlin_config cfg;/* 20 — written by marlin.c, read by balancer.c and the encap units */
     __u32 flags;             /*  4 */
-    __u16 l3_off;            /*  2 */
+    __u16 l3_off;            /*  2 — parser.c's ingress value; an encap unit updates it to the outer offset */
     __u16 l4_off;            /*  2 */
-    __u16 pkt_len;           /*  2 */
+    __u16 pkt_len;           /*  2 — parser.c's ingress value; an encap unit updates it to the emitted length */
     __u8  acl_verdict;       /*  1 — enum marlin_acl_verdict, docs/design/27-source-filtering.md */
     __u8  pad;               /*  1 */
 };
@@ -30,6 +30,24 @@ struct marlin_ctx {          /* 104 bytes */
 ```c
 int marlin_balance(struct xdp_md *ctx, struct marlin_ctx *mctx);
 ```
+
+The three encapsulation units share this shape and prefix pattern —
+`marlin_nexthop_l2dsr()`/`marlin_nexthop_encapsulate()` (`include/marlin/nexthop.h:11-12`) are
+the precedent already in the tree:
+
+```c
+int marlin_ipip_encap(struct xdp_md *ctx, struct marlin_ctx *mctx);
+int marlin_gue_encap(struct xdp_md *ctx, struct marlin_ctx *mctx);
+int marlin_vxlan_encap(struct xdp_md *ctx, struct marlin_ctx *mctx);
+```
+
+Each returns `MARLIN_OK` on success — the caller then proceeds to next-hop resolution
+(`docs/design/11-pipeline.md` step 9) — or a `MARLIN_DROP_*` reason: `MARLIN_DROP_FRAME_TOO_BIG`
+from `mtu.h` (`docs/design/23-mtu.md`), or `MARLIN_DROP_ADJUST_HEAD` if
+`bpf_xdp_adjust_head()` itself fails. **Each unit calls and owns its own `adjust_head`; there is
+no shared call site for it**, because the three units disagree on both the byte count and on
+whether the arriving Ethernet header must be copied first (`docs/design/14-forwarding-modes.md`
+§7.2-7.4) — there is no common shape left to factor out once the disagreement is accounted for.
 
 - **`marlin_ctx` carries what crosses a translation unit boundary, plus one stage boundary.**
   `vip_num` and `backend_id` are not members: nothing outside `balancer.c` reads them, and the
@@ -47,7 +65,7 @@ int marlin_balance(struct xdp_md *ctx, struct marlin_ctx *mctx);
 
 - **`cfg` is the per-packet configuration snapshot, taken once in `marlin.c`.** It qualifies by
   the same test as everything else here: four units read it — `balancer.c` for `flags` and
-  `max_frame`, `ipip_encap.c`, `gue_encap.c` and `vxlan_encap.c` for `tunnel_src` (`docs/design/14-forwarding-modes.md`). No unit other
+  `max_frame`, `ipip.c`, `gue.c` and `vxlan.c` for `tunnel_src` (`docs/design/14-forwarding-modes.md`). No unit other
   than `marlin.c` looks the `config` map up.
 
   Two things follow from taking it once rather than per unit. **One generation per packet:** the
@@ -63,6 +81,15 @@ int marlin_balance(struct xdp_md *ctx, struct marlin_ctx *mctx);
 
   The copy is not atomic — a 20-byte read cannot be in BPF — so it narrows cross-field mixing to
   the instant of the copy rather than eliminating it. `docs/design/08-types.md` says the rest.
+
+- **`l3_off` and `pkt_len` hold the ingress values through parsing, and an encapsulation unit
+  updates both to the post-encapsulation values before returning.** Nothing downstream reads
+  either today — `nexthop.c`'s `fib.tot_len` re-derives its length from `ctx->data_end -
+  ctx->data` rather than from `pkt_len` — so the choice is not forced by an existing reader; it
+  is made now so a future reader finds `marlin_ctx` describing the frame as it will actually be
+  transmitted, not the frame that arrived. `mtu.h`'s `frame_too_big` check
+  (`docs/design/23-mtu.md`) is the one caller that needs the *ingress* value, which is why it
+  runs before either field is updated, not after.
 
 - **`marlin_ctx` must be fully zeroed before the first `marlin_*` call.** For a BTF
   struct-pointer argument the verifier requires the pointed-to stack memory to be

@@ -136,7 +136,12 @@ static struct xdp_run_result xdp_run(const void *data_in, __u32 data_size_in, vo
      * a non-zero value sends the kernel through dev_get_by_index() and
      * then xdp_rxq_info_is_reg() (xdp_convert_md_to_buff), which no
      * interface satisfies outside the netns/veth integration tier -- not
-     * even loopback registers XDP rxq info.
+     * even loopback registers XDP rxq info. This does not mean the program
+     * observes ingress_ifindex 0: xdp_convert_md_to_buff() only overrides
+     * the rxq for a non-zero value, so a zero one leaves the run bound to
+     * the calling process's network namespace's loopback device, and
+     * ctx->ingress_ifindex reads that device's ifindex -- 1, not 0. See
+     * xdp_test.c's nexthop_interim_* section for where that matters.
      */
     memset(&ctx_in, 0, sizeof(ctx_in));
     ctx_in.data_end = data_size_in;

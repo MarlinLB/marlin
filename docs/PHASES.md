@@ -54,9 +54,10 @@ a pure function of `packet_tuple.src`. Neither belongs with the rate limiter.
 - **Packet tests are built first, not last** (`docs/design/24-testing.md`). They are affordable because Marlin holds
   no per-flow state, so output is a deterministic function of the packet and map contents.
   Anything that breaks that property is a design change, not an implementation detail.
-- **Both feature flags stay off until their phase.** `acl.h` and `ratelimit.h` already exist
-  and are already called from `balancer.c`, so the phase gate is `CFG_ACL_ENABLE` (Phase 3)
-  and `CFG_RL_ENABLE` (Phase 4) plus the control-plane side — not the datapath code.
+- **Both feature flags stay off until their phase.** `acl.c` already exists and is already
+  called — from `marlin.c`, an interim site pending `balancer.c` (open decision below) — and
+  `ratelimit.h` already exists; the phase gate is `CFG_ACL_ENABLE` (Phase 3) and `CFG_RL_ENABLE`
+  (Phase 4) plus the control-plane side, not the datapath code.
 - **The verifier is a build product.** CI fails on a load failure and records reported
   complexity as a regression signal, because it degrades gradually as code is added
   (`docs/design/24-testing.md`).
@@ -74,7 +75,7 @@ configuration there. Nothing beyond that.
 
 Sources exist ahead of any build: `marlin.c`, `balancer.c`, `nexthop.c`, and every header
 `docs/design/03-translation-units.md` names except `csum.h` and `entropy.h`. Not yet written:
-`parser.c`, `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`, `csum.h` and `entropy.h`;
+`parser.c`, `ipip.c`, `gue.c`, `vxlan.c`, `csum.h` and `entropy.h`;
 `marlin-load.sh` and its systemd unit; and CI, whose obligations `docs/design/24-testing.md` states
 without naming a system. There is no build system, no test harness, no control-plane tree and no
 version control. Phase 1 is largely about making what exists compile, load and be driven.
@@ -89,8 +90,9 @@ version control. Phase 1 is largely about making what exists compile, load and b
   `WarningsAsErrors`.
 - Load and attach verified in a network namespace: `bpftool prog loadall` then
   `net attach xdpdrv`. The attach must fail rather than degrade to SKB mode (`docs/design/02-architecture.md`).
-- `make tests` builds and runs the native unit tests over `parser.c`
-  (`docs/design/24-testing.md`, "Native unit tests"). Not part of `make all`; part of `make ci`.
+- `make tests` builds and runs the native unit tests, one binary per translation unit —
+  `parser.c` and `acl.c` today (`docs/design/24-testing.md`, "Native unit tests"). Not part of
+  `make all`; part of `make ci`.
 - `make packet-tests` builds `marlin.bpf.o`, loads it, and drives it through `bpf_prog_test_run`
   for what `xdp_main` can satisfy today — parse verdicts and `drop_stats` deltas
   (`docs/design/24-testing.md`, "Packet-level tests"; `data-plane/tests/packet/`). Needs root or
@@ -165,14 +167,13 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 
 **Goal:** `types.h` stops changing, and the C# mirror is known to match it by review.
 
-Three open decisions must close here, because all three alter layout or index meaning and none is
+Two open decisions must close here, because both alter layout or index meaning and neither is
 revisable once a control plane has recorded a counter or read a struct in the field.
 
 | Decision | Where | Question |
 |---|---|---|
 | D4 | `types.h:203` | `backend.mac` straddles the 8-byte boundary at bytes 4-9. `docs/design/17-reconfiguration.md` calls `mac` immutable; `docs/design/15-nexthop-l2dsr.md` and `docs/design/19-control-plane.md` refresh it from neighbour events. If it is mutable, a torn read yields four bytes of the new MAC and two of the old. Field order is `docs/design/08-types.md`'s as written, pending this. |
 | D6 | `marlin.h:44` | `MAP_BOUNDS`, `NO_TX_PORT`, `ENCAP_LENGTH`, `FIB_UNSPEC`, `NOT_FORWARDED`, `FRAG_UNSUPPORTED` and the counted ICMP echo pass are in `enum marlin_ret` but not in `docs/design/22-observability.md`'s enumerated list of 23 reasons. |
-| D7 | `defines.h:35` | `MARLIN_BE_F_ENCAP_REQUIRED` (bit 4 of `backend.flags`) is defined and mirrored in `Marlin.Abi`'s `BackendFlags`, but nothing in the datapath reads it and no document assigns it a meaning. Either give it semantics before Phase 2a closes or remove the bit. |
 
 ### Deliverables
 
@@ -235,7 +236,7 @@ datapath is feature-complete and further work is control-plane work.
   `backend_id`, or a backend not `MARLIN_UP` — falls through to the existing hash path, uncounted
   as a drop (`docs/design/30-quic.md`). The four `MARLIN_COUNT_*` counters this needs are
   reserved but not yet in `enum marlin_ret` (`docs/design/22-observability.md`).
-- `ipip_encap.c`, `gue_encap.c`, `vxlan_encap.c`, `csum.h`, `entropy.h`: IPIP, GUE and VXLAN,
+- `ipip.c`, `gue.c`, `vxlan.c`, `csum.h`, `entropy.h`: IPIP, GUE and VXLAN,
   IPv6 inner over IPv4 outer, VXLAN's VNI, its inner Ethernet header rewrite and its outer
   Ethernet header, the entropy source port shared by GUE and VXLAN, and the zero UDP checksum
   (`docs/design/14-forwarding-modes.md`).
@@ -250,9 +251,12 @@ datapath is feature-complete and further work is control-plane work.
   `backend.inner_mac` (`docs/design/19-control-plane.md`). Refreshing `max_frame` from netlink
   link events is Phase 3.
 
-**Decision required in this phase:** `nexthop.c:206` — `docs/design/16-fib-lookup.md` calls
+**Decision required in this phase:** `nexthop.c:144-149` — `docs/design/16-fib-lookup.md` calls
 `BPF_FIB_LOOKUP_DIRECT` optional but gives it no configuration surface, so policy routing rules
-currently apply.
+currently apply. The same decision covers `fib.ipv4_src`/`tos`/`l4_protocol`
+(`nexthop.c:119-128`): they are left unseeded because the correct per-mode value is not one
+`nexthop.c` has in hand (`cfg` is not among its readers, `04-calling-convention.md:48-51`), and
+configuration surface for either would resolve both.
 
 ### Exit criteria
 
@@ -263,7 +267,7 @@ currently apply.
    forwards under IPIP; `egress_mismatch` counting without changing the verdict in the
    `tx_ports`-present case; and `egress_mismatch` **plus** a `no_tx_port` drop when **the
    FIB's** interface is absent from `tx_ports` — the redirect keys on the FIB result, never on
-   `egress_ifindex` (`nexthop.c:351`), and the counter is not a claim that the frame left.
+   `egress_ifindex` (`nexthop.c:218`), and the counter is not a claim that the frame left.
 2. Integration tests in network namespaces confirm a real kernel FOU/GUE listener, real
    `ipip`/`sit` devices, and a real `vxlan` device accept what Marlin emits, including the zero
    UDP checksum (`docs/design/24-testing.md`).
@@ -278,7 +282,10 @@ currently apply.
 5. Reported verifier complexity is inside budget with all four modes and both families
    linked. If it is not, `docs/design/05-budgets.md`'s `PROG_ARRAY` fallback is taken **with its
    three consequences accepted explicitly**: `marlin_ctx` moves to a per-CPU scratch map, the
-   accumulated stack cap drops to 256 bytes, and tail calls do not return.
+   accumulated stack cap drops to 256 bytes, and tail calls do not return. Unmeasurable before
+   `balancer.c` exists and calls both `marlin_nexthop_*` entry points: libbpf submits only
+   subprograms reachable from a `SEC()` program, so until then `nexthop.c` is compile-checked
+   only, and this criterion is the first thing that produces a verifier measurement of it.
 
 ---
 
@@ -326,12 +333,14 @@ rate-limiter conversion.
    slot (`docs/design/24-testing.md`).
 3. `backend.mac` freshness tested against neighbour churn, which needs its own netlink-level
    tests (`docs/design/24-testing.md`).
-4. `docs/design/24-testing.md`'s ACL coverage passes, **including the placement assertion**: a
-   blocked source addressed to a destination that is not a VIP drops with `acl_blocked`, not
-   `vip_miss`. That assertion is the whole of `docs/design/11-pipeline.md`'s host-firewall
-   property and it fails silently if step 3 is ever moved after step 4.
+4. `docs/design/24-testing.md`'s ACL coverage passes at both tiers — `make tests`'s
+   `data-plane/tests/acl_test.c` and `make packet-tests`'s `xdp_test.c` — **including the
+   placement assertion**, packet-tier-only since it depends on step ordering: a blocked source
+   addressed to a destination that is not a VIP drops with `acl_blocked`, not `vip_miss`. That
+   assertion is the whole of `docs/design/11-pipeline.md`'s host-firewall property and it fails
+   silently if step 3 is ever moved after step 4.
 5. `sizeof` asserted on both ACL key structs, 8 and 20 — a layout change alters what the trie
-   compares (`docs/design/24-testing.md`).
+   compares (`docs/design/24-testing.md`), at both tiers.
 6. A control-plane restart reconciles a partially applied write to the same end state, twice
    in succession, with no forwarding interruption.
 7. `DEPLOYMENT.md`'s prerequisites are reviewed against what Phase 3 actually requires of the
@@ -399,10 +408,15 @@ section it affects, not in a document of its own.
 | Whether `data-plane/tests/` joins `make format`/`make tidy`, or takes its own `.clang-format`/`.clang-tidy` | `docs/REPO-STRUCTURE.md` §7.2 | 1 |
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
-| D7 — `MARLIN_BE_F_ENCAP_REQUIRED` has no assigned meaning and no reader | `defines.h:35` | 2a |
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
-| `BPF_FIB_LOOKUP_DIRECT` has no configuration surface | `nexthop.c:206` | 2b |
+| `BPF_FIB_LOOKUP_DIRECT` has no configuration surface, and neither does `fib.ipv4_src`/`tos`/`l4_protocol`/`sport`/`dport`, left unseeded for the same reason | `nexthop.c:144-149` | 2b |
+| `mtu_result` has no reporting mechanism: `docs/design/23-mtu.md` requires it be counted alongside `frag_needed`, but `drop_stats` holds counts, not values | `docs/design/23-mtu.md:23-24` | 2b |
+| Interim call site: `marlin_acl_check()` is called from `marlin.c` (`src/main.c`), not from `marlin_balance()` as `docs/design/11-pipeline.md` step 3 places it, because `balancer.c` does not exist yet | `docs/design/11-pipeline.md` step 3 | 2b |
+| Interim call site: `marlin_nexthop_l2dsr()`/`marlin_nexthop_encapsulate()` are called from `xdp_interim_nexthop()` in `src/main.c`, not from `marlin_balance()` as `docs/design/11-pipeline.md` step 9 places it, because `balancer.c` does not exist yet | `docs/design/11-pipeline.md` step 9 | 2b |
+| Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly | `docs/design/11-pipeline.md` step 3 | 2b |
+| Whether a `marlin_*` global subprogram validates its `marlin_ctx` argument: `parser.c` NULL-checks and fails closed, `nexthop.c` does not check, `acl.c` checked and failed open on a branch the verifier proves unreachable | `docs/design/04-calling-convention.md:5-7` | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
+| `nexthop.c` maps ten kernel `bpf_fib_lookup()` return codes onto seven named `drop_stats` reasons. `BPF_FIB_LKUP_RET_NOT_FWDED` (the ordinary no-route outcome), `UNSUPP_LWT` and `NO_SRC_ADDR` all fall to the `default:` arm, `MARLIN_DROP_FIB_UNSPEC` — so "no route" is indistinguishable from a helper contract violation in `drop_stats` | `docs/design/16-fib-lookup.md:56-66`, `nexthop.c:86-111` | 2b |
 | Whether a connection ID naming a `DOWN` backend falls through to hash or drops | `docs/design/30-quic.md` | 2b |
 | Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |

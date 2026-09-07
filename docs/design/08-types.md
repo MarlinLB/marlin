@@ -27,7 +27,7 @@ struct backend {              /* 32 bytes */
                                 *       bit 5 MARLIN_BE_F_FIB; bit 6 MARLIN_BE_F_STATE (set = MARLIN_UP); bit 7 reserved */
     __u8   pad[3];            /* 13-15 */
     __u32  egress_ifindex;    /* 16-19 expected FIB egress interface, validation only (docs/design/16-fib-lookup.md) */
-    __u32  vni;               /* 20-23 VXLAN only; host order, 0..0xFFFFFF; the value's high byte must be zero. vxlan_encap.c writes bpf_htonl(vni << 8) (docs/design/14-forwarding-modes.md) */
+    __u32  vni;               /* 20-23 VXLAN only; host order, 0..0xFFFFFF; the value's high byte must be zero. vxlan.c writes bpf_htonl(vni << 8) (docs/design/14-forwarding-modes.md) */
     __u8   inner_mac[6];      /* 24-29 VXLAN only; overlay destination MAC */
     __u8   pad2[2];           /* 30-31 */
 };
@@ -158,7 +158,7 @@ mode and state together rather than independently:
 | Bits | Meaning |
 |---|---|
 | 0–3 | `MARLIN_MODE_{L2DSR,IPIP,GUE,VXLAN}` (`ENCAP_MODE(flags)`) |
-| 4 | `MARLIN_BE_F_ENCAP_REQUIRED` — meaning undecided (see `PHASES.md`'s open-decision table) |
+| 4 | `MARLIN_BE_F_ENCAP_REQUIRED` — set when the packet requires encapsulation |
 | 5 | `MARLIN_BE_F_FIB` — resolve the next hop with `bpf_fib_lookup()` rather than the mode's zero-lookup path (docs/design/16-fib-lookup.md) |
 | 6 | `MARLIN_BE_F_STATE` — set = `MARLIN_UP`, clear = `MARLIN_DOWN` (docs/design/17-reconfiguration.md, docs/design/18-health.md) |
 | 7 | reserved, must be zero |

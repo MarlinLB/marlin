@@ -33,10 +33,11 @@ static int marlin_case_failures;
 static const char *marlin_case_skip_reason;
 
 /* enum marlin_ret -> name, so a failure reads "expected MARLIN_DROP_..., got
- * MARLIN_OK" instead of "expected 9, got 0". Only the values parser.c can
- * return need a case; everything else falls through to the numeric default.
- * Unused in the bpf_prog_test_run tier, which never sees marlin_parse's raw
- * rc -- only the xdp_action it maps to and the drop_stats it increments.
+ * MARLIN_OK" instead of "expected 9, got 0". Only the values a translation
+ * unit under native-tier test can return need a case; everything else falls
+ * through to the numeric default. Unused in the bpf_prog_test_run tier,
+ * which never sees marlin_parse's raw rc -- only the xdp_action it maps to
+ * and the drop_stats it increments.
  */
 static __attribute__((unused)) const char *marlin_ret_name(int ret)
 {
@@ -63,6 +64,8 @@ static __attribute__((unused)) const char *marlin_ret_name(int ret)
             return "MARLIN_DROP_FRAG_UNSUPPORTED";
         case MARLIN_PASS_NOT_FORWARDED:
             return "MARLIN_PASS_NOT_FORWARDED";
+        case MARLIN_DROP_ACL_BLOCKED:
+            return "MARLIN_DROP_ACL_BLOCKED";
         default:
             return "<unknown enum marlin_ret>";
     }

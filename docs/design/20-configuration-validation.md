@@ -19,7 +19,7 @@ Rejected at configuration time rather than allowed to fail per packet:
 - A VXLAN backend with `vni` unset, or with `vni & 0xFF000000` non-zero. `vni` is a host-order
   24-bit value (`docs/design/08-types.md`), so this is the *value's* high byte rather than a byte
   position in the struct, and a non-zero one can only be a value that was never a valid VNI. It
-  would also collide with the shift `vxlan_encap.c` applies to reach wire order
+  would also collide with the shift `vxlan.c` applies to reach wire order
   (`docs/design/14-forwarding-modes.md` §7.4), landing operator data in the VXLAN header's
   reserved byte.
 - A VXLAN backend with an all-zero `inner_mac`. This is unlike `backend.mac`

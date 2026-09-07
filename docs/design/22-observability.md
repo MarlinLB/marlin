@@ -24,7 +24,13 @@ A single drop counter is insufficient. `drop_stats` is indexed by reason:
 `egress_mismatch` (not a drop, counted; `docs/design/16-fib-lookup.md`), `neigh_fallback` (not a drop, counted; `docs/design/16-fib-lookup.md`).
 
 Twenty-three of `DROP_REASON_MAX`. `enum marlin_ret` carries several more that this list does not
-name; reconciling the two is `marlin.h`'s open decision D6.
+name; reconciling the two is `marlin.h`'s open decision D6. One of those unnamed values gets its
+meaning fixed here regardless, since it is otherwise a footgun for whoever implements the
+encapsulation units: **`encap_length`** means the measured inner length will not fit the outer
+header's length field, or is shorter than the mode's minimum. It is not expected to fire in
+practice — `pkt_len` is `__u16` and no mode's overhead threatens overflow — so its absence from
+a running instance's counters is not evidence of anything; it exists so an implementation bug
+that produces an impossible length has a named reason instead of falling to a `default:` arm.
 
 Reasons that are passes or fallbacks rather than drops are marked as such, so the sum of
 `drop_stats` is not mistaken for total drops.

@@ -31,6 +31,16 @@ Prepend an outer IPv4 header: source is `config.tunnel_src`, destination is `bac
 Next-header is 4 for an IPv4 inner packet and 41 for IPv6. The inner packet retains the VIP,
 so the backend decapsulates and replies directly to the client.
 
+**The remaining outer IPv4 fields, common to all three encapsulating modes.** `version=4`,
+`ihl=5` (no options), `id=0`, `frag_off=IP_DF` (`proto.h:20`) — Marlin never fragments the
+outer packet; it drops `frame_too_big` instead (`docs/design/23-mtu.md`) — `ttl=64`, `tos=0`,
+and `tot_len` the inner packet's length plus the mode's overhead. `tos=0` rather than copying
+the inner header's DSCP/ECN is a deliberate omission, not an oversight: copying either needs a
+per-family read of the inner header plus RFC 6040's ECN remapping rules on decapsulation, so it
+stays out until a revision does both rather than one half-done. `protocol` is 4 or 41 as above
+for IPIP; GUE and VXLAN (§7.3, §7.4, below) fix it at 17 (UDP) instead, since their inner-family
+signal moves to the GUE header's protocol byte and the inner EtherType respectively.
+
 - Overhead 20 bytes.
 - Crosses L3 boundaries, unlike L2 DSR.
 - All traffic to one backend shares a single outer tuple, so the underlay cannot spread it
@@ -44,6 +54,12 @@ backend serving both inner families needs both devices.
 
 Outer IPv4, then UDP, then a 4-byte GUE header carrying the inner IP protocol number.
 Destination port is `backend.encap_dport` or 6080. Overhead 32 bytes.
+
+**The GUE header is version 0** (RFC 8086): byte 0 is `0x00` — 2-bit version, the C-bit and
+the 5-bit Hlen all zero, since Marlin carries no control message and no optional fields — byte
+1 is the inner IP protocol (4 or 41, the same values IPIP's next-header takes, §7.2 above), and
+bytes 2-3 are the flags field, `0x0000`: no flag bit has a use here, because there is nothing
+optional for one to point at.
 
 **Outer UDP source port — the entropy field.** Once encapsulated, everything a router can see
 is identical for every packet to a given backend: same source address, same destination
@@ -67,6 +83,16 @@ The entropy hash degrades to whatever fields are readable. Inner fragments have 
 their fragments spread across paths and may reorder slightly before the backend reassembles —
 same backend either way, so reordering rather than misrouting.
 
+**The algorithm and port range.** `entropy.h`'s `marlin_entropy_sport()` mixes the five named
+fields of `marlin_ctx.tuple` — never `sizeof(struct packet_tuple)` whole, since `tuple.pad`'s
+zeroing invariant belongs to the selection hash (`docs/design/10-map-invariants.md`), not to
+this one — through a fixed avalanche mix (the finalizer step MurmurHash3 uses), then maps the
+result into the ephemeral range: `49152 + (h % 16384)`. Confining the output to that range is
+deliberate: an unconstrained 16-bit value could land on the backend's own listener port or a
+well-known service, indistinguishable at the backend from unrelated traffic. A fragment with
+both ports zero still produces one stable value per connection — the mix runs over whatever
+`tuple` holds — which is what "degrades" above means concretely.
+
 Backend side: one FOU/GUE listener on the configured port. GUE carries the inner protocol in
 its own header, so a single listener covers both inner families — but the kernel demultiplexes
 into the protocol-4 and protocol-41 receive paths, so the corresponding tunnel receive devices
@@ -75,7 +101,8 @@ second device.
 
 ## 7.4 VXLAN
 
-Outer IPv4, then UDP, then an 8-byte VXLAN header (RFC 7348): flags (1 byte, with the `I` bit —
+Outer IPv4 — the same field policy as §7.2, above, with `protocol` fixed at 17 (UDP) — then
+UDP, then an 8-byte VXLAN header (RFC 7348): flags (1 byte, with the `I` bit —
 0x08 — set to mark the VNI valid), reserved (3 bytes), VNI (3 bytes), reserved (1 byte).
 Destination port is `backend.encap_dport` or 4789. Overhead is **50 bytes** — outer IPv4 (20) +
 UDP (8) + VXLAN (8) + inner Ethernet (14) — the largest of the three encapsulating modes, and
@@ -93,7 +120,7 @@ backend's `vxlan` device is bound to; Marlin does not interpret it beyond writin
 header.
 
 `backend.vni` is a **host-order** `__u32` holding a plain 0…0xFFFFFF integer, unlike `addr` and
-`encap_dport`, which the control plane stores already in wire order. `vxlan_encap.c` converts,
+`encap_dport`, which the control plane stores already in wire order. `vxlan.c` converts,
 in one 4-byte store of `bpf_htonl(vni << 8)` covering the header's 3-byte VNI and the reserved
 byte behind it, which the shift zeroes.
 
@@ -121,7 +148,7 @@ frame set it, `ETH_P_IP` or `ETH_P_IPV6`, and that is what lets one `vxlan` devi
 inner families: the receiving kernel demultiplexes on it, the way GUE demultiplexes on its own
 header field rather than on which listener received the packet.
 
-**The outer Ethernet header is written by `vxlan_encap.c`, not by the step-9 MAC swap.** This is
+**The outer Ethernet header is written by `vxlan.c`, not by the step-9 MAC swap.** This is
 the one place VXLAN cannot share the encapsulating modes' next-hop default
 (`docs/design/15-nexthop-l2dsr.md`), and the paragraph above is the reason: that default swaps
 the arriving frame's source and destination, and under VXLAN the arriving frame's Ethernet
@@ -130,7 +157,7 @@ been overwritten, so the upstream router's MAC — which the outer destination m
 nowhere in the frame by the time step 9 runs (`docs/design/11-pipeline.md`, step 8 precedes step
 9).
 
-`vxlan_encap.c` therefore reads both arriving addresses **before** `bpf_xdp_adjust_head()`,
+`vxlan.c` therefore reads both arriving addresses **before** `bpf_xdp_adjust_head()`,
 carries them across the call as values — copies, not pointers, so the rule against holding a
 packet pointer across a header adjustment is not in play — and writes them into the outer header
 at the new frame start: destination the arriving source, which is the router; source the
@@ -140,7 +167,7 @@ earlier and out of saved values rather than out of bytes that no longer hold the
 
 Two consequences, stated rather than left to be rediscovered:
 
-- **The ordering inside `vxlan_encap.c` is load-bearing.** Both arriving addresses must be read
+- **The ordering inside `vxlan.c` is load-bearing.** Both arriving addresses must be read
   before either is overwritten. An implementation that rewrites the inner header first destroys
   the router's MAC and has nothing left to address the outer header with — a failure no other
   mode can produce, because no other mode consumes the arriving header.
@@ -189,6 +216,14 @@ eliminates the zero-UDPv6-checksum problem entirely (see Checksums, below).
 `bpf_l3_csum_replace()` and `bpf_l4_csum_replace()` are tc-only and unavailable in XDP.
 Checksum arithmetic is done by hand in `csum.h`; `bpf_csum_diff()` is available in XDP and is
 used where a diff is cheaper than recomputation.
+
+**`csum.h`'s interface is three functions:** `marlin_csum_words()` accumulates one region's
+16-bit words into a running 32-bit sum; `marlin_csum_fold()` folds that sum to the
+one's-complement 16-bit result RFC 1071 defines; `marlin_ipv4_csum()` composes both over a
+20-byte IPv4 header with no options. Every encapsulation unit builds its outer IPv4 header
+from scratch in a stack-local `struct iphdr` and calls `marlin_ipv4_csum()` on the local —
+cheaper to compute directly than to diff against nothing, which is the condition above sets
+for choosing recomputation over `bpf_csum_diff()`.
 
 - **Outer IPv4 header checksum** is computed over known fields — cheap and exact.
 - **Outer UDP checksum, GUE and VXLAN,** may be zero. With an IPv4 outer this is
