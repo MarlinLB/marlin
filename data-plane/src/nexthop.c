@@ -163,13 +163,13 @@ int marlin_nexthop_encapsulate(struct xdp_md *ctx, struct marlin_ctx *mctx)
 {
     struct ethhdr *eth;
     __u8 tmp[ETH_ALEN];
-    
+
     if(ctx == NULL || mctx == NULL) {
         return MARLIN_DROP_PARSE_ERROR;
     }
 
     eth = marlin_nexthop_eth(ctx);
-    
+
     if(eth == NULL) {
         return MARLIN_DROP_PARSE_ERROR;
     }

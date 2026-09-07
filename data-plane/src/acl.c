@@ -62,7 +62,7 @@ int marlin_acl_check(const struct marlin_ctx *mctx)
     if(mctx == NULL) {
         return MARLIN_ACL_NONE;
     }
-    
+
     if((mctx->cfg.flags & CFG_ACL_ENABLE) == 0U) {
         return MARLIN_ACL_NONE;
     }
