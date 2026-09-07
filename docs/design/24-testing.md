@@ -181,6 +181,13 @@ tier supplies a real one. Getting either wrong fails every case identically with
 `xdp_main` ever runs, which reads as a wall of unrelated assertion failures rather than the one
 setup bug it is.
 
+A zero `ingress_ifindex` in `ctx_in` is not the same as the program observing `ctx->ingress_ifindex
+== 0`: the kernel leaves the run bound to the calling process's network namespace's loopback
+device in that case, and the verifier rewrites `ctx->ingress_ifindex` to that device's ifindex —
+1, not 0. The packet-level harness `unshare(CLONE_NEWNET)`s before loading the program so that
+ifindex, and what `bpf_fib_lookup()` makes of it, do not depend on the host's own routing table or
+`net.ipv4.ip_forward`.
+
 ## Integration tests
 
 Network namespaces and veth pairs with real tunnel devices on simulated backends. Validates

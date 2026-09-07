@@ -13,6 +13,7 @@
  */
 #define _GNU_SOURCE
 
+#include <sched.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -469,7 +470,7 @@ MARLIN_TEST(acl_v4_nested_block_prefixes_in_one_trie)
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_DROP, result.retval);
 
-    build_udp4(ACL_ADDR4(10, 131, 0, 1), V4_DST); /* outside the /8: second octet differs */
+    build_udp4(ACL_ADDR4(11, 130, 40, 5), V4_DST); /* outside the /8: first octet differs */
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_PASS, result.retval);
@@ -782,15 +783,16 @@ MARLIN_TEST(pending_phase1_criterion2_backend_down_is_drop)
 }
 
 /* ---- nexthop.c's Phase 2b assertion matrix (docs/design/24-testing.md:61-103,
- * docs/PHASES.md's Phase 2b exit criterion 1). Three blockers, all real, apply
- * to every case below: balancer.c does not exist, so xdp_main never calls
- * marlin_nexthop_l2dsr() or marlin_nexthop_encapsulate() (main.c returns
- * XDP_PASS after parsing); libbpf submits only subprograms reachable from a
- * SEC() program, so neither entry point is verified at all yet -- this tier
- * does not cover that gap either, since it loads the same marlin.bpf.o; and
- * even once balancer.c calls them, prog.h pins ingress_ifindex to 0 because no
- * interface here satisfies xdp_rxq_info_is_reg(), while bpf_fib_lookup()
- * rejects ifindex 0 -- so the FIB path needs the netns/veth integration tier
+ * docs/PHASES.md's Phase 2b exit criterion 1). Both entry points are now
+ * reachable through main.c's interim xdp_interim_nexthop() (see the
+ * "interim nexthop.c coverage" section below), which covers what this tier
+ * can reach without a routing table. The cases below still need the
+ * netns/veth integration tier docs/design/24-testing.md assigns them: this
+ * tier's packet-tests binary unshares a network namespace whose only
+ * interface is lo, so bpf_fib_lookup() can never resolve a route towards a
+ * real backend -- it deterministically reports the loopback's forwarding as
+ * disabled (see NH_INGRESS_IFINDEX below), never a neighbour, gateway, or
+ * redirect outcome. That needs the netns/veth topology
  * docs/design/24-testing.md assigns it, which does not exist yet (the only
  * scaffolding is scripts/netns-topo.sh). When that tier lands, delete each
  * MARLIN_SKIP line and replace it with the real assertion -- the case name and
@@ -901,11 +903,371 @@ MARLIN_TEST(pending_phase2b_egress_mismatch_plus_no_tx_port_is_drop)
     MARLIN_SKIP("docs/design/16-fib-lookup.md:39-42 -- needs balancer.c and the netns/veth FIB tier");
 }
 
+/* ---- interim nexthop.c coverage: remove with balancer.c ------------------
+ *
+ * These reach nexthop.c through main.c's xdp_interim_nexthop() -- backends[0]
+ * seeded MARLIN_BE_F_STATE, with ENCAP_MODE(flags) choosing the entry point.
+ * They cover only what does not need a routing table. prog.h pins
+ * ctx_in.ingress_ifindex to 0, but that is not what the program observes:
+ * bpf_prog_test_run_xdp() (net/bpf/test_run.c) binds the run to the calling
+ * process's network namespace's loopback device when ingress_ifindex is 0,
+ * and ctx->ingress_ifindex is verifier-rewritten to that device's ifindex --
+ * 1, always, for a namespace's own lo. main()'s unshare(CLONE_NEWNET) gives
+ * this binary a namespace with no routes and forwarding disabled on lo, so
+ * bpf_fib_lookup() deterministically returns BPF_FIB_LKUP_RET_FWD_DISABLED
+ * (nexthop.c maps it to MARLIN_DROP_FIB_FWD_DISABLED) regardless of the
+ * host's own routing table or net.ipv4.ip_forward. So the assertions below
+ * take that as "the FIB was consulted and could not answer", which is enough
+ * to pin *which branch was taken* but not what a real FIB would have
+ * replied; every case in the pending_phase2b_* set above still needs the
+ * netns/veth tier with real routes and neighbours.
+ *
+ * Each case seeds and clears backends[0] itself: nothing else in this file
+ * touches that map, and clearing on the way out keeps
+ * docs/design/24-testing.md:9's order-independence intact for every other
+ * case, all of which depend on the gate being closed.
+ */
+
+/* bpf_prog_test_run_xdp() binds the run to this process's network
+ * namespace's loopback device when ctx_in.ingress_ifindex is 0 (see above),
+ * and ctx->ingress_ifindex reads that device's ifindex -- 1, always, inside
+ * the unshare(CLONE_NEWNET) namespace main() creates.
+ */
+#define NH_INGRESS_IFINDEX 1U
+
+#define NH_BACKEND_ADDR 0x0c0c0c0cU /* 12.12.12.12 */
+
+static const unsigned char NH_MARLIN_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+static const unsigned char NH_ROUTER_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+static const unsigned char NH_BACKEND_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
+
+static void nh_backend_write(const struct backend *be)
+{
+    __u32 key = 0;
+    int fd = xdp_map_fd("backends");
+
+    if(bpf_map_update_elem(fd, &key, be, BPF_ANY) != 0) {
+        fprintf(stderr, "packet-tests: failed to seed backends[0]: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+static void nh_backend_clear(void)
+{
+    struct backend be;
+
+    memset(&be, 0, sizeof(be));
+    nh_backend_write(&be);
+}
+
+/* mac may be NULL for the unresolved-MAC cases; addr and egress_ifindex are
+ * passed explicitly because both change the branch taken.
+ */
+static void nh_backend_seed(__u8 mode_and_flags, __be32 addr, const unsigned char *mac, __u32 egress_ifindex)
+{
+    struct backend be;
+
+    memset(&be, 0, sizeof(be));
+    be.flags = (__u8)(mode_and_flags | MARLIN_BE_F_STATE);
+    be.addr = addr;
+    be.egress_ifindex = egress_ifindex;
+
+    if(mac != NULL) {
+        memcpy(be.mac, mac, ETH_ALEN);
+    }
+
+    nh_backend_write(&be);
+}
+
+/* pb_eth() zeroes both addresses, and a MAC swap over two zeroed fields is
+ * indistinguishable from no swap at all -- the whole point of these cases.
+ */
+static void nh_build_frame(void)
+{
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(11111, 80);
+}
+
+/* Compares the whole emitted frame against the arena with the two Ethernet
+ * addresses replaced -- so a case asserting a rewrite also asserts that
+ * nothing past ETH_ALEN * 2 moved, which a field-by-field check would miss.
+ *
+ * The drop cases below call this too: bpf_test_finish() copies data_out from
+ * the run's xdp_buff whatever the program returned, so "the frame was not
+ * rewritten" is assertable on a drop. No case above this section asserts
+ * bytes on a drop, so if the out_len check is what fails here, that
+ * assumption -- not the branch the case is about -- is what to revisit.
+ */
+static void nh_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __u32 out_len)
+{
+    unsigned char expect[ETH_HLEN];
+
+    CHECK_EQ(pb_len, out_len);
+    memcpy(expect, pb_arena, ETH_HLEN);
+    memcpy(expect, expect_dst, ETH_ALEN);
+    memcpy(expect + ETH_ALEN, expect_src, ETH_ALEN);
+    CHECK_MEM(expect, out_buf, sizeof(expect));
+    CHECK_MEM(pb_arena + ETH_HLEN, out_buf + ETH_HLEN, pb_len - ETH_HLEN);
+}
+
+MARLIN_TEST(nexthop_interim_l2dsr_stored_mac_is_tx_on_backend_mac)
+{
+    __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
+    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+
+    /* docs/design/15-nexthop-l2dsr.md: the backend is the destination, so
+     * Marlin's own MAC -- the arriving frame's destination -- becomes the new
+     * source. No MAC swap: the router's address does not survive.
+     */
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+
+    CHECK_EQ(fallback_before, xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK));
+    CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(nexthop_interim_l2dsr_egress_mismatch_counts_verdict_unchanged)
+{
+    __u64 before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+
+    /* egress_ifindex one past NH_INGRESS_IFINDEX, so it disagrees with the
+     * ifindex this tier's ingress actually resolves to. The zero-lookup half
+     * of docs/design/24-testing.md:98-101 -- the tx_ports/FIB half stays with
+     * pending_phase2b_egress_mismatch_*.
+     */
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, NH_INGRESS_IFINDEX + 1);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(nexthop_interim_l2dsr_egress_match_does_not_count)
+{
+    __u64 before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+
+    /* The negative half of the case above: an egress_ifindex equal to the
+     * ifindex this tier's ingress actually resolves to must not count.
+     * Pins NH_INGRESS_IFINDEX -- if the value the program observes ever
+     * changes, this fails rather than quietly turning the mismatch case
+     * above into a no-op.
+     */
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, NH_INGRESS_IFINDEX);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(nexthop_interim_l2dsr_zero_mac_zero_addr_is_backend_unresolved)
+{
+    __u64 unresolved_before = xdp_drop_stats_total(MARLIN_DROP_BACKEND_UNRESOLVED);
+    __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
+    struct xdp_run_result result;
+
+    /* docs/design/24-testing.md:82-84's second half, which that document
+     * already marks as needing no FIB tier: both fields zero drops
+     * backend_unresolved, and mac_fallback must not also count -- one
+     * misconfiguration, one reason (nexthop.c:73-75).
+     */
+    nh_backend_seed(MARLIN_MODE_L2DSR, 0, NULL, 0);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(unresolved_before + 1, xdp_drop_stats_total(MARLIN_DROP_BACKEND_UNRESOLVED));
+    CHECK_EQ(fallback_before, xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(nexthop_interim_l2dsr_zero_mac_resolvable_addr_counts_mac_fallback)
+{
+    __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
+    __u64 fwd_disabled_before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
+    struct xdp_run_result result;
+
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NULL, 0);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+
+    /* The counter is the assertion; the verdict only says the FIB was
+     * reached (see this section's header on the unshared netns).
+     */
+    CHECK_EQ(fallback_before + 1, xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK));
+    CHECK_EQ(fwd_disabled_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(nexthop_interim_l2dsr_fib_flag_does_not_use_stored_mac)
+{
+    __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
+    __u64 fwd_disabled_before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
+    struct xdp_run_result result;
+
+    /* The negative half of docs/design/24-testing.md:86-90: MARLIN_BE_F_FIB
+     * with a resolved backend.mac must reach the helper, so the frame must
+     * not come back carrying that MAC. Asserting the emitted *source* MAC is
+     * the egress interface's -- the half that fails with the branches
+     * reversed -- needs a FIB that answers, and stays with
+     * pending_phase2b_fib_flag_beats_resolved_mac.
+     *
+     * mac_fallback must not count either: nexthop.c:147-157 only degrades to
+     * the FIB when the flag is clear, and a flagged backend taking the
+     * lookup is the configured behaviour, not a control-plane fault.
+     */
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(fallback_before, xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK));
+    CHECK_EQ(fwd_disabled_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(nexthop_interim_encap_ipip_swaps_ethernet_addresses)
+{
+    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+
+    /* No ipip.c yet, so nothing has written an outer header -- irrelevant to
+     * the assertion, which is that the arriving addresses come back swapped
+     * so the upstream router forwards on its own table
+     * (docs/design/14-forwarding-modes.md). GUE takes this same branch and
+     * is deliberately not a second case.
+     */
+    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(nexthop_interim_encap_vxlan_leaves_ethernet_addresses_alone)
+{
+    struct xdp_run_result result;
+
+    /* docs/design/14-forwarding-modes.md SS7.4: vxlan.c writes the outer
+     * Ethernet header itself, so swapping here would replace its correct
+     * destination -- the router -- with Marlin's own MAC and transmit a
+     * frame addressed to nobody. The mode is tested, not the discipline, so
+     * this case is reachable before vxlan.c exists and is the only one that
+     * distinguishes the two.
+     */
+    nh_backend_seed(MARLIN_MODE_VXLAN, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(nexthop_interim_encap_fib_flag_beats_the_vxlan_no_swap_test)
+{
+    __u64 fwd_disabled_before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
+    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+
+    /* nexthop.c:177-179 checks MARLIN_BE_F_FIB ahead of both the VXLAN test
+     * and the swap, and ahead of the egress check the two share -- so a
+     * flagged VXLAN backend must reach the helper and must not count
+     * egress_mismatch despite the mismatching egress_ifindex below: the FIB
+     * drop returns before marlin_nexthop_check_egress() ever runs.
+     */
+    nh_backend_seed(MARLIN_MODE_VXLAN | MARLIN_BE_F_FIB, NH_BACKEND_ADDR, NH_BACKEND_MAC, NH_INGRESS_IFINDEX + 1);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(fwd_disabled_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED));
+    CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(nexthop_interim_gate_closed_leaves_every_other_case_alone)
+{
+    struct xdp_run_result result;
+
+    /* A DOWN backends[0] -- which is also what an untouched map holds -- must
+     * leave xdp_main on its XDP_PASS path, or every case above this section
+     * would depend on which order the cases ran in.
+     */
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_backend_clear();
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_PASS, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+}
+
+/* ---- end interim nexthop.c coverage ------------------------------------- */
+
 int main(int argc, char **argv)
 {
     const char *obj_path = (argc > 1) ? argv[1] : "build/marlin.bpf.o";
     struct marlin_config cfg;
     int rc;
+
+    /* Puts this process's only interface, lo, on a namespace with no routes
+     * and forwarding disabled, so the nexthop_interim_* section's
+     * bpf_fib_lookup() outcomes are the same on every host regardless of its
+     * own routing table or net.ipv4.ip_forward. BPF objects and maps are not
+     * netns-scoped, so this must run before the load below only for hygiene,
+     * not correctness.
+     */
+    if(unshare(CLONE_NEWNET) != 0) {
+        fprintf(stderr, "packet-tests: unshare(CLONE_NEWNET) failed: %s\n", strerror(errno));
+        exit(1);
+    }
 
     xdp_prog_load(obj_path);
 
