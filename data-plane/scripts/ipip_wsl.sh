@@ -129,21 +129,17 @@ ROOT_DEVS=("${MARLIN_IF}" "${BE_IF}" "${CLI_IF}")
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 OBJ="${MARLIN_OBJ:-${SCRIPT_DIR}/../build/marlin.bpf.o}"
 
-# Per-rig pin directory, not the /sys/fs/bpf/marlin default. This script's whole
-# premise is that its namespaces, devices, MACs and VIP are disjoint from the
-# other two rigs' so all three can be up at once; a shared pin directory would
-# break that on the first detach. DEPLOYMENT.md:62 makes the path a default
-# rather than an invariant, so this is in bounds.
+# Per-rig pin directory, not the /sys/fs/bpf/marlin default: this rig's
+# namespaces/devices/MACs/VIP are disjoint from the other two rigs, so a shared
+# pin dir would break that on first detach (DEPLOYMENT.md:62).
 PINDIR="${MARLIN_PINDIR:-/sys/fs/bpf/mlipip}"
 
 # bpftool pins each program under its C function name, not its section name --
 # SEC("xdp") int xdp_main() pins as xdp_main (data-plane/src/main.c).
 PROG=xdp_main
 
-# xdpgeneric for the reason in this file's header. Overridable so the rig can be
-# pointed at a native attach on a kernel that has one; it will fail loudly there
-# rather than degrade, which is the behaviour docs/design/02-architecture.md:31
-# wants.
+# xdpgeneric per this file's header; overridable to point at a native attach,
+# which fails loudly rather than degrading (docs/design/02-architecture.md:31).
 XDP_MODE="${XDP_MODE:-xdpgeneric}"
 BPFFS=/sys/fs/bpf
 BPFTOOL="${BPFTOOL:-bpftool}"
@@ -153,9 +149,8 @@ BPFTOOL="${BPFTOOL:-bpftool}"
 # is deliberately left alone.
 #
 # config.max_frame is the *frame*, not the MTU: "egress MTU + ETH_HLEN"
-# (docs/design/08-types.md, DEPLOYMENT.md §1.7). So 1600 here means 1614 there.
-# To exercise frame_too_big instead, drop MTU_UNDERLAY to 1500, set max_frame to
-# 1514, and send a full-size packet.
+# (docs/design/08-types.md, §1.7), so 1600 here means 1614 there. To exercise
+# frame_too_big, drop MTU_UNDERLAY to 1500 and max_frame to 1514.
 MTU_UNDERLAY=1600
 MAX_FRAME=$((MTU_UNDERLAY + 14))
 
@@ -210,10 +205,9 @@ mtu() {
 # packet retains the VIP, so the backend must still hold it locally after
 # decapsulation. lo is per-namespace, so nothing leaks into the WSL2 host.
 #
-# ARP/NDP suppression is not load-bearing on this topology — the backend shares no
-# segment with anything that would ask for the VIP — but it is the documented
-# backend requirement (§7.1, and §7.2 inherits it), and a rig that omits it
-# teaches the wrong backend recipe.
+# ARP/NDP suppression isn't load-bearing here -- the backend shares no segment
+# with anything that would ask for the VIP -- but it's the documented backend
+# requirement (§7.1, inherited by §7.2), and omitting it teaches the wrong recipe.
 backend_vip() {
 	local ns=$1 dev=$2
 	nsx "${ns}" ip addr add "${VIP}/32" dev lo
@@ -280,11 +274,9 @@ up() {
 
 	# Everything for the VIP goes to Marlin.
 	nsx "${NS_RT}" ip route add "${VIP}/32" via "${MARLIN_IP}" dev "${RT_A}"
-	# Static, because resolving ${MARLIN_IP} means sending an ARP request *into*
-	# the XDP program. Whether the datapath passes a non-IP ethertype is a
-	# property of the code under test, so a rig whose first packet depends on it
-	# fails at ARP and looks like a forwarding bug. Pinning the entry takes the
-	# question out of the path.
+	# Static, because resolving ${MARLIN_IP} means ARPing *into* the XDP program:
+	# whether the datapath passes non-IP ethertypes is what's under test, so a
+	# rig whose first packet depends on it fails at ARP, not at forwarding.
 	nsx "${NS_RT}" ip neigh replace "${MARLIN_IP}" lladdr "${MARLIN_MAC}" \
 		dev "${RT_A}" nud permanent
 
@@ -423,9 +415,8 @@ status() {
 down_quiet() {
 	local ns d pids
 	detach_quiet
-	# `ip netns del` unlinks the name, but the namespace itself lives on while a
-	# process is still attached to it. A leftover listener therefore survives a
-	# down/up cycle with nothing to show for it but the next failed bind.
+	# `ip netns del` unlinks the name; the namespace itself lives on while a
+	# process is attached, so a leftover listener survives a down/up cycle.
 	# ${pids} is unquoted on purpose: it is a list.
 	for ns in "${NS_ALL[@]}"; do
 		pids=$(ip netns pids "${ns}" 2>/dev/null || true)
@@ -469,15 +460,9 @@ rig_up_or_die() {
 	done
 }
 
-# No output, no root check, no failure. down_quiet(), detach() and reload() all
-# funnel through here so there is one definition of "cleaned up".
-#
-# Every mode is cleared explicitly, and a bare `xdp off` is NOT a substitute for
-# the mode-specific forms. dev_xdp_mode() in net/core/dev.c resolves a request
-# carrying no mode flag to XDP_MODE_DRV on any device with ndo_bpf -- veth has
-# it -- so `xdp off` targets the driver slot, finds it empty, and returns
-# success without touching a generic-mode program. The next attach then fails
-# with EBUSY "XDP program already attached", pointing at the wrong thing.
+# down_quiet(), detach() and reload() funnel through here for one definition
+# of "cleaned up". A bare `xdp off` resolves to XDP_MODE_DRV and is NOT a
+# substitute for the mode-specific forms -- it no-ops on a generic attach.
 detach_quiet() {
 	ip link set dev "${MARLIN_IF}" xdpgeneric off 2>/dev/null || true
 	ip link set dev "${MARLIN_IF}" xdpdrv off 2>/dev/null || true
@@ -562,9 +547,8 @@ reload() {
 # and without them an attached program passes every packet.
 #
 # Both config and backends[0] are written here, unlike the L2 DSR rig: an
-# encapsulating backend reads config.tunnel_src for the outer source address and
-# config.max_frame for the post-encapsulation size check
-# (docs/design/20-configuration-validation.md, docs/design/23-mtu.md).
+# encapsulating backend reads config.tunnel_src for the outer source and
+# config.max_frame for the post-encapsulation size check.
 #
 # vip_map and fwd_table are not written, because nothing reads them yet --
 # xdp_interim_nexthop() takes backends[0] directly (src/main.c). They become
@@ -582,10 +566,9 @@ abi_define() {
 	echo "${v}"
 }
 
-# struct backend and struct marlin_config as the byte lists `bpftool map update`
-# takes. python3 rather than shell arithmetic because both structs mix
-# network-order addresses with host-order words, and struct.pack states which is
-# which instead of assuming the host's endianness.
+# struct backend and struct marlin_config as byte lists `bpftool map update`
+# takes. python3 rather than shell arithmetic: both mix network-order
+# addresses with host-order words, and struct.pack states which is which.
 pack_backend() {
 	python3 - "$@" <<'PY'
 import socket, struct, sys
@@ -634,10 +617,8 @@ PY
 # not seeded.
 #
 # The offsets below are a third mirror of struct backend
-# (include/marlin/abi/types.h) and would drift silently, which is the failure
-# CLAUDE.md warns about. The object's own BTF is the only independent witness a
-# shell script has, so where bpftool names the fields the named values are
-# checked against the offsets rather than trusted.
+# (include/marlin/abi/types.h) that would drift silently -- named BTF fields
+# are checked against them here rather than trusted.
 backend_show() {
 	local bit
 	bit=$(abi_define MARLIN_BE_F_STATE_BIT)
@@ -783,10 +764,9 @@ trace() {
 # and a second hand-written mirror would drift with nothing to catch it.
 RET_HDR="${SCRIPT_DIR}/../include/marlin/marlin.h"
 
-# Emits "index name" per counted enumerator. The running counter is not just the
-# line number: MARLIN_OK carries an explicit "= 0" (marlin.h), and any later
-# enumerator may too, so an explicit value resets the count rather than being
-# ignored.
+# Emits "index name" per counted enumerator. The count isn't just the line
+# number: MARLIN_OK (and maybe later enumerators) carries an explicit "= 0"
+# in marlin.h, and an explicit value resets the count rather than being ignored.
 ret_names() {
 	[[ -f ${RET_HDR} ]] || return 0
 	sed -n '/^enum marlin_ret {/,/^};/p' "${RET_HDR}" | awk '
@@ -802,11 +782,9 @@ ret_names() {
 		}'
 }
 
-# drop_stats is a per-CPU array of __u64 keyed by enum marlin_ret, so a reading
-# is the per-CPU values summed per index. The JSON form is what stays stable:
-# bpftool's plain-text layout for per-CPU maps has moved between releases. A
-# value comes back as a number when the object carries BTF and as a
-# little-endian byte array when it does not; num() takes either.
+# drop_stats is a per-CPU array keyed by enum marlin_ret, summed per index here.
+# JSON stays stable across bpftool's plain-text format changes; a value comes
+# back as a number with BTF or a little-endian byte array without it.
 stats_read() {
 	[[ -e ${PINDIR}/drop_stats ]] || return 1
 	"${BPFTOOL}" -j map dump pinned "${PINDIR}/drop_stats" 2>/dev/null | python3 -c '
@@ -850,10 +828,9 @@ stats_report() {
 	(( moved )) || echo "  nothing moved"
 }
 
-# An echo request to a VIP is XDP_PASS by design (docs/design/13-icmp.md, and
-# marlin_parse() returns MARLIN_PASS_ICMP_ECHO for it), and the root namespace
-# does not hold the VIP -- so no reply is the correct outcome and a non-zero
-# exit here is not a fault. The evidence is icmp_echo moving, not a reply.
+# An echo request to a VIP is XDP_PASS by design (docs/design/13-icmp.md); the
+# root namespace doesn't hold the VIP, so no reply is the correct outcome --
+# the evidence is icmp_echo moving in drop_stats, not a reply.
 test_icmp_echo() {
 	need_root
 	rig_up_or_die
@@ -891,11 +868,9 @@ EOF
 # The listener argv, shared by listen() and test_http_get() so the two cannot
 # come to disagree about what the backend serves or what it binds.
 #
-# --bind ${VIP} is the load-bearing part. The decapsulated packet still carries
-# the VIP as destination (docs/design/14-forwarding-modes.md §7.2), and the VIP
-# is what the backend holds on lo -- so a listener bound there answers only
-# traffic that arrived through the tunnel, while a wildcard listener would also
-# answer anything that reached ${BE_IP} by ordinary routing.
+# --bind ${VIP} is load-bearing: the decapsulated packet still carries the VIP
+# as destination (§7.2), and only a listener bound to the VIP on lo answers
+# tunnelled traffic -- a wildcard bind would also answer ordinary routing.
 #
 # python3 -m http.server because it needs no configuration and is already the
 # dependency stats_read() carries.
@@ -1052,6 +1027,31 @@ test_http_get() {
 
 # ---------------------------------------------------------------------------
 
+help() {
+	cat <<EOF
+usage: $0 <command> [args]
+
+  up              build the topology (router, client, backend); does not
+                  attach the program
+  attach          load marlin.bpf.o, pin it, and attach it to ${MARLIN_IF}
+  seed            write config and backends[0]; nothing forwards until then
+  unseed          zero backends[0] again; the program stays attached
+  reload          rebuild loop: detach, unpin, load the new object, reattach
+  detach          detach the program and remove its pins; topology stays up
+  status          show the rig's namespaces, attach state and seeded maps
+  down            tear the whole topology down (implies detach)
+  listen [port]   serve HTTP on the VIP from the backend namespace until ^C
+  trace           follow the kernel trace pipe for xdp_main's bpf_printk output
+  test_icmp_echo  ping the VIP from the client namespace, report drop_stats
+  test_http_get   GET the VIP from the client namespace, report drop_stats
+  help            show this text
+
+Typical order: up, attach, seed, listen -- but see the file header: the
+encapsulation is not written yet, so a completed request is not among the
+things this rig can show today.
+EOF
+}
+
 case "${1:-}" in
 	up)             up ;;
 	attach)         attach ;;
@@ -1065,8 +1065,10 @@ case "${1:-}" in
 	trace)          trace ;;
 	test_icmp_echo) test_icmp_echo ;;
 	test_http_get)  test_http_get ;;
+	help|-h|--help) help ;;
 	*)
-		echo "usage: $0 {up|attach|seed|unseed|reload|detach|status|down|listen|trace|test_icmp_echo|test_http_get}" >&2
+		echo "usage: $0 {up|attach|seed|unseed|reload|detach|status|down|listen|trace|test_icmp_echo|test_http_get|help}" >&2
+		echo "run '$0 help' for what each command does" >&2
 		exit 2
 		;;
 esac
