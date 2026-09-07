@@ -156,3 +156,55 @@ static __attribute__((unused)) void xdp_acl_clear(const char *map)
         }
     }
 }
+
+/* tx_ports (DEVMAP_HASH, ifindex -> ifindex): the redirect target set for
+ * data-plane/tests/packet/fib.h's FIB cases. Per-case like the ACL helpers
+ * above, for the same order-independence reason.
+ */
+static __attribute__((unused)) void xdp_tx_ports_add(__u32 ifindex)
+{
+    int fd = xdp_map_fd("tx_ports");
+
+    if(bpf_map_update_elem(fd, &ifindex, &ifindex, BPF_ANY) != 0) {
+        fprintf(stderr, "packet-tests: failed to seed tx_ports[%u]: %s\n", ifindex, strerror(errno));
+        exit(1);
+    }
+}
+
+/* Non-fatal on ENOENT: teardown at the start of a case must tolerate an
+ * entry a failed earlier case never inserted.
+ */
+static __attribute__((unused)) void xdp_tx_ports_del(__u32 ifindex)
+{
+    int fd = xdp_map_fd("tx_ports");
+
+    if(bpf_map_delete_elem(fd, &ifindex) != 0 && errno != ENOENT) {
+        fprintf(stderr, "packet-tests: failed to clear tx_ports[%u]: %s\n", ifindex, strerror(errno));
+        exit(1);
+    }
+}
+
+static __attribute__((unused)) int xdp_tx_ports_is_empty(void)
+{
+    int fd = xdp_map_fd("tx_ports");
+    __u32 next;
+
+    return bpf_map_get_next_key(fd, NULL, &next) != 0;
+}
+
+/* Drains every entry, not just the one(s) a case knows it added -- the same
+ * drain-first-key loop as xdp_acl_clear, for a DEVMAP_HASH with no fixed
+ * baseline to reset to.
+ */
+static __attribute__((unused)) void xdp_tx_ports_clear(void)
+{
+    int fd = xdp_map_fd("tx_ports");
+    __u32 next;
+
+    while(bpf_map_get_next_key(fd, NULL, &next) == 0) {
+        if(bpf_map_delete_elem(fd, &next) != 0) {
+            fprintf(stderr, "packet-tests: failed to clear an entry from tx_ports: %s\n", strerror(errno));
+            exit(1);
+        }
+    }
+}

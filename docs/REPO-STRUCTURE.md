@@ -35,7 +35,11 @@ The rules the layout follows, stated so a new file can be placed without re-deri
    **Exception: native C unit tests of a single translation unit, and the packet-level harness
    that reuses them.** `data-plane/tests/` holds tests that `#include` a `data-plane/src/*.c`
    file directly to reach its `static` helpers — they cannot be moved out of that tree without
-   losing that access. `data-plane/tests/packet/` (§7.2) extends the exception for a narrower
+   losing that access. `data-plane/tests/stubs/` is a third thing living there for a related but
+   distinct reason: it is neither a test file nor shared with `tests/packet/`, which must keep
+   the real libbpf headers to link `-lbpf` — it exists only to give the native tier's map-reading
+   translation units (`acl.c`) something to `#include` in place of libbpf's own
+   `<bpf/bpf_helpers.h>`. `data-plane/tests/packet/` (§7.2) extends the exception for a narrower
    reason: it reuses that tree's `packet.h` and `harness.h` as-is and shares its Makefile, not
    because it needs the same `#include` access. `tests/integration/` has neither reason and
    stays outside `data-plane/`, at the repo root.
@@ -89,12 +93,18 @@ marlin/
 │   │       └── ratelimit.h
 │   └── tests/                       # native unit tests, `make tests` — Principle 5's exception
 │       ├── parser_test.c            # #includes src/parser.c to reach its static helpers
+│       ├── acl_test.c               # #includes src/acl.c; map lookups answered by stubs/ below
 │       ├── packet.h                 # packet builder, shared with tests/packet/ below
 │       ├── harness.h                # shared with tests/packet/ below
+│       ├── stubs/                   # shadows <bpf/bpf_helpers.h> for the native tier only
+│       │   ├── map_stub.h           # host LPM trie answering bpf_map_lookup_elem
+│       │   └── bpf/
+│       │       └── bpf_helpers.h    # SEC/__uint/__type/__always_inline + the real lookup helper
 │       └── packet/                  # bpf_prog_test_run, exact bytes — §7.2: landed here, not the repo root
 │           ├── xdp_test.c           # cases + main()
 │           ├── prog.h               # load/run wrapper over libbpf
-│           └── maps.h               # map fd lookup, seeding, drop_stats reads
+│           ├── maps.h               # map fd lookup, seeding, drop_stats reads
+│           └── fib.h                # veth + real routes/neighbours for nexthop.c's bpf_fib_lookup() cases
 │
 ├── deploy/
 │   ├── marlin-load.sh                # the two commands of docs/design/02-architecture.md
@@ -280,7 +290,9 @@ A related, narrower decision still has code waiting on it: whether `data-plane/t
 (native C, landed ahead of this one — see Principle 5's exception) joins `make format`/`make tidy`
 against the root `.clang-format`/`.clang-tidy`, or takes its own — on the same reasoning this
 section gave for `tests/packet/` wanting a longer `ColumnLimit`, now extending to
-`data-plane/tests/packet/` as well.
+`data-plane/tests/packet/` as well. `acl_test.c` and `data-plane/tests/stubs/` add two more files
+to that undecided set; `make format`/`make tidy` operate on `$(SRCS)`/`$(HDRS)` only
+(`data-plane/Makefile`), so none of it is tool-enforced either way until the decision closes.
 
 **7.3 `Marlin.Bpf` interop.** libbpf P/Invoke matches the function names in
 `docs/design/19-control-plane.md` and gets `bpf_map_lookup_batch` for free; a raw `bpf()`

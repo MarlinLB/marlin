@@ -105,14 +105,23 @@ rejects. A second case with the FIB's interface absent from `tx_ports` must incr
 is distinguishable from every other drop reason. The counter is not a claim that the frame left.
 
 **The ACL preserves this property and needs no exemption.** `marlin_acl_check()` is a pure function of
-`packet_tuple.src` and map contents. Coverage: block and allow matched and missed in both
-families; longest-prefix selection, a `/32` block inside a `/8` and a `/24` inside a `/8`; allow
-beating block at every relative specificity including a `/8` allow over a `/32` block;
-empty-list skipping, since clearing an `acl_lists` bit must stop enforcement; non-first fragments
-filtered identically to first fragments, which is the assertion that the fragment hole a
-port-granular design would have had does not exist; an ICMP error whose embedded client is
-blocked dropped while one whose transit router is blocked is not (`docs/design/27-source-filtering.md`); and `sizeof` on both key
-structs, 8 and 20, since a layout change alters what the trie compares.
+`packet_tuple.src` and map contents. Coverage, split across two tiers (see "Native unit tests"
+below): the verdict matrix runs at both — block and allow matched and missed in both families;
+longest-prefix selection, a `/32` block inside a `/8` and a `/24` inside a `/8`; allow beating
+block at every relative specificity including a `/8` allow over a `/32` block; empty-list
+skipping, since clearing an `acl_lists` bit must stop enforcement; and `sizeof` on both key
+structs, 8 and 20, since a layout change alters what the trie compares. Four assertions are
+native-tier-only, because the packet tier cannot observe them from the XDP verdict alone: that a
+cleared `acl_lists` bit *skips* the lookup rather than merely tolerating a miss; that an allow hit
+returns `MARLIN_ACL_ALLOW` and not `MARLIN_ACL_NONE` — indistinguishable by verdict until the rate
+limiter exists; that the lookup key is presented at full width (32/128 bits) with the address
+copied verbatim out of `tuple.src`; and that a NULL `mctx` fails open on the branch the verifier
+proves unreachable. Packet-tier-only, because `marlin_acl_check()` reads nothing outside
+`tuple.src` and `tuple.family` and these are properties of `parser.c` and `main.c`'s step
+ordering instead: non-first fragments filtered identically to first fragments, which is the
+assertion that the fragment hole a port-granular design would have had does not exist; an ICMP
+error whose embedded client is blocked dropped while one whose transit router is blocked is not
+(`docs/design/27-source-filtering.md`); and the placement assertion below.
 
 **One of those assertions is about placement, not semantics, and is the one worth naming.** A
 blocked source addressed to a destination that is *not* a VIP must drop with `acl_blocked`, not
@@ -138,13 +147,30 @@ environment below with concurrent senders across multiple receive queues.
 
 ## Native unit tests
 
-A second mechanism, alongside `bpf_prog_test_run` above, for the one translation unit where it
-is cheap: `data-plane/tests/` compiles `parser.c` with the host toolchain — no `-target bpf` — and
-`#include`s it directly to call its `static` helpers with real pointers. This is sound only
-because `parser.c` makes no `bpf_*` helper call and reads no map; it is a pure function of a byte
-buffer plus two offsets, so its behaviour does not depend on which target compiled it. No other
-translation unit has that property yet — `main.c` and the encapsulation units read and write maps,
-so a native build of those would test a different program than the one that loads.
+A second mechanism, alongside `bpf_prog_test_run` above: `data-plane/tests/` compiles a
+`src/*.c` file with the host toolchain — no `-target bpf` — and `#include`s it directly to call
+its `static` helpers with real pointers. `parser.c` qualifies trivially: it makes no `bpf_*`
+helper call and reads no map, so its behaviour cannot depend on which target compiled it. `acl.c`
+qualifies through `data-plane/tests/stubs/`, which shadows libbpf's `<bpf/bpf_helpers.h>` — whose
+helpers are function-pointer literals holding helper ids, `(void *)1` for `bpf_map_lookup_elem`,
+so calling one natively jumps to address 1 — and answers the helper out of a host longest-prefix
+scan keyed by the map object's address.
+
+A map-reading translation unit is soundly native-testable when three things hold. First, every
+helper it calls is answered by the stub; `acl.c` calls exactly one. Second, the stubbed map's
+semantics are a pure function of the arguments — no time, no per-CPU state, no eviction; four
+`BPF_F_NO_PREALLOC` LPM tries queried and never written satisfy this. Third, some other tier
+exercises the same map semantics against the real kernel, which `data-plane/tests/packet/` does.
+
+The cost is that such a case asserts two things at once: that `acl.c` queries the right map with
+the right key, and that the stub's longest-match scan agrees with the kernel's trie. Only the
+first is what the tier is for. The second is bounded by rule: every prefix-arithmetic case in
+`data-plane/tests/acl_test.c` has a named counterpart in `data-plane/tests/packet/xdp_test.c`, and
+a native case with no counterpart asserts only lookup bookkeeping — which map, how many times,
+with what key — never a prefix outcome. `main.c` and the encapsulation units still do not
+qualify: they write maps and call `bpf_redirect_map`, `bpf_fib_lookup` and `bpf_ktime_get_ns`,
+`ratelimit` is an LRU whose eviction is not a function of the arguments, and the stats maps are
+per-CPU.
 
 What it buys over the packet-level harness: the `static` helpers (`marlin_parse_frag6`,
 `marlin_walk_ext6`, `marlin_parse_icmp`, …) are otherwise unreachable except through
@@ -156,8 +182,10 @@ milliseconds with no root privilege and no kernel involved, so it is the tier a 
 
 What it cannot do: assert an emitted frame, a map write, or anything downstream of
 `marlin_parse` — that stays with `bpf_prog_test_run`, which is the only tier that runs the code as
-compiled for the datapath. `make tests` (not part of `make all`; part of `make ci`) runs this tier;
-`docs/PHASES.md` tracks whether the mechanism extends past `parser.c`.
+compiled for the datapath. The stub above answers reads only. `make tests` (not part of `make
+all`; part of `make ci`) builds and runs one binary per test file — `data-plane/tests/parser_test.c`
+and `data-plane/tests/acl_test.c` today; `docs/PHASES.md` tracks which translation units the
+mechanism covers as more are added.
 
 This is also why a sub-`ETH_HLEN` truncation case cannot move to the packet-level harness: the
 kernel's XDP `BPF_PROG_TEST_RUN` path rejects `data_size_in` below `ETH_HLEN` (14 bytes) before
@@ -169,17 +197,25 @@ made concrete: it loads the real `marlin.bpf.o` and drives `xdp_main` through
 `bpf_prog_test_run_opts`, asserting `data_out` for the exact-byte half of this document's opening
 sentence. Coverage there is bounded by what `xdp_main` can satisfy before Phase 2's VIP lookup
 and forwarding land — parse verdicts, `drop_stats` deltas, and that a passing frame is not
-mutated — with the rest of this document's matrix registered as `MARLIN_SKIP` placeholders
-(`docs/PHASES.md`) that report as a named `skip` line rather than as a pass, so a green run is
+mutated — plus, for `nexthop.c` specifically, the `bpf_fib_lookup()` matrix above under real FIB
+state (`data-plane/tests/packet/fib.h`), reached through `main.c`'s interim
+`xdp_interim_nexthop()` pending `balancer.c`. What still needs the VIP lookup, the rate limiter,
+or an encapsulation mode not yet written is registered as a `MARLIN_SKIP` placeholder
+(`docs/PHASES.md`) that reports as a named `skip` line rather than as a pass, so a green run is
 never mistaken for complete coverage.
 
 Passing `ctx_in` to `bpf_prog_test_run_opts` for an XDP program carries two kernel-enforced
 obligations easy to miss and silent to get wrong: `ctx->data_end` must equal `data_size_in`
 exactly, and a non-zero `ingress_ifindex` is only accepted for an interface with registered XDP
-rxq info — no interface in this harness has one, so it stays `0` until the netns/veth integration
-tier supplies a real one. Getting either wrong fails every case identically with `-EINVAL` before
-`xdp_main` ever runs, which reads as a wall of unrelated assertion failures rather than the one
-setup bug it is.
+rxq info — most cases in this tier pass `0` and rely on the loopback binding described below, since
+they need no FIB state. `data-plane/tests/packet/fib.h` is the exception: it builds veth pairs
+inside the same unshared namespace and attaches a two-instruction `XDP_PASS` anchor to register
+rxq info on them, giving `nexthop.c`'s `bpf_fib_lookup()` cases a real device and real routes —
+this is the packet tier extended with FIB state, not the netns/veth integration tier below, which
+still owns the real-device assertions of Phase 2b exit criterion 2 (a real kernel FOU/GUE
+listener, a real `ipip`/`sit` device, a real `vxlan` device). Getting either obligation wrong
+fails every case identically with `-EINVAL` before `xdp_main` ever runs, which reads as a wall of
+unrelated assertion failures rather than the one setup bug it is.
 
 A zero `ingress_ifindex` in `ctx_in` is not the same as the program observing `ctx->ingress_ifindex
 == 0`: the kernel leaves the run bound to the calling process's network namespace's loopback

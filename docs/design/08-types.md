@@ -158,7 +158,7 @@ mode and state together rather than independently:
 | Bits | Meaning |
 |---|---|
 | 0–3 | `MARLIN_MODE_{L2DSR,IPIP,GUE,VXLAN}` (`ENCAP_MODE(flags)`) |
-| 4 | `MARLIN_BE_F_ENCAP_REQUIRED` — meaning undecided (see `PHASES.md`'s open-decision table) |
+| 4 | `MARLIN_BE_F_ENCAP_REQUIRED` — set when the packet requires encapsulation |
 | 5 | `MARLIN_BE_F_FIB` — resolve the next hop with `bpf_fib_lookup()` rather than the mode's zero-lookup path (docs/design/16-fib-lookup.md) |
 | 6 | `MARLIN_BE_F_STATE` — set = `MARLIN_UP`, clear = `MARLIN_DOWN` (docs/design/17-reconfiguration.md, docs/design/18-health.md) |
 | 7 | reserved, must be zero |

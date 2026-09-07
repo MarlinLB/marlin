@@ -25,6 +25,7 @@
 
 #include "../harness.h"
 #include "../packet.h"
+#include "fib.h"
 #include "maps.h"
 #include "prog.h"
 
@@ -44,13 +45,26 @@ static unsigned char out_buf[XDP_TEST_RUN_MAX_SIZE];
 
 static struct xdp_run_result run_current_packet(void)
 {
-    /* 0, load-bearing: the kernel sends any non-zero ingress_ifindex through
-     * dev_get_by_index() and then xdp_rxq_info_is_reg() (xdp_convert_md_to_buff
-     * in net/bpf/test_run.c), which no interface here satisfies -- not even
-     * loopback registers XDP rxq info. A real ifindex needs the netns/veth
-     * integration tier, not this one.
+    /* 0: every case above this file's nexthop.c sections has no ingress
+     * device of its own and does not need one -- it binds to this process's
+     * network namespace's loopback device (see nexthop_interim_*'s header
+     * below), which is fine for anything that does not depend on FIB state.
+     * The FIB cases (fib.h) pass a real ifindex through run_packet_on()
+     * instead: dev_get_by_index() and xdp_rxq_info_is_reg()
+     * (xdp_convert_md_to_buff, net/bpf/test_run.c) require rxq info
+     * registered on the named device, which fib.h's XDP_PASS anchor is what
+     * provides -- lo never does.
      */
     return xdp_run(pb_arena, pb_len, out_buf, sizeof(out_buf), 0);
+}
+
+/* Sibling of run_current_packet() for the fib.h cases: a real device's
+ * ifindex, so bpf_fib_lookup() (nexthop.c) resolves against this process's
+ * namespace instead of deterministically reporting FWD_DISABLED off lo.
+ */
+static struct xdp_run_result run_packet_on(__u32 ingress_ifindex)
+{
+    return xdp_run(pb_arena, pb_len, out_buf, sizeof(out_buf), ingress_ifindex);
 }
 
 /* ---- MARLIN_OK: bypasses marlin_action entirely (main.c:78 returns
@@ -782,156 +796,19 @@ MARLIN_TEST(pending_phase1_criterion2_backend_down_is_drop)
     MARLIN_SKIP("docs/PHASES.md:144 -- needs the VIP lookup xdp_main does not have yet");
 }
 
-/* ---- nexthop.c's Phase 2b assertion matrix (docs/design/24-testing.md:61-103,
- * docs/PHASES.md's Phase 2b exit criterion 1). Both entry points are now
- * reachable through main.c's interim xdp_interim_nexthop() (see the
- * "interim nexthop.c coverage" section below), which covers what this tier
- * can reach without a routing table. The cases below still need the
- * netns/veth integration tier docs/design/24-testing.md assigns them: this
- * tier's packet-tests binary unshares a network namespace whose only
- * interface is lo, so bpf_fib_lookup() can never resolve a route towards a
- * real backend -- it deterministically reports the loopback's forwarding as
- * disabled (see NH_INGRESS_IFINDEX below), never a neighbour, gateway, or
- * redirect outcome. That needs the netns/veth topology
- * docs/design/24-testing.md assigns it, which does not exist yet (the only
- * scaffolding is scripts/netns-topo.sh). When that tier lands, delete each
- * MARLIN_SKIP line and replace it with the real assertion -- the case name and
- * doc reference do not change, so the diff shows exactly which criterion
- * closed.
- */
-
-MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback)
-{
-    /* docs/design/16-fib-lookup.md:57, docs/design/24-testing.md:62-63 --
-     * flagged L2 DSR backend, stored MAC, no neighbour, on-link route, FIB
-     * returns the ingress interface: emit on the stored MAC, count
-     * neigh_fallback, and assert the emitted source MAC is Marlin's
-     * ingress MAC, not fib.smac (docs/design/24-testing.md:69-72).
-     */
-    MARLIN_SKIP("docs/design/16-fib-lookup.md:57 -- needs balancer.c and the netns/veth FIB tier");
-}
-
-MARLIN_TEST(pending_phase2b_no_neigh_onlink_other_egress_is_drop)
-{
-    /* docs/design/24-testing.md:63-64 -- on-link but FIB returns another
-     * interface: drop fib_no_neigh, no frame emitted.
-     */
-    MARLIN_SKIP("docs/design/16-fib-lookup.md:58 -- needs balancer.c and the netns/veth FIB tier");
-}
-
-MARLIN_TEST(pending_phase2b_no_neigh_gatewayed_ingress_is_drop)
-{
-    /* docs/design/24-testing.md:64-66 -- gatewayed route, FIB returns the
-     * ingress interface: drop, no frame -- the case that separates a
-     * correct implementation from one that blackholes whenever a router's
-     * neighbour entry expires.
-     */
-    MARLIN_SKIP("docs/design/16-fib-lookup.md:81-87 -- needs balancer.c and the netns/veth FIB tier");
-}
-
-MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_zero_mac_is_drop)
-{
-    /* docs/design/24-testing.md:66-67 -- the on-link ingress case again
-     * with an all-zero backend.mac: drop, nothing left to fall back to.
-     */
-    MARLIN_SKIP("docs/design/15-nexthop-l2dsr.md:77-79 -- needs balancer.c and the netns/veth FIB tier");
-}
-
-MARLIN_TEST(pending_phase2b_no_neigh_under_ipip_is_drop)
-{
-    /* docs/design/24-testing.md:67-68,74-78 -- the same missing neighbour
-     * under IPIP must drop: the stored-MAC fallback is L2 DSR only.
-     * docs/design/16-fib-lookup.md's FIB handling does not vary by mode, so
-     * this one case stands for GUE and VXLAN too.
-     */
-    MARLIN_SKIP("docs/design/16-fib-lookup.md:67 -- needs balancer.c and the netns/veth FIB tier");
-}
-
-MARLIN_TEST(pending_phase2b_fib_fallback_resolves_backend_not_vip)
-{
-    /* docs/design/24-testing.md:80-84 -- L2 DSR, all-zero backend.mac, a
-     * populated backend.addr with a neighbour entry: the emitted frame
-     * carries that neighbour's MAC, not one resolved from the VIP. A
-     * separate assertion in this case: both fields zero drops
-     * backend_unresolved without reaching the helper at all -- that half
-     * needs no FIB tier and is covered by unit reasoning, not a packet
-     * test, since nothing about it depends on kernel routing state.
-     */
-    MARLIN_SKIP("docs/design/15-nexthop-l2dsr.md:85-88 -- needs balancer.c and the netns/veth FIB tier");
-}
-
-MARLIN_TEST(pending_phase2b_fib_flag_beats_resolved_mac)
-{
-    /* docs/design/24-testing.md:86-90 -- an L2 DSR backend carrying
-     * MARLIN_BE_F_FIB and a non-zero backend.mac must take the FIB path;
-     * assert the emitted source MAC is the egress interface's. Pair with
-     * the unflagged case on the same backend, which must XDP_TX on the
-     * stored MAC without touching the helper.
-     */
-    MARLIN_SKIP("docs/design/15-nexthop-l2dsr.md:35-53 -- needs balancer.c and the netns/veth FIB tier");
-}
-
-MARLIN_TEST(pending_phase2b_l2dsr_refuses_gatewayed_ipip_forwards)
-{
-    /* docs/design/24-testing.md:92-96 -- a backend whose addr is reachable
-     * only via a router: L2 DSR drops fib_gatewayed with no frame emitted;
-     * the same route under IPIP forwards normally. The mode split is the
-     * whole content of the check, so both halves must be asserted against
-     * the same route.
-     */
-    MARLIN_SKIP("docs/design/16-fib-lookup.md:12-27 -- needs balancer.c and the netns/veth FIB tier");
-}
-
-MARLIN_TEST(pending_phase2b_egress_mismatch_counts_verdict_unchanged)
-{
-    /* docs/design/24-testing.md:98-101 -- backend.egress_ifindex names an
-     * interface the FIB does not choose, and that interface is in
-     * tx_ports: the frame still emits on the FIB's interface, with
-     * egress_mismatch incremented. Assert both halves.
-     */
-    MARLIN_SKIP("docs/design/16-fib-lookup.md:29-38 -- needs balancer.c and the netns/veth FIB tier");
-}
-
-MARLIN_TEST(pending_phase2b_egress_mismatch_plus_no_tx_port_is_drop)
-{
-    /* docs/design/24-testing.md:101-103 -- as above, but the FIB's
-     * interface is absent from tx_ports: egress_mismatch increments AND
-     * the packet drops no_tx_port -- the counter is not a claim the frame
-     * left. The redirect keys on the FIB's ifindex, never on
-     * backend.egress_ifindex (docs/PHASES.md's Phase 2b exit criterion 1).
-     */
-    MARLIN_SKIP("docs/design/16-fib-lookup.md:39-42 -- needs balancer.c and the netns/veth FIB tier");
-}
-
-/* ---- interim nexthop.c coverage: remove with balancer.c ------------------
- *
- * These reach nexthop.c through main.c's xdp_interim_nexthop() -- backends[0]
- * seeded MARLIN_BE_F_STATE, with ENCAP_MODE(flags) choosing the entry point.
- * They cover only what does not need a routing table. prog.h pins
- * ctx_in.ingress_ifindex to 0, but that is not what the program observes:
- * bpf_prog_test_run_xdp() (net/bpf/test_run.c) binds the run to the calling
- * process's network namespace's loopback device when ingress_ifindex is 0,
- * and ctx->ingress_ifindex is verifier-rewritten to that device's ifindex --
- * 1, always, for a namespace's own lo. main()'s unshare(CLONE_NEWNET) gives
- * this binary a namespace with no routes and forwarding disabled on lo, so
- * bpf_fib_lookup() deterministically returns BPF_FIB_LKUP_RET_FWD_DISABLED
- * (nexthop.c maps it to MARLIN_DROP_FIB_FWD_DISABLED) regardless of the
- * host's own routing table or net.ipv4.ip_forward. So the assertions below
- * take that as "the FIB was consulted and could not answer", which is enough
- * to pin *which branch was taken* but not what a real FIB would have
- * replied; every case in the pending_phase2b_* set above still needs the
- * netns/veth tier with real routes and neighbours.
- *
- * Each case seeds and clears backends[0] itself: nothing else in this file
- * touches that map, and clearing on the way out keeps
- * docs/design/24-testing.md:9's order-independence intact for every other
- * case, all of which depend on the gate being closed.
+/* ---- shared by every nexthop.c case below: both the Phase 2b matrix
+ * (real FIB state, via fib.h) and the interim-coverage section further
+ * down (backends[0] through main.c's xdp_interim_nexthop()). One frame
+ * builder and one backend seeder for both, so a divergence between what
+ * the two tiers hand nexthop.c is not itself a source of false coverage.
  */
 
 /* bpf_prog_test_run_xdp() binds the run to this process's network
- * namespace's loopback device when ctx_in.ingress_ifindex is 0 (see above),
- * and ctx->ingress_ifindex reads that device's ifindex -- 1, always, inside
- * the unshare(CLONE_NEWNET) namespace main() creates.
+ * namespace's loopback device when ctx_in.ingress_ifindex is 0, and
+ * ctx->ingress_ifindex reads that device's ifindex -- 1, always, inside
+ * the unshare(CLONE_NEWNET) namespace main() creates. Only the
+ * interim-coverage section below runs with ingress_ifindex 0; the Phase 2b
+ * matrix above it passes a real device through run_packet_on() instead.
  */
 #define NH_INGRESS_IFINDEX 1U
 
@@ -940,6 +817,13 @@ MARLIN_TEST(pending_phase2b_egress_mismatch_plus_no_tx_port_is_drop)
 static const unsigned char NH_MARLIN_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
 static const unsigned char NH_ROUTER_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
 static const unsigned char NH_BACKEND_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
+
+/* The decoy neighbour for pending_phase2b_fib_fallback_resolves_backend_not_vip:
+ * a MAC distinct from every FIB_MAC_* in fib.h and from NH_BACKEND_MAC, so a
+ * lookup that used the wrong address is visible as a wrong MAC, not merely a
+ * different verdict class.
+ */
+static const unsigned char NH_DECOY_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x0b};
 
 static void nh_backend_write(const struct backend *be)
 {
@@ -1013,6 +897,535 @@ static void nh_check_frame(const unsigned char *expect_dst, const unsigned char 
     CHECK_MEM(expect, out_buf, sizeof(expect));
     CHECK_MEM(pb_arena + ETH_HLEN, out_buf + ETH_HLEN, pb_len - ETH_HLEN);
 }
+
+/* ---- nexthop.c's Phase 2b assertion matrix (docs/design/24-testing.md:61-103,
+ * docs/PHASES.md's Phase 2b exit criterion 1). Both entry points are already
+ * reachable through main.c's interim xdp_interim_nexthop() (see the
+ * "interim nexthop.c coverage" section below); what the cases below add is
+ * real FIB state to drive them against, from fib.h's veth topology inside
+ * the network namespace this binary's main() already unshares. Case names
+ * and doc citations are unchanged from when these were MARLIN_SKIP
+ * placeholders, so the history of this file shows exactly which criterion
+ * closed and when.
+ */
+
+MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback)
+{
+    /* docs/design/16-fib-lookup.md:57, docs/design/24-testing.md:62-63 --
+     * flagged L2 DSR backend, stored MAC, no neighbour, on-link route, FIB
+     * returns the ingress interface: emit on the stored MAC, count
+     * neigh_fallback, and assert the emitted source MAC is the frame's own
+     * arriving destination, not fib.smac (docs/design/24-testing.md:69-72).
+     */
+    __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK);
+    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+
+    fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
+    fib_neigh_set(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS, FIB_MAC_BACKEND_A, "failed");
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    /* marlin_nexthop_store_mac() (nexthop.c:46-50) takes the new source from
+     * the frame's own arriving destination, NH_MARLIN_MAC here -- not
+     * fib.smac, which this branch never sets (docs/design/16-fib-lookup.md:85-86).
+     * NH_MARLIN_MAC != FIB_MAC_INGRESS is what makes "not fib.smac" a fact a
+     * regression could actually fail.
+     */
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(fallback_before + 1, xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK));
+    CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+    fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
+}
+
+MARLIN_TEST(pending_phase2b_no_neigh_onlink_other_egress_is_drop)
+{
+    /* docs/design/24-testing.md:63-64 -- on-link but FIB returns another
+     * interface: drop fib_no_neigh, no frame emitted.
+     */
+    __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
+    __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK);
+    struct xdp_run_result result;
+
+    fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
+    fib_neigh_set(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS, FIB_MAC_BACKEND_B, "failed");
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(no_neigh_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH));
+    CHECK_EQ(fallback_before, xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK));
+
+    nh_backend_clear();
+    fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
+}
+
+MARLIN_TEST(pending_phase2b_no_neigh_gatewayed_ingress_is_drop)
+{
+    /* docs/design/24-testing.md:64-66 -- gatewayed route, FIB returns the
+     * ingress interface: drop, no frame -- the case that separates a
+     * correct implementation from one that blackholes whenever a router's
+     * neighbour entry expires.
+     */
+    __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
+    __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK);
+    struct xdp_run_result result;
+
+    fib_route_add_via(FIB_ADDR_GATEWAYED, FIB_ADDR_GATEWAY, FIB_DEV_INGRESS);
+    fib_neigh_del(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS);
+    fib_neigh_set(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS, FIB_MAC_GATEWAY, "failed");
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(no_neigh_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH));
+    /* The assertion this case exists for: an unrelated neighbour entry must
+     * not decide between a correct loud drop and a silent blackhole counted
+     * as a healthy fallback (docs/design/16-fib-lookup.md:88-90).
+     */
+    CHECK_EQ(fallback_before, xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK));
+
+    nh_backend_clear();
+    fib_neigh_del(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS);
+    fib_route_del(FIB_ADDR_GATEWAYED);
+}
+
+MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_zero_mac_is_drop)
+{
+    /* docs/design/24-testing.md:66-67 -- the on-link ingress case again
+     * with an all-zero backend.mac: drop, nothing left to fall back to.
+     */
+    __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
+    __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK);
+    struct xdp_run_result result;
+
+    fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
+    fib_neigh_set(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS, FIB_MAC_BACKEND_A, "failed");
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NULL, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(no_neigh_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH));
+    CHECK_EQ(fallback_before, xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK));
+
+    nh_backend_clear();
+    fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
+}
+
+MARLIN_TEST(pending_phase2b_no_neigh_under_ipip_is_drop)
+{
+    /* docs/design/24-testing.md:67-68,74-78 -- the same missing neighbour
+     * under IPIP must drop: the stored-MAC fallback is L2 DSR only.
+     * docs/design/16-fib-lookup.md's FIB handling does not vary by mode, so
+     * this one case stands for GUE and VXLAN too.
+     */
+    __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
+    struct xdp_run_result result;
+
+    fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
+    fib_neigh_set(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS, FIB_MAC_BACKEND_A, "failed");
+
+    nh_backend_seed(MARLIN_MODE_IPIP | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    /* nexthop.c:177-179 returns before the swap at :187-189: no frame
+     * emitted, not merely one that failed to swap.
+     */
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(no_neigh_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH));
+
+    nh_backend_clear();
+    fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
+}
+
+MARLIN_TEST(pending_phase2b_fib_fallback_resolves_backend_not_vip)
+{
+    /* docs/design/24-testing.md:80-84 -- L2 DSR, all-zero backend.mac, a
+     * populated backend.addr with a neighbour entry: the emitted frame
+     * carries that neighbour's MAC, not one resolved from the VIP. A
+     * separate assertion in this case: both fields zero drops
+     * backend_unresolved without reaching the helper at all -- that half
+     * needs no FIB tier and is already covered at
+     * nexthop_interim_l2dsr_zero_mac_zero_addr_is_backend_unresolved below.
+     *
+     * The decoy route/neighbour on V4_DST (the frame's IP destination, not
+     * backend.addr) is what makes "resolves the backend, not the VIP"
+     * falsifiable: a lookup that used V4_DST instead would still emit
+     * XDP_TX (same ingress device) but on NH_DECOY_MAC, not
+     * FIB_MAC_BACKEND_A.
+     */
+    __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
+    struct xdp_run_result result;
+
+    fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
+    fib_neigh_set(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS, FIB_MAC_BACKEND_A, "permanent");
+    fib_route_add_onlink(V4_DST, FIB_DEV_INGRESS);
+    fib_neigh_del(V4_DST, FIB_DEV_INGRESS);
+    fib_neigh_set(V4_DST, FIB_DEV_INGRESS, NH_DECOY_MAC, "permanent");
+
+    nh_backend_seed(MARLIN_MODE_L2DSR, FIB_ADDR_BACKEND_A, NULL, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(FIB_MAC_BACKEND_A, FIB_MAC_INGRESS, result.out_len);
+    CHECK_EQ(fallback_before + 1, xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK));
+
+    nh_backend_clear();
+    fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
+    fib_neigh_del(V4_DST, FIB_DEV_INGRESS);
+    fib_route_del(V4_DST);
+}
+
+MARLIN_TEST(pending_phase2b_fib_flag_beats_resolved_mac)
+{
+    /* docs/design/24-testing.md:86-90 -- an L2 DSR backend carrying
+     * MARLIN_BE_F_FIB and a non-zero backend.mac must take the FIB path;
+     * assert the emitted source MAC is the egress interface's. Pair with
+     * the unflagged case on the same backend, which must XDP_TX on the
+     * stored MAC without touching the helper.
+     */
+    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+
+    fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
+    fib_neigh_set(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS, FIB_MAC_BACKEND_B, "permanent");
+    xdp_tx_ports_add((__u32)fib_ifindex(FIB_DEV_EGRESS));
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_REDIRECT, result.retval);
+    /* "The egress interface's, not the ingress one" -- literally, since
+     * FIB_MAC_EGRESS != FIB_MAC_INGRESS: this is the half that would still
+     * pass with the two branches reversed if only the destination MAC were
+     * checked.
+     */
+    nh_check_frame(FIB_MAC_BACKEND_B, FIB_MAC_EGRESS, result.out_len);
+    CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_seed(MARLIN_MODE_L2DSR, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    /* The unflagged pair: the stored MAC path never touches fib.smac, so the
+     * source comes back as the frame's own arriving destination, same as
+     * pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback above.
+     */
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+
+    nh_backend_clear();
+    xdp_tx_ports_clear();
+    fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
+}
+
+MARLIN_TEST(pending_phase2b_l2dsr_refuses_gatewayed_ipip_forwards)
+{
+    /* docs/design/24-testing.md:92-96 -- a backend whose addr is reachable
+     * only via a router: L2 DSR drops fib_gatewayed with no frame emitted;
+     * the same route under IPIP forwards normally. The mode split is the
+     * whole content of the check, so both halves are asserted against the
+     * same route.
+     */
+    __u64 gatewayed_before;
+    struct xdp_run_result result;
+
+    fib_route_add_via(FIB_ADDR_GATEWAYED, FIB_ADDR_GATEWAY, FIB_DEV_INGRESS);
+    fib_neigh_del(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS);
+    fib_neigh_set(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS, FIB_MAC_GATEWAY, "permanent");
+
+    gatewayed_before = xdp_drop_stats_total(MARLIN_DROP_FIB_GATEWAYED);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(gatewayed_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_GATEWAYED));
+
+    nh_backend_seed(MARLIN_MODE_IPIP | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(FIB_MAC_GATEWAY, FIB_MAC_INGRESS, result.out_len);
+
+    nh_backend_clear();
+    fib_neigh_del(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS);
+    fib_route_del(FIB_ADDR_GATEWAYED);
+}
+
+MARLIN_TEST(pending_phase2b_egress_mismatch_counts_verdict_unchanged)
+{
+    /* docs/design/24-testing.md:98-101 -- backend.egress_ifindex names an
+     * interface the FIB does not choose, and that interface is in
+     * tx_ports: the frame still emits on the FIB's interface, with
+     * egress_mismatch incremented. Assert both halves.
+     */
+    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+    int nofwd_ifindex = fib_ifindex(FIB_DEV_NOFWD);
+
+    fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
+    fib_neigh_set(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS, FIB_MAC_BACKEND_B, "permanent");
+    xdp_tx_ports_add((__u32)fib_ifindex(FIB_DEV_EGRESS));
+    xdp_tx_ports_add((__u32)nofwd_ifindex);
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, (__u32)nofwd_ifindex);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_REDIRECT, result.retval);
+    nh_check_frame(FIB_MAC_BACKEND_B, FIB_MAC_EGRESS, result.out_len);
+    CHECK_EQ(mismatch_before + 1, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+    xdp_tx_ports_clear();
+    fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
+}
+
+MARLIN_TEST(pending_phase2b_egress_mismatch_plus_no_tx_port_is_drop)
+{
+    /* docs/design/24-testing.md:101-103 -- as above, but the FIB's
+     * interface is absent from tx_ports: egress_mismatch increments AND
+     * the packet drops no_tx_port -- the counter is not a claim the frame
+     * left. The redirect keys on the FIB's ifindex, never on
+     * backend.egress_ifindex (docs/PHASES.md's Phase 2b exit criterion 1).
+     */
+    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    __u64 no_tx_port_before = xdp_drop_stats_total(MARLIN_DROP_NO_TX_PORT);
+    struct xdp_run_result result;
+    int nofwd_ifindex = fib_ifindex(FIB_DEV_NOFWD);
+
+    fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
+    fib_neigh_set(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS, FIB_MAC_BACKEND_B, "permanent");
+    xdp_tx_ports_add((__u32)nofwd_ifindex); /* the FIB's own interface, mve1, is deliberately absent */
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, (__u32)nofwd_ifindex);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_ABORTED, result.retval);
+    /* Rewritten, not arriving: nexthop.c:117-118's MAC writes precede the
+     * redirect attempt at :126, so a frame was built before the drop.
+     */
+    nh_check_frame(FIB_MAC_BACKEND_B, FIB_MAC_EGRESS, result.out_len);
+    CHECK_EQ(mismatch_before + 1, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+    CHECK_EQ(no_tx_port_before + 1, xdp_drop_stats_total(MARLIN_DROP_NO_TX_PORT));
+
+    nh_backend_clear();
+    xdp_tx_ports_clear();
+    fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
+}
+
+/* ---- Remaining bpf_fib_lookup() return codes: no existing case name
+ * covers these (docs/design/16-fib-lookup.md:56-66, docs/PHASES.md:244
+ * "seven return codes"). BLACKHOLE/UNREACHABLE/PROHIBIT need no neighbour --
+ * the kernel returns before any neighbour lookup for a non-forwardable
+ * route. FRAG_NEEDED's MTU check also precedes the neighbour lookup, so the
+ * permanent neighbour seeded there is redundant insurance, not a
+ * requirement this case depends on.
+ */
+
+MARLIN_TEST(fib_blackhole_route_is_drop_and_counted)
+{
+    __u64 before = xdp_drop_stats_total(MARLIN_DROP_FIB_BLACKHOLE);
+    struct xdp_run_result result;
+
+    fib_route_add_special("blackhole", FIB_ADDR_BLACKHOLE);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BLACKHOLE, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_BLACKHOLE));
+
+    nh_backend_clear();
+    fib_route_del(FIB_ADDR_BLACKHOLE);
+}
+
+MARLIN_TEST(fib_unreachable_route_is_drop_and_counted)
+{
+    __u64 before = xdp_drop_stats_total(MARLIN_DROP_FIB_UNREACHABLE);
+    struct xdp_run_result result;
+
+    fib_route_add_special("unreachable", FIB_ADDR_UNREACHABLE);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_UNREACHABLE, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_UNREACHABLE));
+
+    nh_backend_clear();
+    fib_route_del(FIB_ADDR_UNREACHABLE);
+}
+
+MARLIN_TEST(fib_prohibit_route_is_drop_and_counted)
+{
+    __u64 before = xdp_drop_stats_total(MARLIN_DROP_FIB_PROHIBIT);
+    struct xdp_run_result result;
+
+    fib_route_add_special("prohibit", FIB_ADDR_PROHIBIT);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_PROHIBIT, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_PROHIBIT));
+
+    nh_backend_clear();
+    fib_route_del(FIB_ADDR_PROHIBIT);
+}
+
+MARLIN_TEST(fib_small_mtu_route_is_frag_needed_drop)
+{
+    /* nexthop.c seeds fib.tot_len from the frame's own length less
+     * ETH_HLEN (nexthop.c:81), so the frame must exceed the route's MTU --
+     * nh_build_frame() alone (a TCP header and 4 bytes of ports) does not,
+     * hence the padding.
+     */
+    __u64 before = xdp_drop_stats_total(MARLIN_DROP_FRAG_NEEDED);
+    struct xdp_run_result result;
+
+    fib_route_add_mtu(FIB_ADDR_MTU_ROUTE, FIB_DEV_INGRESS, 576);
+    fib_neigh_del(FIB_ADDR_MTU_ROUTE, FIB_DEV_INGRESS);
+    fib_neigh_set(FIB_ADDR_MTU_ROUTE, FIB_DEV_INGRESS, FIB_MAC_BACKEND_A, "permanent");
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_MTU_ROUTE, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+    pb_pad(700);
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    /* nexthop.c's FRAG_NEEDED arm (:107-108) returns ahead of every MAC
+     * write, same as every other drop code in the switch.
+     */
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_FRAG_NEEDED));
+
+    nh_backend_clear();
+    fib_neigh_del(FIB_ADDR_MTU_ROUTE, FIB_DEV_INGRESS);
+    fib_route_del(FIB_ADDR_MTU_ROUTE);
+}
+
+MARLIN_TEST(fib_unrouted_destination_is_unspec_drop)
+{
+    /* nexthop.c:86-111 has no case for BPF_FIB_LKUP_RET_NOT_FWDED --
+     * "no matching route", what -ENETUNREACH maps to, and what a
+     * non-RTN_UNICAST result (RTN_LOCAL here) also maps to -- so both
+     * land on the default: arm, MARLIN_DROP_FIB_UNSPEC. Two runs: no route
+     * at all, then the ingress device's own address.
+     */
+    __u64 before = xdp_drop_stats_total(MARLIN_DROP_FIB_UNSPEC);
+    struct xdp_run_result result;
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_UNROUTED, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_UNSPEC));
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_INGRESS, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(before + 2, xdp_drop_stats_total(MARLIN_DROP_FIB_UNSPEC));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(fib_ingress_forwarding_disabled_is_drop)
+{
+    /* fib.h's FIB_DEV_NOFWD is left with forwarding off, so this is the
+     * one case in this section that runs on a different ingress device --
+     * BPF_FIB_LKUP_RET_FWD_DISABLED is checked against the ingress device,
+     * not the destination, so no route needs to exist at all.
+     */
+    __u64 before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
+    struct xdp_run_result result;
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_UNROUTED, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_packet_on(fib_ifindex(FIB_DEV_NOFWD));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED));
+
+    nh_backend_clear();
+}
+
+/* ---- interim nexthop.c coverage: remove with balancer.c ------------------
+ *
+ * These reach nexthop.c through main.c's xdp_interim_nexthop() -- backends[0]
+ * seeded MARLIN_BE_F_STATE, with ENCAP_MODE(flags) choosing the entry point.
+ * They cover only what does not need a routing table -- everything that
+ * does now has real FIB state above, from fib.h. prog.h pins
+ * ctx_in.ingress_ifindex to 0 for every case below, and that is not what
+ * the program observes: bpf_prog_test_run_xdp() (net/bpf/test_run.c) binds
+ * the run to the calling process's network namespace's loopback device when
+ * ingress_ifindex is 0, and ctx->ingress_ifindex is verifier-rewritten to
+ * that device's ifindex -- 1, always, for a namespace's own lo.
+ *
+ * lo stays unrouted and forwarding-disabled on purpose: fib.h enables
+ * forwarding per device (FIB_DEV_INGRESS, FIB_DEV_EGRESS), never via
+ * conf.all/conf.default or net.ipv4.ip_forward, precisely so this section's
+ * BPF_FIB_LKUP_RET_FWD_DISABLED assertions keep holding once real FIB state
+ * exists elsewhere in the same namespace. So the assertions below still take
+ * that as "the FIB was consulted and could not answer", which is enough to
+ * pin *which branch was taken* but not what a real FIB would have replied --
+ * that is what the fib.h-backed cases above assert instead.
+ *
+ * Each case seeds and clears backends[0] itself: nothing else in this file
+ * touches that map, and clearing on the way out keeps
+ * docs/design/24-testing.md:9's order-independence intact for every other
+ * case, all of which depend on the gate being closed.
+ */
 
 MARLIN_TEST(nexthop_interim_l2dsr_stored_mac_is_tx_on_backend_mac)
 {
@@ -1251,6 +1664,53 @@ MARLIN_TEST(nexthop_interim_gate_closed_leaves_every_other_case_alone)
 
 /* ---- end interim nexthop.c coverage ------------------------------------- */
 
+/* ---- fib.h order-independence canary ------------------------------------
+ *
+ * Every fib.h-backed case above adds its own routes/neighbours/tx_ports
+ * entries and removes them on the way out (docs/design/24-testing.md's
+ * order-independence property, the same reasoning as
+ * xdp_acl_clear/nh_backend_clear). This is the direct proof, run last:
+ * tx_ports is empty, the gatewayed destination -- its route deleted along
+ * with every other per-case route -- now falls through to fib_unspec, and
+ * the on-link backend -- its permanent/failed neighbour deleted along with
+ * every other per-case neighbour -- now falls through to fib_no_neigh. Named
+ * "last" only by intent: MARLIN_TEST registration order is file order
+ * (harness.h), and nothing enforces it against a reordering; what makes this
+ * check meaningful is that every case above already tore its own state down,
+ * not the position of this one.
+ */
+MARLIN_TEST(fib_cases_leave_no_route_or_neigh_state)
+{
+    __u64 unspec_before = xdp_drop_stats_total(MARLIN_DROP_FIB_UNSPEC);
+    __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
+    struct xdp_run_result result;
+
+    CHECK_TRUE(xdp_tx_ports_is_empty());
+
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(unspec_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_UNSPEC));
+
+    /* No stored MAC here: a non-zero backend.mac on an on-link, egress ==
+     * ingress route is exactly pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback's
+     * fallback (nexthop.c:89-96) and would XDP_TX instead of proving the
+     * neighbour is gone.
+     */
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NULL, 0);
+    nh_build_frame();
+    result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(no_neigh_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH));
+
+    nh_backend_clear();
+}
+
+/* ---- end fib.h order-independence canary --------------------------------- */
+
 int main(int argc, char **argv)
 {
     const char *obj_path = (argc > 1) ? argv[1] : "build/marlin.bpf.o";
@@ -1268,6 +1728,14 @@ int main(int argc, char **argv)
         fprintf(stderr, "packet-tests: unshare(CLONE_NEWNET) failed: %s\n", strerror(errno));
         exit(1);
     }
+
+    /* Before the load below, deliberately: a topology failure then reports
+     * before the slower program load, and DEVMAP_HASH resolves an inserted
+     * ifindex against the calling process's network namespace at the time
+     * of the update, which makes this ordering correctness, not (as the
+     * comment above once had it) mere hygiene.
+     */
+    fib_topology_up();
 
     xdp_prog_load(obj_path);
 

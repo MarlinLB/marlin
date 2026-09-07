@@ -71,9 +71,19 @@ COMPILE_COMMANDS := $(BUILD_DIR)/compile_commands.json
 # marlin.bpf.o, and these are host binaries that #include the source
 # directly to reach its static helpers.
 TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
-TEST_HDRS := $(wildcard $(TEST_DIR)/*.h)
+TEST_HDRS := $(wildcard $(TEST_DIR)/*.h) $(wildcard $(TEST_DIR)/stubs/*.h) $(wildcard $(TEST_DIR)/stubs/bpf/*.h)
 TEST_OBJS := $(patsubst $(TEST_DIR)/%.c,$(BUILD_DIR)/tests/%.o,$(TEST_SRCS))
-TEST_BIN  := $(BUILD_DIR)/tests/marlin_tests
+
+# One binary per test .c, not one binary linking them all: harness.h's case
+# registry is file-static per translation unit by design, and each test file
+# defines its own main().
+TEST_BINS := $(patsubst $(TEST_DIR)/%.c,$(BUILD_DIR)/tests/%,$(TEST_SRCS))
+
+# tests/stubs shadows <bpf/bpf_helpers.h>, whose real version declares every
+# helper as a function pointer holding its helper id -- calling one natively
+# jumps to the address (void *)1. Only this tier gets it: the packet tier
+# links libbpf and needs the real headers.
+TEST_INCLUDES := -I$(TEST_DIR)/stubs $(INCLUDES)
 
 # bpf_prog_test_run tests over the real marlin.bpf.o (docs/design/24-testing.md,
 # "Packet-level tests"). Needs root (or CAP_BPF+CAP_NET_ADMIN+CAP_PERFMON) to
@@ -104,22 +114,32 @@ $(COMPILE_COMMANDS): $(OBJS)
 	@{ echo '['; cat $(CC_JSON) | sed '$$s/,$$//'; echo ']'; } > $@
 
 # Each test .c compiles separately, mirroring the BPF rule above; depending on
-# every header under $(INC_DIR) plus parser.c is coarser than necessary but
-# matches $(OBJS) above, which has no per-file header dependency tracking
-# either (no -MMD there) -- parser_test.c reaches parser.c's static helpers
-# by #include, so a change there must also invalidate this object.
-$(BUILD_DIR)/tests/%.o: $(TEST_DIR)/%.c $(TEST_HDRS) $(SRC_DIR)/parser.c $(HDRS)
+# every header under $(INC_DIR) plus every $(SRC_DIR)/*.c is coarser than
+# necessary but matches $(OBJS) above, which has no per-file header dependency
+# tracking either (no -MMD there) -- each test file reaches one source's
+# static helpers by #include, and a pattern rule cannot name which from the
+# stem, so the whole set is the prerequisite and -MMD narrows it from the
+# second build onwards.
+$(BUILD_DIR)/tests/%.o: $(TEST_DIR)/%.c $(TEST_HDRS) $(SRCS) $(HDRS)
 	@mkdir -p $(BUILD_DIR)/tests
 	@echo "compile $(notdir $<)"
-	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) $(INCLUDES) -MMD -MP -c -o $@ $<
+	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) $(TEST_INCLUDES) -MMD -MP -c -o $@ $<
 
-$(TEST_BIN): $(TEST_OBJS)
+$(BUILD_DIR)/tests/%: $(BUILD_DIR)/tests/%.o
 	@echo "linking $(notdir $@)"
-	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) -o $@ $(TEST_OBJS)
+	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) -o $@ $<
+
+# Without this the .o files above are chained intermediates: make would
+# delete each one -- and stop regenerating its .d -- after every link.
+.SECONDARY: $(TEST_OBJS)
 
 .PHONY: tests
-tests: $(TEST_BIN)
-	@$(TEST_BIN)
+tests: $(TEST_BINS)
+	@fail=0; for t in $(TEST_BINS); do \
+		echo "run $$(basename $$t)"; \
+		$$t || fail=1; \
+	done; \
+	exit $$fail
 
 -include $(TEST_OBJS:.o=.d)
 

@@ -177,21 +177,27 @@ sudo make packet-tests
 
 See `docs/design/24-testing.md` for coverage details. This is the primary test path and is
 phase-gated: coverage today is bounded by what `xdp_main` can satisfy before Phase 2's VIP
-lookup and forwarding land (`data-plane/tests/packet/xdp_test.c`).
+lookup and forwarding land (`data-plane/tests/packet/xdp_test.c`). `nexthop.c`'s
+`bpf_fib_lookup()` matrix is the exception -- `data-plane/tests/packet/fib.h` builds a veth
+topology with real routes and neighbours inside the same unshared network namespace, needing no
+VIP lookup, since `main.c`'s interim `xdp_interim_nexthop()` already reaches both `nexthop.c`
+entry points.
 
-### 5.3 Using the native unit tests (parser.c)
+### 5.3 Using the native unit tests
 
-Narrower than 5.2 and already in the tree: `data-plane/tests/` compiles `parser.c` with the host
-toolchain and calls its helpers directly, with no BPF object, no map, and no interface at all
-(`docs/design/24-testing.md`, "Native unit tests"). Runs in milliseconds:
+Narrower than 5.2 and already in the tree: `data-plane/tests/` compiles a `src/*.c` file with the
+host toolchain and calls its helpers directly, with no BPF object and no interface. `parser.c`
+reads no map at all; `acl.c` reads four through `data-plane/tests/stubs/`, which shadows libbpf's
+`<bpf/bpf_helpers.h>` with a host longest-prefix scan (`docs/design/24-testing.md`, "Native unit
+tests"). Runs in milliseconds, one binary per test file:
 
 ```bash
 cd data-plane
 make tests
 ```
 
-Not part of `make all`; part of `make ci`. Use it to check a `parser.c` change before reaching
-for 5.2's packet harness.
+Not part of `make all`; part of `make ci`. Use it to check a `parser.c` or `acl.c` change before
+reaching for 5.2's packet harness.
 
 ---
 
