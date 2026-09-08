@@ -20,15 +20,14 @@ _Static_assert(sizeof(struct iphdr) == 20, "marlin_ipv4_csum assumes a 20-byte I
  */
 static __always_inline __u32 marlin_csum_words(const void *buf, __u32 len, __u32 sum)
 {
-    const __u8 *p = (const __u8 *)buf;
-    __u32 i;
+    const __u8 *ptr = (const __u8 *)buf;
 
-    for(i = 0; i + 1 < len; i += 2) {
-        sum += ((__u32)p[i] << 8) | p[i + 1];
+    for(__u32 idx = 0; idx + 1 < len; idx += 2) {
+        sum += ((__u32)ptr[idx] << 8) | ptr[idx + 1];
     }
 
     if((len & 1) != 0) {
-        sum += (__u32)p[len - 1] << 8;
+        sum += (__u32)ptr[len - 1] << 8;
     }
 
     return sum;

@@ -724,6 +724,93 @@ static void nh_check_frame(const unsigned char *expect_dst, const unsigned char 
     CHECK_MEM(pb_arena + ETH_HLEN, out_buf + ETH_HLEN, pb_len - ETH_HLEN);
 }
 
+#define IPIP_TUNNEL_SRC 0x0d0d0d0dU /* 13.13.13.13 */
+
+/* config is process-global and outlives a case: every ipip_* case seeds its
+ * own tunnel_src/max_frame rather than relying on what an earlier case left,
+ * mirroring seed_acl_cfg's discipline above.
+ */
+static void seed_encap_cfg(__be32 tunnel_src, __u16 max_frame)
+{
+    struct marlin_config cfg;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.tunnel_src = tunnel_src;
+    cfg.max_frame = max_frame;
+    xdp_seed_config(&cfg);
+}
+
+static void nh_build_frame_v6(void)
+{
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv6(IPPROTO_TCP, SRC6, DST6);
+    pb_ports(11111, 80);
+}
+
+/* A from-scratch reimplementation, not a call into csum.h: including
+ * <marlin/csum.h> here would drag in the real <bpf/bpf_helpers.h> for
+ * __always_inline, which conflicts with the userspace <bpf/bpf.h>/
+ * <bpf/libbpf.h> this tier's own fib.h needs (both declare
+ * bpf_map_update_elem et al. with incompatible signatures). An independent
+ * implementation also means this assertion does not share a bug with the
+ * one it is checking; tests/csum_test.c verifies csum.h's own algorithm.
+ */
+static __sum16 test_ipv4_csum(const struct iphdr *iph)
+{
+    struct iphdr tmp = *iph;
+    const __u8 *p = (const __u8 *)&tmp;
+    __u32 sum = 0;
+    __u32 i;
+
+    tmp.check = 0;
+
+    for(i = 0; i + 1 < sizeof(tmp); i += 2) {
+        sum += ((__u32)p[i] << 8) | p[i + 1];
+    }
+
+    sum = (sum & 0xffffU) + (sum >> 16);
+    sum = (sum & 0xffffU) + (sum >> 16);
+
+    return bpf_htons((__u16)~sum);
+}
+
+/* IPIP-specific sibling of nh_check_frame(): the frame grew by
+ * MARLIN_OVERHEAD_IPIP, so neither "same length" nor "everything past
+ * ETH_HLEN is unchanged" applies. Asserts the outer Ethernet addresses, the
+ * whole outer IPv4 header byte-for-byte, and that the inner packet moved
+ * without otherwise changing.
+ */
+static void ipip_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
+                             __be32 backend_addr, __u8 inner_family, __u32 out_len)
+{
+    unsigned char expect_eth[ETH_HLEN];
+    struct iphdr expect_iph;
+
+    CHECK_EQ(pb_len + MARLIN_OVERHEAD_IPIP, out_len);
+
+    memcpy(expect_eth, pb_arena, ETH_HLEN);
+    memcpy(expect_eth, expect_dst, ETH_ALEN);
+    memcpy(expect_eth + ETH_ALEN, expect_src, ETH_ALEN);
+    CHECK_MEM(expect_eth, out_buf, sizeof(expect_eth));
+
+    memset(&expect_iph, 0, sizeof(expect_iph));
+    expect_iph.version = 4;
+    expect_iph.ihl = MARLIN_IPV4_IHL_MIN;
+    expect_iph.frag_off = bpf_htons(IP_DF);
+    expect_iph.ttl = MARLIN_OUTER_TTL;
+    expect_iph.protocol = (inner_family == AF_INET6) ? IPPROTO_IPV6 : IPPROTO_IPIP;
+    expect_iph.tot_len = bpf_htons((__u16)(pb_len - ETH_HLEN + MARLIN_OVERHEAD_IPIP));
+    expect_iph.saddr = tunnel_src;
+    expect_iph.daddr = backend_addr;
+    expect_iph.check = test_ipv4_csum(&expect_iph);
+    CHECK_MEM(&expect_iph, out_buf + ETH_HLEN, sizeof(expect_iph));
+
+    CHECK_MEM(pb_arena + ETH_HLEN, out_buf + ETH_HLEN + MARLIN_OVERHEAD_IPIP, pb_len - ETH_HLEN);
+}
+
 MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback)
 {
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK);
@@ -832,13 +919,17 @@ MARLIN_TEST(pending_phase2b_no_neigh_under_ipip_is_drop)
     fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
     fib_neigh_set(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS, FIB_MAC_BACKEND_A, "failed");
 
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 1500);
     nh_backend_seed(MARLIN_MODE_IPIP | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NH_BACKEND_MAC, 0);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_DROP, result.retval);
-    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    /* Encapsulation precedes next-hop resolution: the frame already grew by
+     * MARLIN_OVERHEAD_IPIP by the time the FIB lookup fails.
+     */
+    ipip_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, IPIP_TUNNEL_SRC, FIB_ADDR_BACKEND_A, AF_INET, result.out_len);
     CHECK_EQ(no_neigh_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH));
 
     nh_backend_clear();
@@ -921,13 +1012,18 @@ MARLIN_TEST(pending_phase2b_l2dsr_refuses_gatewayed_ipip_forwards)
     nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
     CHECK_EQ(gatewayed_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_GATEWAYED));
 
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 1500);
     nh_backend_seed(MARLIN_MODE_IPIP | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    nh_check_frame(FIB_MAC_GATEWAY, FIB_MAC_INGRESS, result.out_len);
+    /* The mode split is the whole point here: the same route that L2DSR
+     * refused above forwards under IPIP, with the FIB's own smac/dmac
+     * overwriting the outer Ethernet header ipip.c relocated.
+     */
+    ipip_check_frame(FIB_MAC_GATEWAY, FIB_MAC_INGRESS, IPIP_TUNNEL_SRC, FIB_ADDR_GATEWAYED, AF_INET, result.out_len);
 
     nh_backend_clear();
     fib_neigh_del(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS);
@@ -1220,19 +1316,77 @@ MARLIN_TEST(nexthop_interim_l2dsr_fib_flag_does_not_use_stored_mac)
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_encap_ipip_swaps_ethernet_addresses)
+MARLIN_TEST(ipip_encap_zero_lookup_swaps_ethernet_and_builds_outer_header)
 {
     __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
     struct xdp_run_result result;
 
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 1500);
     nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
     nh_build_frame();
 
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    nh_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, result.out_len);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len);
     CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(ipip_encap_ipv6_inner_sets_protocol_41)
+{
+    struct xdp_run_result result;
+
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame_v6();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET6, result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(ipip_encap_frame_too_big_drops_before_adjust_head)
+{
+    __u64 too_big_before;
+    struct xdp_run_result result;
+
+    /* Far smaller than any encapsulated test frame: this is a wiring proof
+     * that ipip.c checks and drops before touching the packet, not the
+     * boundary arithmetic itself, which tests/mtu_test.c already covers.
+     */
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 10);
+    too_big_before = xdp_drop_stats_total(MARLIN_DROP_FRAME_TOO_BIG);
+
+    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(too_big_before + 1, xdp_drop_stats_total(MARLIN_DROP_FRAME_TOO_BIG));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(ipip_encap_max_frame_zero_disables_the_check)
+{
+    struct xdp_run_result result;
+
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 0);
+    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+    pb_pad(2000); /* well past any real MTU; only max_frame == 0 lets this through */
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len);
 
     nh_backend_clear();
 }

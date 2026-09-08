@@ -36,15 +36,19 @@ The three encapsulation units share this shape and prefix pattern —
 the precedent already in the tree:
 
 ```c
-int marlin_ipip_encap(struct xdp_md *ctx, struct marlin_ctx *mctx);
-int marlin_gue_encap(struct xdp_md *ctx, struct marlin_ctx *mctx);
-int marlin_vxlan_encap(struct xdp_md *ctx, struct marlin_ctx *mctx);
+int marlin_ipip_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx);
+int marlin_gue_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx);
+int marlin_vxlan_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx);
 ```
 
 Each returns `MARLIN_OK` on success — the caller then proceeds to next-hop resolution
 (`docs/design/11-pipeline.md` step 9) — or a `MARLIN_DROP_*` reason: `MARLIN_DROP_FRAME_TOO_BIG`
 from `mtu.h` (`docs/design/23-mtu.md`), or `MARLIN_DROP_ADJUST_HEAD` if
-`bpf_xdp_adjust_head()` itself fails. **Each unit calls and owns its own `adjust_head`; there is
+`bpf_xdp_adjust_head()` itself fails. Each also null-checks `ctx` and `mctx` and returns
+`MARLIN_ABORT_NULLREF` on either — the encapsulation units' own convention, distinct from
+`nexthop.c`'s and `parser.c`'s choice of `MARLIN_DROP_PARSE_ERROR` for the same condition;
+reconciling the two is future work, not required for these three units to be correct. **Each
+unit calls and owns its own `adjust_head`; there is
 no shared call site for it**, because the three units disagree on both the byte count and on
 whether the arriving Ethernet header must be copied first (`docs/design/14-forwarding-modes.md`
 §7.2-7.4) — there is no common shape left to factor out once the disagreement is accounted for.

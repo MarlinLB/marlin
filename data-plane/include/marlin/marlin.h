@@ -33,9 +33,9 @@ struct marlin_ctx {            /* 104 bytes */
     struct backend backend;    /* 32 */
     struct marlin_config cfg;  /* 20 — one snapshot, taken in marlin.c */
     __u32 flags;               /*  4 */
-    __u16 l3_off;              /*  2 */
+    __u16 l3_off;              /*  2 — outer L3 offset once an encap unit has run */
     __u16 l4_off;              /*  2 */
-    __u16 pkt_len;             /*  2 — ingress length, before encapsulation */
+    __u16 pkt_len;             /*  2 — emitted length once an encap unit has run */
     __u8 acl_verdict;          /*  1 — enum marlin_acl_verdict (acl.h) */
     __u8 pad;                  /*  1 */
 };

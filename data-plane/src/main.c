@@ -9,6 +9,7 @@
 
 #include <marlin.h>
 #include <marlin/acl.h>
+#include <marlin/encap.h>
 #include <marlin/maps.h>
 #include <marlin/nexthop.h>
 #include <marlin/parser.h>
@@ -45,6 +46,7 @@ static __always_inline int marlin_action(int rc)
 
     /* Redirect to absent tx_ports is countable XDP_ABORTED, not silent loss. */
     case MARLIN_DROP_NO_TX_PORT:
+    case MARLIN_ABORT_NULLREF:
         return XDP_ABORTED;
 
     default:
@@ -57,6 +59,7 @@ static __always_inline int xdp_interim_nexthop(struct xdp_md *ctx, struct marlin
 {
     const struct backend *bep;
     __u32 zero = 0;
+    int rc;
 
     bep = bpf_map_lookup_elem(&backends, &zero);
 
@@ -68,6 +71,28 @@ static __always_inline int xdp_interim_nexthop(struct xdp_md *ctx, struct marlin
 
     if(ENCAP_MODE(mctx->backend.flags) == MARLIN_MODE_L2DSR) {
         return marlin_nexthop_l2dsr(ctx, mctx);
+    }
+
+    /* Encapsulation precedes next-hop resolution: nexthop.c's FIB lookup and
+     * MAC-swap default both need the already-encapsulated frame.
+     */
+    switch(ENCAP_MODE(mctx->backend.flags)) {
+    case MARLIN_MODE_IPIP:
+        rc = marlin_ipip_encap_packet(ctx, mctx);
+        break;
+    case MARLIN_MODE_GUE:
+        rc = marlin_gue_encap_packet(ctx, mctx);
+        break;
+    case MARLIN_MODE_VXLAN:
+        rc = marlin_vxlan_encap_packet(ctx, mctx);
+        break;
+    default:
+        rc = MARLIN_OK;
+        break;
+    }
+
+    if(rc != MARLIN_OK) {
+        return rc;
     }
 
     return marlin_nexthop_encapsulate(ctx, mctx);
