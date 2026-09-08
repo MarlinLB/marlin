@@ -131,7 +131,7 @@ int marlin_nexthop_l2dsr(struct xdp_md *ctx, struct marlin_ctx *mctx)
     struct ethhdr *eth;
 
     if(ctx == NULL || mctx == NULL) {
-        return MARLIN_DROP_PARSE_ERROR;
+        return MARLIN_ABORT_NULLREF;
     }
 
     eth = marlin_nexthop_eth(ctx);
@@ -161,7 +161,7 @@ int marlin_nexthop_encapsulate(struct xdp_md *ctx, struct marlin_ctx *mctx)
     __u8 tmp[ETH_ALEN];
 
     if(ctx == NULL || mctx == NULL) {
-        return MARLIN_DROP_PARSE_ERROR;
+        return MARLIN_ABORT_NULLREF;
     }
 
     eth = marlin_nexthop_eth(ctx);

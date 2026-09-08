@@ -585,7 +585,7 @@ MARLIN_TEST(icmp_is_echo_v6_types)
  * Tier B -- marlin_parse end-to-end through struct xdp_md
  * ====================================================================== */
 
-MARLIN_TEST(parse_null_mctx_is_parse_error)
+MARLIN_TEST(parse_null_mctx_aborts)
 {
     struct xdp_md md;
     int rc;
@@ -596,7 +596,17 @@ MARLIN_TEST(parse_null_mctx_is_parse_error)
     pb_ports(1, 2);
     pb_xdp(&md);
     rc = marlin_parse(&md, NULL);
-    CHECK_RET(MARLIN_DROP_PARSE_ERROR, rc);
+    CHECK_RET(MARLIN_ABORT_NULLREF, rc);
+}
+
+MARLIN_TEST(parse_null_ctx_aborts)
+{
+    struct marlin_ctx mctx;
+    int rc;
+
+    mctx_init(&mctx);
+    rc = marlin_parse(NULL, &mctx);
+    CHECK_RET(MARLIN_ABORT_NULLREF, rc);
 }
 
 /*

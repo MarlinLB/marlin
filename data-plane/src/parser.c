@@ -288,8 +288,8 @@ static __always_inline int marlin_parse_icmp(const void *data, const void *data_
 
 int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
 {
-    if(mctx == NULL) {
-        return MARLIN_DROP_PARSE_ERROR;
+    if(ctx == NULL || mctx == NULL) {
+        return MARLIN_ABORT_NULLREF;
     }
 
     const void *data = (const void *)(unsigned long)ctx->data;         // NOLINT(performance-no-int-to-ptr)

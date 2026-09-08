@@ -59,10 +59,10 @@ MARLIN_TEST(acl_key_struct_sizes_match_lpm_prefixlen_widths)
     CHECK_EQ(128, sizeof(((struct acl_key6 *)0)->addr) * 8);
 }
 
-MARLIN_TEST(acl_null_ctx_is_none)
+MARLIN_TEST(acl_null_ctx_aborts)
 {
     acl_stub_reset();
-    CHECK_EQ(MARLIN_ACL_NONE, marlin_acl_check(NULL));
+    CHECK_EQ(MARLIN_ACL_ABORT, marlin_acl_check(NULL));
 }
 
 MARLIN_TEST(acl_disabled_skips_a_present_block_rule)

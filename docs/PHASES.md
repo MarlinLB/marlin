@@ -90,9 +90,9 @@ version control. Phase 1 is largely about making what exists compile, load and b
   `WarningsAsErrors`.
 - Load and attach verified in a network namespace: `bpftool prog loadall` then
   `net attach xdpdrv`. The attach must fail rather than degrade to SKB mode (`docs/design/02-architecture.md`).
-- `make tests` builds and runs the native unit tests, one binary per translation unit —
-  `parser.c` and `acl.c` today (`docs/design/24-testing.md`, "Native unit tests"). Not part of
-  `make all`; part of `make ci`.
+- `make tests` builds and runs the native unit tests, one binary per test file — `parser.c`,
+  `acl.c`, `csum.h`, `mtu.h`, `entropy.h`, `nexthop.c`'s NULL-argument aborts, and `ipip.c` today
+  (`docs/design/24-testing.md`, "Native unit tests"). Not part of `make all`; part of `make ci`.
 - `make packet-tests` builds `marlin.bpf.o`, loads it, and drives it through `bpf_prog_test_run`
   for what `xdp_main` can satisfy today — parse verdicts and `drop_stats` deltas
   (`docs/design/24-testing.md`, "Packet-level tests"; `data-plane/tests/packet/`). Needs root or
@@ -414,10 +414,10 @@ section it affects, not in a document of its own.
 | Interim call site: `marlin_acl_check()` is called from `marlin.c` (`src/main.c`), not from `marlin_balance()` as `docs/design/11-pipeline.md` step 3 places it, because `balancer.c` does not exist yet | `docs/design/11-pipeline.md` step 3 | 2b |
 | Interim call site: `marlin_nexthop_l2dsr()`/`marlin_nexthop_encapsulate()` are called from `xdp_interim_nexthop()` in `src/main.c`, not from `marlin_balance()` as `docs/design/11-pipeline.md` step 9 places it, because `balancer.c` does not exist yet | `docs/design/11-pipeline.md` step 9 | 2b |
 | Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly | `docs/design/11-pipeline.md` step 3 | 2b |
-| Whether a `marlin_*` global subprogram validates its `marlin_ctx` argument: `parser.c` NULL-checks and fails closed, `nexthop.c` does not check, `acl.c` checked and failed open on a branch the verifier proves unreachable | `docs/design/04-calling-convention.md:5-7` | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
 | `nexthop.c` maps ten kernel `bpf_fib_lookup()` return codes onto seven named `drop_stats` reasons. `BPF_FIB_LKUP_RET_NOT_FWDED` (the ordinary no-route outcome), `UNSUPP_LWT` and `NO_SRC_ADDR` all fall to the `default:` arm, `MARLIN_DROP_FIB_UNSPEC` — so "no route" is indistinguishable from a helper contract violation in `drop_stats` | `docs/design/16-fib-lookup.md:56-66`, `nexthop.c:86-111` | 2b |
 | Whether a connection ID naming a `DOWN` backend falls through to hash or drops | `docs/design/30-quic.md` | 2b |
+| Whether `ipip.c`'s `tot_len`/`pkt_len` arithmetic needs a `__u32` guard against `__u16` wraparound when `cfg.max_frame == 0` disables `frame_fits()` — unreachable from the datapath today (`pkt_len` derives from `data_end - data`), covered by `ipip_test.c` only at the boundary that does not wrap | `ipip.c:70,78` | 2b |
 | Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |
 

@@ -115,8 +115,9 @@ native-tier-only, because the packet tier cannot observe them from the XDP verdi
 cleared `acl_lists` bit *skips* the lookup rather than merely tolerating a miss; that an allow hit
 returns `MARLIN_ACL_ALLOW` and not `MARLIN_ACL_NONE` — indistinguishable by verdict until the rate
 limiter exists; that the lookup key is presented at full width (32/128 bits) with the address
-copied verbatim out of `tuple.src`; and that a NULL `mctx` fails open on the branch the verifier
-proves unreachable. Packet-tier-only, because `marlin_acl_check()` reads nothing outside
+copied verbatim out of `tuple.src`; and that a NULL `mctx` returns `MARLIN_ACL_ABORT` on the
+branch the verifier proves unreachable, which `main.c` maps to `MARLIN_ABORT_NULLREF`
+(`docs/design/04-calling-convention.md`). Packet-tier-only, because `marlin_acl_check()` reads nothing outside
 `tuple.src` and `tuple.family` and these are properties of `parser.c` and `main.c`'s step
 ordering instead: non-first fragments filtered identically to first fragments, which is the
 assertion that the fragment hole a port-granular design would have had does not exist; an ICMP
@@ -162,15 +163,37 @@ semantics are a pure function of the arguments — no time, no per-CPU state, no
 `BPF_F_NO_PREALLOC` LPM tries queried and never written satisfy this. Third, some other tier
 exercises the same map semantics against the real kernel, which `data-plane/tests/packet/` does.
 
+The same three conditions generalise to a translation unit that calls a packet-adjusting helper
+instead of reading a map: every helper it calls is answered by a stub that reproduces the
+helper's real bounds contract; that contract is a pure function of the arguments and the frame
+bounds, not of time or per-CPU state; and some other tier exercises the same helper against the
+real kernel. `ipip.c` satisfies this shape — see below.
+
 The cost is that such a case asserts two things at once: that `acl.c` queries the right map with
 the right key, and that the stub's longest-match scan agrees with the kernel's trie. Only the
 first is what the tier is for. The second is bounded by rule: every prefix-arithmetic case in
 `data-plane/tests/acl_test.c` has a named counterpart in `data-plane/tests/packet/xdp_test.c`, and
 a native case with no counterpart asserts only lookup bookkeeping — which map, how many times,
-with what key — never a prefix outcome. `main.c` and the encapsulation units still do not
-qualify: they write maps and call `bpf_redirect_map`, `bpf_fib_lookup` and `bpf_ktime_get_ns`,
-`ratelimit` is an LRU whose eviction is not a function of the arguments, and the stats maps are
-per-CPU.
+with what key — never a prefix outcome. `ipip.c` carries the equivalent rule: every case in
+`data-plane/tests/ipip_test.c` that duplicates a `tests/packet/xdp_test.c` assertion names its
+counterpart, and a native case with none asserts only what the packet tier cannot observe — an
+`mctx` write-back, a NULL argument, a headroom failure, or a helper call count.
+
+`main.c` and `nexthop.c` still do not qualify: they write maps and call `bpf_redirect_map`,
+`bpf_fib_lookup` and `bpf_ktime_get_ns`, `ratelimit` is an LRU whose eviction is not a function of
+the arguments, and the stats maps are per-CPU. `ipip.c` does qualify — its only helper is
+`bpf_xdp_adjust_head` (`data-plane/tests/stubs/xdp_stub.h`), and it reads no map. `gue.c` and
+`vxlan.c` are still placeholders (a NULL check and `return MARLIN_OK`) with nothing to test yet.
+
+The NULL-argument abort convention (`docs/design/04-calling-convention.md`) is native-tier-only
+for the same reason as the ACL case above: a global subprogram's BTF struct-pointer argument is
+non-NULL by verifier contract, so `bpf_prog_test_run` can never drive the branch, and calling the
+`static` function directly on the host is the only way to. `parser_test.c` asserts it once for
+each of `marlin_parse()`'s two parameters; `data-plane/tests/nexthop_test.c` does the same for
+`marlin_nexthop_l2dsr()` and `marlin_nexthop_encapsulate()`, four cases in total. `nexthop_test.c`
+does not make `nexthop.c` a qualifying translation unit under the three-part test above — its
+FIB fallback and redirect path stay real-kernel-only, per `main.c` above — the file exists solely
+for the two branches that return before either helper is reached.
 
 What it buys over the packet-level harness: the `static` helpers (`marlin_parse_frag6`,
 `marlin_walk_ext6`, `marlin_parse_icmp`, …) are otherwise unreachable except through
@@ -182,10 +205,13 @@ milliseconds with no root privilege and no kernel involved, so it is the tier a 
 
 What it cannot do: assert an emitted frame, a map write, or anything downstream of
 `marlin_parse` — that stays with `bpf_prog_test_run`, which is the only tier that runs the code as
-compiled for the datapath. The stub above answers reads only. `make tests` (not part of `make
-all`; part of `make ci`) builds and runs one binary per test file — `data-plane/tests/parser_test.c`
-and `data-plane/tests/acl_test.c` today; `docs/PHASES.md` tracks which translation units the
-mechanism covers as more are added.
+compiled for the datapath. The map stub answers reads only; the packet-adjusting stub
+(`data-plane/tests/stubs/xdp_stub.h`) is the one exception, answering `bpf_xdp_adjust_head()`.
+`make tests` (not part of `make all`; part of `make ci`) builds and runs one binary per test
+file — `data-plane/tests/csum_test.c`, `data-plane/tests/mtu_test.c`,
+`data-plane/tests/entropy_test.c`, `data-plane/tests/parser_test.c`, `data-plane/tests/acl_test.c`,
+`data-plane/tests/nexthop_test.c` and `data-plane/tests/ipip_test.c` today; `docs/PHASES.md`
+tracks which translation units the mechanism covers as more are added.
 
 This is also why a sub-`ETH_HLEN` truncation case cannot move to the packet-level harness: the
 kernel's XDP `BPF_PROG_TEST_RUN` path rejects `data_size_in` below `ETH_HLEN` (14 bytes) before

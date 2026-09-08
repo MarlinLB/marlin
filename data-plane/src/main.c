@@ -122,7 +122,15 @@ int xdp_main(struct xdp_md *ctx)
         return marlin_action(rc);
     }
 
-    mctx.acl_verdict = (__u8)marlin_acl_check(&mctx);
+    rc = marlin_acl_check(&mctx);
+
+    if(rc == MARLIN_ACL_ABORT) {
+        rc = MARLIN_ABORT_NULLREF;
+        marlin_count(rc);
+        return marlin_action(rc);
+    }
+
+    mctx.acl_verdict = (__u8)rc;
 
     if(mctx.acl_verdict == MARLIN_ACL_BLOCK) {
         rc = MARLIN_DROP_ACL_BLOCKED;
