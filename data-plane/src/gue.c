@@ -64,7 +64,7 @@ int marlin_gue_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
         return MARLIN_DROP_ADJUST_HEAD;
     }
 
-    /* Relocate inner Ethernet header to frame start for nexthop.c's MAC swap. */
+    /* Relocate the arriving Ethernet header to the new frame start for nexthop.c's MAC swap. */
     __builtin_memcpy(&eth, (char *)data + MARLIN_OVERHEAD_GUE, sizeof(eth));
 
     /*

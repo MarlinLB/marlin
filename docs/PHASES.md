@@ -282,10 +282,13 @@ configuration surface for either would resolve both.
 5. Reported verifier complexity is inside budget with all four modes and both families
    linked. If it is not, `docs/design/05-budgets.md`'s `PROG_ARRAY` fallback is taken **with its
    three consequences accepted explicitly**: `marlin_ctx` moves to a per-CPU scratch map, the
-   accumulated stack cap drops to 256 bytes, and tail calls do not return. Unmeasurable before
-   `balancer.c` exists and calls both `marlin_nexthop_*` entry points: libbpf submits only
-   subprograms reachable from a `SEC()` program, so until then `nexthop.c` is compile-checked
-   only, and this criterion is the first thing that produces a verifier measurement of it.
+   accumulated stack cap drops to 256 bytes, and tail calls do not return. **Measured**, not via
+   `balancer.c` (which does not exist) but via `main.c`'s interim call site, which already
+   reaches both `marlin_nexthop_*` entry points and all three encapsulation units: `make
+   verifier-stats` reports 15,155 processed instructions (limit 1,000,000) and a 152-byte worst
+   combined stack depth (limit 512) — comfortably inside both budgets
+   (`docs/design/05-budgets.md`). Re-measure once `balancer.c` lands, since its own frame is not
+   part of this reachable set yet.
 
 ---
 

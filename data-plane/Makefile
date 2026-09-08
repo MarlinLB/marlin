@@ -138,6 +138,30 @@ $(PACKET_TEST_BIN): $(PACKET_TEST_OBJS)
 packet-tests: $(MARLIN_OBJ) $(PACKET_TEST_BIN)
 	@$(PACKET_TEST_BIN) $(MARLIN_OBJ)
 
+# Verifier processed-instructions and worst combined stack depth
+# (docs/design/05-budgets.md). tools/verifier_stats.c loads marlin.bpf.o via
+# libbpf directly and pins nothing: bpftool prog load/loadall's pin step
+# needs bpffs write access, which this host's LSM policy denies even under
+# root (confirmed: mkdir, and even mktemp -u's stat, both EPERM on
+# /sys/fs/bpf here) -- an unrelated bpf-type mount already visible in
+# /proc/mounts suggests an EDR agent hooking bpffs writes for its own
+# self-protection. Needs root (or CAP_BPF+CAP_SYS_ADMIN) regardless, to load
+# the program at all; not a `tests`/`ci` prerequisite for that reason, same
+# as packet-tests. verifier_stats.c parses the kernel's own log and prints a
+# labelled report instead of relaying it raw -- the kernel's "stack depth"
+# line lists one figure per function, not a chain to sum, and reads exactly
+# like one if left as-is.
+VERIFIER_STATS_BIN := $(BUILD_DIR)/tools/verifier_stats
+
+$(VERIFIER_STATS_BIN): tools/verifier_stats.c
+	@mkdir -p $(BUILD_DIR)/tools
+	@echo "compile $(notdir $<)"
+	@$(HOST_CC) $(TEST_CFLAGS) -o $@ $< -lbpf
+
+.PHONY: verifier-stats
+verifier-stats: $(MARLIN_OBJ) $(VERIFIER_STATS_BIN)
+	@$(VERIFIER_STATS_BIN) $(MARLIN_OBJ)
+
 .PHONY: ci
 ci:
 	$(MAKE) check-toolchain

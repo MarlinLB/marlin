@@ -19,6 +19,8 @@
 #include <marlin/mtu.h>
 #include <marlin/proto.h>
 
+_Static_assert(MARLIN_OVERHEAD_IPIP == sizeof(struct iphdr), "MARLIN_OVERHEAD_IPIP must match the outer IPv4 header size");
+
 int marlin_ipip_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
 {
     void *data;
@@ -56,7 +58,7 @@ int marlin_ipip_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
         return MARLIN_DROP_ADJUST_HEAD;
     }
 
-    /* Relocate inner Ethernet header to frame start for nexthop.c's MAC swap. */
+    /* Relocate the arriving Ethernet header to the new frame start for nexthop.c's MAC swap. */
     __builtin_memcpy(&eth, (char *)data + MARLIN_OVERHEAD_IPIP, sizeof(eth));
 
     /*

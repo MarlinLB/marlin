@@ -90,7 +90,7 @@ static void ipip_read_outer(const struct xdp_md *ctx, struct ethhdr *eth_out, st
 /*
  * Shared by ipip_encap_failure_paths_leave_mctx_untouched: every failure
  * return must leave l3_off/pkt_len exactly as the case set them, since
- * ipip.c writes either field only on the MARLIN_OK path (ipip.c:87-88).
+ * marlin_ipip_encap_packet() writes either field only on the MARLIN_OK path.
  */
 static void ipip_check_failure_leaves_mctx(struct marlin_ctx *mctx, struct xdp_md *ctx, int expect_ret)
 {
@@ -125,10 +125,10 @@ static void ipip_inner_icmp(void)
 
 /*
  * Runs one inner shape through marlin_ipip_encap_packet() and checks the
- * bytes past the outer header are bit-for-bit what was built: ipip.c copies
- * only the Ethernet header and writes only the 20-byte outer iphdr
- * (ipip.c:66-85), so nothing past that should change regardless of what the
- * payload looks like.
+ * bytes past the outer header are bit-for-bit what was built: the function
+ * copies only the Ethernet header and writes only the 20-byte outer iphdr,
+ * so nothing past that should change regardless of what the payload looks
+ * like.
  */
 static void ipip_check_inner_relocated_unchanged(ipip_inner_builder build, __u8 family)
 {
@@ -435,9 +435,9 @@ MARLIN_TEST(ipip_encap_pkt_len_at_the_u16_ceiling_does_not_wrap)
 {
     /*
      * pkt_len is decoupled from the real frame on purpose here -- the
-     * arithmetic in question (ipip.c:80,88) depends only on the __u16
-     * value, not on how many bytes actually exist, mirroring
-     * mtu_test.c's frame_fits_pkt_len_near_u16_max_does_not_wrap.
+     * tot_len/pkt_len arithmetic depends only on the __u16 value, not on
+     * how many bytes actually exist, mirroring mtu_test.c's
+     * frame_fits_pkt_len_near_u16_max_does_not_wrap.
      */
     __u16 huge_pkt_len = (__u16)(0xffffU - MARLIN_OVERHEAD_IPIP); /* 65515 */
     struct marlin_ctx mctx;
