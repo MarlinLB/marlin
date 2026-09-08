@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
  * Parsing implementation for the Marlin data plane application.
- *
  */
 
 #include <linux/bpf.h>
@@ -21,17 +20,10 @@
 
 #define MARLIN_L3_OFF_ETH        ((__u16)ETH_HLEN)
 
-/* The embedded header is a backend's reply to a client, which carries no
- * extension headers in practice, and the walk is inlined a second time to
- * read it -- each admitted header costs about forty instructions. An
- * offending header chained deeper counts icmp_unparseable.
- */
+/* Embedded headers in ICMP error payloads rarely include extensions. */
 #define MARLIN_ICMP_EMB_EXT_HDRS 2
 
-/*
- * Not crossing a translation unit, so this stays local rather than in
- * marlin_ctx: everything downstream of parsing reads packet_tuple, not this.
- */
+/* Local to this translation unit; downstream uses packet_tuple instead. */
 struct marlin_l3 {
     __be32 src[4];
     __be32 dst[4];
@@ -123,12 +115,7 @@ static __always_inline int marlin_walk_ext6(const void *data, const void *data_e
 
             out->flags |= marlin_parse_frag6(fh->frag_off);
 
-            /* A non-first fragment carries payload beyond this point, not
-             * headers; continuing would misparse payload bytes as a chain.
-             * The fragment header's own nexthdr is the reassembled
-             * datagram's upper-layer protocol, matching IPv4's
-             * iph->protocol on the same path.
-             */
+            /* Non-first fragments carry payload, not headers. */
             if((out->flags & MARLIN_CTX_F_FRAG) != 0U) {
                 out->proto = fh->nexthdr;
                 out->l4_off = off + sizeof(*fh);
@@ -216,13 +203,9 @@ static __always_inline int marlin_parse_ports(const void *data, const void *data
     return MARLIN_OK;
 }
 
-/* RFC 9000 SS9 forbids migrating before the handshake completes, so every
- * long-header packet (Initial/0-RTT/Handshake/Retry) shares one flight's
- * 4-tuple and needs no steering; only short-header (1-RTT) packets can
- * arrive after a migration, and those are what balancer.c will steer by
- * connection ID (docs/design/30-quic.md). This classifies the form only --
- * decoding the connection ID is balancer.c's job, once it can read
- * vip_meta.hash_key.
+/*
+ * Only short-header QUIC packets can migrate connections; long-header packets
+ * share the ingress 4-tuple. This identifies short-header form only.
  */
 static __always_inline __u32 marlin_parse_quic(const void *data, const void *data_end, __u32 l4_off)
 {
@@ -271,9 +254,7 @@ static __always_inline int marlin_parse_icmp(const void *data, const void *data_
     }
 
     if(!marlin_icmp_is_error(family, icmp->type)) {
-        /* Neither an error nor echo -- ICMPv6 neighbour discovery and MLD
-         * chief among them -- must still reach the host stack.
-         */
+        /* Non-error ICMP (ND, MLD, etc.) must reach host stack. */
         return marlin_icmp_is_echo(family, icmp->type) ? MARLIN_PASS_ICMP_ECHO : MARLIN_PASS_NOT_FORWARDED;
     }
 
@@ -307,8 +288,8 @@ static __always_inline int marlin_parse_icmp(const void *data, const void *data_
 
 int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
 {
-    if(mctx == NULL) {
-        return MARLIN_DROP_PARSE_ERROR;
+    if(ctx == NULL || mctx == NULL) {
+        return MARLIN_ABORT_NULLREF;
     }
 
     const void *data = (const void *)(unsigned long)ctx->data;         // NOLINT(performance-no-int-to-ptr)
@@ -349,10 +330,7 @@ int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
     mctx->flags |= l3.flags;
 
     if((mctx->flags & MARLIN_CTX_F_FRAG) != 0U) {
-        /* A fragment tail carries no ICMP header, so neither the echo pass nor
-         * the embedded-header path is reachable; counting it icmp_unparseable
-         * would attribute reassembly traffic to PMTUD failure.
-         */
+        /* Fragment tails carry no ICMP or port headers. */
         return marlin_proto_is_icmp(family, l3.proto) ? MARLIN_PASS_NOT_FORWARDED : MARLIN_OK;
     }
 

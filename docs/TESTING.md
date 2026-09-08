@@ -188,16 +188,18 @@ entry points.
 Narrower than 5.2 and already in the tree: `data-plane/tests/` compiles a `src/*.c` file with the
 host toolchain and calls its helpers directly, with no BPF object and no interface. `parser.c`
 reads no map at all; `acl.c` reads four through `data-plane/tests/stubs/`, which shadows libbpf's
-`<bpf/bpf_helpers.h>` with a host longest-prefix scan (`docs/design/24-testing.md`, "Native unit
-tests"). Runs in milliseconds, one binary per test file:
+`<bpf/bpf_helpers.h>` with a host longest-prefix scan; `ipip.c` calls the one helper it needs,
+`bpf_xdp_adjust_head()`, through the same shadowed header, answered by
+`data-plane/tests/stubs/xdp_stub.h` (`docs/design/24-testing.md`, "Native unit tests"). Runs in
+milliseconds, one binary per test file:
 
 ```bash
 cd data-plane
 make tests
 ```
 
-Not part of `make all`; part of `make ci`. Use it to check a `parser.c` or `acl.c` change before
-reaching for 5.2's packet harness.
+Not part of `make all`; part of `make ci`. Use it to check a `parser.c`, `acl.c` or `ipip.c`
+change before reaching for 5.2's packet harness.
 
 ---
 

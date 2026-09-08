@@ -219,11 +219,15 @@ used where a diff is cheaper than recomputation.
 
 **`csum.h`'s interface is three functions:** `marlin_csum_words()` accumulates one region's
 16-bit words into a running 32-bit sum; `marlin_csum_fold()` folds that sum to the
-one's-complement 16-bit result RFC 1071 defines; `marlin_ipv4_csum()` composes both over a
-20-byte IPv4 header with no options. Every encapsulation unit builds its outer IPv4 header
-from scratch in a stack-local `struct iphdr` and calls `marlin_ipv4_csum()` on the local —
-cheaper to compute directly than to diff against nothing, which is the condition above sets
-for choosing recomputation over `bpf_csum_diff()`.
+one's-complement 16-bit result RFC 1071 defines and byte-swaps it into wire order, so its
+return value — and `marlin_ipv4_csum()`'s, which composes both over a 20-byte IPv4 header with
+no options — is a `__be16` ready to store directly into a header field with no further
+conversion at the call site; `marlin_csum_words()` treats memory as big-endian regardless of
+host order for the same reason, so neither function's correctness depends on which byte order
+the encap unit was compiled for. Every encapsulation unit builds its outer IPv4 header from
+scratch in a stack-local `struct iphdr` and calls `marlin_ipv4_csum()` on the local — cheaper
+to compute directly than to diff against nothing, which is the condition above sets for
+choosing recomputation over `bpf_csum_diff()`.
 
 - **Outer IPv4 header checksum** is computed over known fields — cheap and exact.
 - **Outer UDP checksum, GUE and VXLAN,** may be zero. With an IPv4 outer this is

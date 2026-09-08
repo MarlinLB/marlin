@@ -101,10 +101,9 @@ sc() { # sysctl inside a namespace, quietly
 	nsx "${ns}" sysctl -qw "$@"
 }
 
-# XDP cannot see GSO super-frames or CHECKSUM_PARTIAL skbs; veth offers both by
-# default and the frames are dropped rather than delivered to the program. VLAN
-# offload is disabled for the reason the xdp-tutorial testenv gives: XDP must see
-# the VLAN tag in the header, not out of band in the descriptor.
+# XDP cannot see GSO/CHECKSUM_PARTIAL skbs, which veth offers by default and
+# drops rather than delivers. VLAN offload is off too: XDP must see the VLAN
+# tag in the header, not out of band in the descriptor (xdp-tutorial testenv).
 #
 # One feature per invocation on purpose: several of these are fixed on veth, and a
 # single ethtool call carrying an unsupported key applies *none* of the others.
@@ -248,10 +247,9 @@ up() {
 	ip netns exec mrt ip link set rt-cli up
 
 	sc mrt net.ipv4.ip_forward=1
-	# The VIP is routed to Marlin over rt-a, but DSR replies arrive from the
-	# backends carrying the VIP as *source* — on rt-b for the IPIP backend, which
-	# is not the interface the VIP route points at. Strict reverse-path filtering
-	# drops exactly that. This is a property of DSR, not of the test rig.
+	# The VIP routes to Marlin over rt-a, but DSR replies carry the VIP as
+	# *source* -- on rt-b for the IPIP backend, not the interface the VIP route
+	# points at. Strict RPF drops that; it's a property of DSR, not the rig.
 	sc mrt net.ipv4.conf.all.rp_filter=0
 	sc mrt net.ipv4.conf.default.rp_filter=0
 	sc mrt net.ipv4.conf.rt-a.rp_filter=0
@@ -416,10 +414,29 @@ down() {
 
 # ---------------------------------------------------------------------------
 
+help() {
+	cat <<EOF
+usage: $0 <command>
+
+  check   preflight the host for WSL2/kernel prerequisites (kernel version,
+          tools, kernel config, bpffs) without changing anything
+  up      build the full integration topology: router, client, and both an
+          L2 DSR and an IPIP backend
+  status  show the topology's namespaces and root-ns attach state
+  down    tear the topology down and remove its pins
+  help    show this text
+EOF
+}
+
 case "${1:-}" in
-	check)  check ;;
-	up)     up ;;
-	status) status ;;
-	down)   down ;;
-	*)      echo "usage: $0 {check|up|status|down}" >&2; exit 2 ;;
+	check)          check ;;
+	up)             up ;;
+	status)         status ;;
+	down)           down ;;
+	help|-h|--help) help ;;
+	*)
+		echo "usage: $0 {check|up|status|down|help}" >&2
+		echo "run '$0 help' for what each command does" >&2
+		exit 2
+		;;
 esac

@@ -36,9 +36,9 @@ The three encapsulation units share this shape and prefix pattern —
 the precedent already in the tree:
 
 ```c
-int marlin_ipip_encap(struct xdp_md *ctx, struct marlin_ctx *mctx);
-int marlin_gue_encap(struct xdp_md *ctx, struct marlin_ctx *mctx);
-int marlin_vxlan_encap(struct xdp_md *ctx, struct marlin_ctx *mctx);
+int marlin_ipip_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx);
+int marlin_gue_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx);
+int marlin_vxlan_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx);
 ```
 
 Each returns `MARLIN_OK` on success — the caller then proceeds to next-hop resolution
@@ -48,6 +48,21 @@ from `mtu.h` (`docs/design/23-mtu.md`), or `MARLIN_DROP_ADJUST_HEAD` if
 no shared call site for it**, because the three units disagree on both the byte count and on
 whether the arriving Ethernet header must be copied first (`docs/design/14-forwarding-modes.md`
 §7.2-7.4) — there is no common shape left to factor out once the disagreement is accounted for.
+
+Every global subprogram that takes a pointer parameter — the three encapsulation units,
+`marlin_parse()`, `marlin_nexthop_l2dsr()`, `marlin_nexthop_encapsulate()`, and `marlin_acl_check()`
+— null-checks every pointer it receives and returns `MARLIN_ABORT_NULLREF` (`marlin_acl_check()`
+returns `MARLIN_ACL_ABORT`, its own verdict type's spelling of the same outcome; see below). A NULL
+argument to one of these is a caller bug, not a property of the packet, so it is distinct from
+`MARLIN_DROP_PARSE_ERROR`, which stays reserved for a bounds check the packet itself can fail —
+`marlin_parse_eth()` and `marlin_nexthop_eth()` returning NULL for a frame shorter than
+`ETH_HLEN` is the one already in the tree. The check is unreachable in the compiled datapath: a
+global subprogram's BTF struct-pointer argument is non-NULL by verifier contract, so the branch
+is pruned at load. It exists for the native test tier, where the same source is compiled and
+called directly on the host with no verifier to make the argument's non-nullness a precondition
+(`docs/design/24-testing.md`). `static __always_inline` helpers — `mtu.h`, `entropy.h`, `csum.h`,
+`stats.h` — are exempt: they are verified in the caller's frame and always called with the
+address of a local, never a pointer that could be NULL.
 
 - **`marlin_ctx` carries what crosses a translation unit boundary, plus one stage boundary.**
   `vip_num` and `backend_id` are not members: nothing outside `balancer.c` reads them, and the
@@ -62,6 +77,13 @@ whether the arriving Ethernet header must be copied first (`docs/design/14-forwa
   `enum marlin_acl_verdict` because `acl.h` includes `marlin.h` and not the reverse; a zeroed
   `marlin_ctx` reads as `MARLIN_ACL_NONE`, which is the safe default — no allow, so no metering
   exemption.
+
+  `enum marlin_acl_verdict` carries a fourth member, `MARLIN_ACL_ABORT`, for a NULL `mctx` —
+  `marlin_acl_check()`'s signature returns the verdict enum directly rather than a `marlin_ret`
+  and an output parameter, so it has no other channel for the NULL-argument convention above.
+  The caller (`main.c`) checks for `MARLIN_ACL_ABORT` before the store into `mctx->acl_verdict`
+  and maps it to `MARLIN_ABORT_NULLREF`, so the field itself never holds it and `MARLIN_ACL_NONE`
+  staying `0` is unaffected.
 
 - **`cfg` is the per-packet configuration snapshot, taken once in `marlin.c`.** It qualifies by
   the same test as everything else here: four units read it — `balancer.c` for `flags` and

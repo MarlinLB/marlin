@@ -1,10 +1,8 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * Counter and action-mapping helpers shared by every marlin_* call site.
- * A header rather than a translation unit: neither helper reads packet
- * bytes and an extra call frame for a map lookup and a switch does not earn
- * one (docs/design/03-translation-units.md).
+ * Counter and action-mapping helpers. Header only: no packet I/O,
+ * and avoiding an extra call frame for map lookup and switch.
  */
 
 #pragma once

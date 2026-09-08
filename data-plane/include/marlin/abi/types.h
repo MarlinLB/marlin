@@ -96,7 +96,8 @@ _Static_assert(__builtin_offsetof(struct acl_key6, addr) == 4, "acl_key6.addr mu
 _Static_assert(sizeof(struct rl_key) == 20, "rl_key must stay 20 bytes");
 _Static_assert(__builtin_offsetof(struct rl_key, family) == 16, "rl_key.family must follow the address words with no hole");
 
-/* Each runtime-mutable config field must sit within one aligned unit,
+/*
+ * Each runtime-mutable config field must sit within one aligned unit,
  * which is what makes a torn read yield old-or-new per field (see above).
  */
 _Static_assert(__builtin_offsetof(struct marlin_config, max_frame) == 8, "max_frame must stay 2-byte aligned at a known offset");
@@ -104,7 +105,8 @@ _Static_assert(__builtin_offsetof(struct marlin_config, acl_lists) == 10, "acl_l
 _Static_assert(__builtin_offsetof(struct marlin_config, rl_refill) == 12, "rl_refill must stay 4-byte aligned at a known offset");
 _Static_assert(__builtin_offsetof(struct marlin_config, rl_burst) == 16, "rl_burst must stay 4-byte aligned at a known offset");
 
-/* LPM_TRIE requires a max_prefixlen that is a multiple of 8 between 8 and
+/*
+ * LPM_TRIE requires a max_prefixlen that is a multiple of 8 between 8 and
  * 2048. The address width of each key supplies it.
  */
 _Static_assert(sizeof(((struct acl_key4 *)0)->addr) * 8 == 32, "acl_key4 must present a 32-bit max_prefixlen");

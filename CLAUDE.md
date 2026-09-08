@@ -41,6 +41,17 @@ control plane is C#/.NET 10. Design is settled and pre-implementation.
 - **Comment only what isn't self-explanatory**, and then explain *why* the code exists (the
   constraint, bug, or requirement behind it), not what it does — the code already says that.
 - When editing existing code, remove comments that violate the above instead of leaving them.
+- **Multi-line block comments open on a bare `/*` line** — text never shares the opening line:
+
+  ```c
+  /*
+   * text
+   * more text bla bla
+   * more text
+   */
+  ```
+
+  Not `/* text\n * more text\n */`. Applies to every new or edited block comment.
 
 ## Traps specific to this codebase
 

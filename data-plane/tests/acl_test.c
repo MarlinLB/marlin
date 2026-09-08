@@ -26,7 +26,8 @@ static const unsigned char SRC6[16] = {0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
 static const unsigned char DST6[16] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
                                        0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30};
 
-/* Poisoned rather than zeroed, like parser_test.c's mctx_init: every field
+/*
+ * Poisoned rather than zeroed, like parser_test.c's mctx_init: every field
  * the ACL is not supposed to read reads back as garbage, so dst, the ports
  * and proto all hold values a wrongly-keyed lookup would notice.
  */
@@ -58,10 +59,10 @@ MARLIN_TEST(acl_key_struct_sizes_match_lpm_prefixlen_widths)
     CHECK_EQ(128, sizeof(((struct acl_key6 *)0)->addr) * 8);
 }
 
-MARLIN_TEST(acl_null_ctx_is_none)
+MARLIN_TEST(acl_null_ctx_aborts)
 {
     acl_stub_reset();
-    CHECK_EQ(MARLIN_ACL_NONE, marlin_acl_check(NULL));
+    CHECK_EQ(MARLIN_ACL_ABORT, marlin_acl_check(NULL));
 }
 
 MARLIN_TEST(acl_disabled_skips_a_present_block_rule)
@@ -129,7 +130,8 @@ MARLIN_TEST(acl_v4_allow_miss_block_hit_is_block)
 {
     struct marlin_ctx m;
 
-    /* Mirrors xdp_test.c's acl_v4_block_matched_is_drop_and_counted, but
+    /*
+     * Mirrors xdp_test.c's acl_v4_block_matched_is_drop_and_counted, but
      * with the allow bit also set and no allow rule seeded -- the packet
      * tier's block cases all run with the allow bit clear, so this is the
      * only case where a broken allow-lookup could accidentally suppress a
@@ -302,7 +304,8 @@ MARLIN_TEST(acl_v6_nested_block_prefixes_in_one_trie)
     unsigned char block64[16];
     unsigned char probe[16];
 
-    /* Mirrors acl_v4_nested_block_prefixes_in_one_trie: three entries in one
+    /*
+     * Mirrors acl_v4_nested_block_prefixes_in_one_trie: three entries in one
      * trie sharing a prefix, so the kernel's trie builds an intermediate
      * node at that shared prefix -- a single-leaf trie never walks it.
      */
@@ -467,7 +470,8 @@ MARLIN_TEST(acl_v4_ignores_dst_ports_and_proto)
 {
     struct marlin_ctx m;
 
-    /* mctx_init poisons the whole context, so dst, sport, dport and proto
+    /*
+     * mctx_init poisons the whole context, so dst, sport, dport and proto
      * all hold 0xAA.. here -- and the seeded rule is on that same value, so
      * a lookup keyed on any of them would match and block.
      */
@@ -482,7 +486,8 @@ MARLIN_TEST(acl_v4_tuple_ignores_the_upper_src_words)
 {
     struct marlin_ctx m;
 
-    /* src[1..3] stay poisoned: an implementation that memcpy'd 16 bytes
+    /*
+     * src[1..3] stay poisoned: an implementation that memcpy'd 16 bytes
      * into an acl_key4-shaped key would take them into the comparison.
      */
     mctx_init(&m, AF_INET, CFG_ACL_ENABLE, ACL_LISTS_BIT(ACL_LIST_BLOCK, ACL_FAMILY_V4));

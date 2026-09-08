@@ -26,7 +26,8 @@
 static struct bpf_object *xdp_obj;
 static int xdp_prog_fd = -1;
 
-/* libbpf 1.x reports open/load failures as NULL/-1 with errno set, not the
+/*
+ * libbpf 1.x reports open/load failures as NULL/-1 with errno set, not the
  * pre-1.0 libbpf_get_error() encoding -- that function no longer exists.
  */
 static int xdp_prog_print_fn(enum libbpf_print_level level, const char *fmt, va_list args)
@@ -38,7 +39,8 @@ static int xdp_prog_print_fn(enum libbpf_print_level level, const char *fmt, va_
     return vfprintf(stderr, fmt, args);
 }
 
-/* Routes libbpf's own diagnostics -- including the verifier log on a load
+/*
+ * Routes libbpf's own diagnostics -- including the verifier log on a load
  * failure -- to the same stderr stream as MARLIN_FAIL, so a rejected
  * program is diagnosable from test output alone. This is what makes the
  * tier double as docs/PHASES.md's verifier-load gate.
@@ -83,7 +85,8 @@ static void xdp_prog_unload(void)
     xdp_prog_fd = -1;
 }
 
-/* The kernel's XDP PROG_TEST_RUN path (bpf_test_init) rejects data_size_in
+/*
+ * The kernel's XDP PROG_TEST_RUN path (bpf_test_init) rejects data_size_in
  * below ETH_HLEN; packet.h's arena has no floor of its own, so a case built
  * under it would otherwise fail with an opaque -EINVAL instead of a
  * readable assertion. The upper bound here is a conservative guard, not a
@@ -101,7 +104,8 @@ struct xdp_run_result {
     int err;     /* 0, or a negative errno from a rejected data_size_in or the syscall */
 };
 
-/* out_buf/out_buf_len is the frame after xdp_main runs -- the exact-byte
+/*
+ * out_buf/out_buf_len is the frame after xdp_main runs -- the exact-byte
  * half of docs/design/24-testing.md:6 that opts.retval alone cannot assert.
  */
 static struct xdp_run_result xdp_run(const void *data_in, __u32 data_size_in, void *out_buf, __u32 out_buf_len,
@@ -114,7 +118,8 @@ static struct xdp_run_result xdp_run(const void *data_in, __u32 data_size_in, vo
     memset(&result, 0, sizeof(result));
 
     if(data_size_in < XDP_TEST_RUN_MIN_SIZE || data_size_in > XDP_TEST_RUN_MAX_SIZE) {
-        /* retval stays out of enum xdp_action range (never a bare memset(0),
+        /*
+         * retval stays out of enum xdp_action range (never a bare memset(0),
          * which reads as the plausible-looking XDP_ABORTED) so this failure
          * cannot be mistaken for a verdict the program returned.
          */
@@ -125,7 +130,8 @@ static struct xdp_run_result xdp_run(const void *data_in, __u32 data_size_in, vo
         return result;
     }
 
-    /* bpf_prog_test_run_xdp (net/bpf/test_run.c) rejects ctx_in outright
+    /*
+     * bpf_prog_test_run_xdp (net/bpf/test_run.c) rejects ctx_in outright
      * unless ctx->data_end == data_size_in exactly -- "There can't be user
      * provided data before the meta data" -- so this is not optional
      * zero-fill; data_meta must be 0 (no metadata) and data stays 0 (no

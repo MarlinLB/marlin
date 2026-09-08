@@ -13,8 +13,7 @@ holds a resolved copy of `struct backend` (32 bytes) rather than accumulating sc
 **104 of the 108 are used**, sixteen of them spent widening `struct backend` for
 `egress_ifindex`, `vni` and `inner_mac` (`docs/design/16-fib-lookup.md`, `docs/design/08-types.md`).
 The remaining four are not spare capacity: `nexthop.c`'s
-`struct bpf_fib_lookup` is 64 bytes of the chain's share on its own, and `parser.c`'s
-extension-header walk and the entropy hash shared by GUE and VXLAN have not been written. The
+`struct bpf_fib_lookup` is 64 bytes of the chain's share on its own. The
 target was raised from 96 to 108 by decision, not by measurement — the project owner's explicit
 sanction for `struct backend`'s growth to carry VXLAN's overlay identity — and that is the honest
 description of it rather than a justification worked backward from the number. Raising it further
@@ -22,6 +21,29 @@ is still a decision to be made against a measured chain depth, not to absorb the
 wants to thread. Both aggregate members earn their place by being read in a unit other than the one
 that writes them — `backend` by the encapsulation units and `nexthop.c`, `cfg` by
 `balancer.c` and the encapsulation units — and that is the test any addition has to pass.
+
+**Measured, not estimated, as of `parser.c`/`acl.c`/`nexthop.c`/all three encapsulation units
+being reachable from `xdp_main` via `main.c`'s interim call site:** `make verifier-stats`
+(`tools/verifier_stats.c`, which loads `marlin.bpf.o` through libbpf directly — no
+`bpftool`, no bpffs pin, since some hosts' LSM policy blocks bpffs writes even under root)
+reports **152 bytes** as the worst combined stack depth, comfortably inside the 512-byte limit
+with ~360 bytes to spare.
+
+The kernel's own verifier log states this as one figure per BPF-to-BPF-callable function —
+"stack depth 144+72+24+32+152+72+120+72" for the seven units above plus `xdp_main` itself — and
+the `+`-joined display reads exactly like a sum to add up, which it is not: each figure is
+already that function's own worst case if execution starts there, and 152 (not 688, their
+literal sum) is the one `MAX_BPF_STACK` is checked against. Marlin's units are only ever called
+as sequential siblings from `xdp_main` — none calls another — so at most one of them plus
+`xdp_main`'s own frame is ever on the stack at once; a verifier that instead required all eight
+simultaneously would have rejected the load outright rather than accept it and later pass
+`packet-tests`. `verifier_stats.c` prints each figure and their max explicitly for exactly this
+reason, rather than relaying the kernel's line as-is.
+
+`balancer.c` does not exist yet and is out of this measurement's reach — its stage functions are
+`static __always_inline` (see Verifier budget, below), so once it lands its cost adds to
+`xdp_main`'s own frame at whichever call site reaches it, not to a callee's, and this number must
+be re-measured then.
 
 **This budget, not map memory, is what bounds `struct backend`.** `backends` holds 4096 entries
 and costs 128 KB against `fwd_table`'s 26 MB (`docs/design/09-sizing.md`, "Memory"), so a field added there is invisible
@@ -57,5 +79,11 @@ pressure:
    stack — the fallback tightens the stack budget rather than preserving it.
 3. Tail calls do not return to the caller.
 
-With NAT removed, verifier pressure is substantially lower than originally estimated and
-this fallback is unlikely to be needed.
+With NAT removed, verifier pressure is substantially lower than originally estimated, and this
+is now measured rather than assumed: the same `make verifier-stats` run cited under Stack
+budget, above, reports **15,155 processed instructions against the 1,000,000 limit** — under
+2% of budget — for the same reachable set (`parser.c`, `acl.c`, all three encapsulation units,
+both `nexthop.c` entry points). This fallback is not needed today. The kernel's log reports one
+aggregate instruction count for the whole verification pass, not a per-subprogram breakdown, so
+"complexity per unit" is not separable from this figure — the aggregate is what the 1,000,000
+limit is checked against regardless, and is the number that matters for this criterion.

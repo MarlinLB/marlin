@@ -9,6 +9,7 @@
 
 #include <marlin.h>
 #include <marlin/acl.h>
+#include <marlin/encap.h>
 #include <marlin/maps.h>
 #include <marlin/nexthop.h>
 #include <marlin/parser.h>
@@ -43,12 +44,9 @@ static __always_inline int marlin_action(int rc)
     case MARLIN_OK_REDIRECT:
         return XDP_REDIRECT;
 
-    /*
-     * A redirect to an ifindex absent from tx_ports is a countable
-     * XDP_ABORTED, not a silent loss, distinct from every other DROP_*
-     * reason below, which fall to the default XDP_DROP.
-     */
+    /* Redirect to absent tx_ports is countable XDP_ABORTED, not silent loss. */
     case MARLIN_DROP_NO_TX_PORT:
+    case MARLIN_ABORT_NULLREF:
         return XDP_ABORTED;
 
     default:
@@ -56,21 +54,12 @@ static __always_inline int marlin_action(int rc)
     }
 }
 
-/* ---- interim nexthop.c call site: remove with balancer.c -----------------
- *
- * libbpf submits only subprograms reachable from a SEC() program, so without
- * a call from here neither marlin_nexthop_* entry point is verified or
- * executed, and no packet test can reach one. There is no selection stage to
- * produce a backend either, so backends[0] stands in for one. The
- * MARLIN_BE_F_STATE gate keeps an unseeded map -- a BPF_MAP_TYPE_ARRAY is
- * zero-filled at load -- from changing xdp_main's verdict for any caller that
- * has not asked for this path. Removed together with
- * tests/packet/xdp_test.c's nexthop_interim_* cases.
- */
+/* Interim nexthop.c call site; remove with balancer.c. */
 static __always_inline int xdp_interim_nexthop(struct xdp_md *ctx, struct marlin_ctx *mctx)
 {
     const struct backend *bep;
     __u32 zero = 0;
+    int rc;
 
     bep = bpf_map_lookup_elem(&backends, &zero);
 
@@ -84,13 +73,33 @@ static __always_inline int xdp_interim_nexthop(struct xdp_md *ctx, struct marlin
         return marlin_nexthop_l2dsr(ctx, mctx);
     }
 
+    /*
+     * Encapsulation precedes next-hop resolution: nexthop.c's FIB lookup and
+     * MAC-swap default both need the already-encapsulated frame.
+     */
+    switch(ENCAP_MODE(mctx->backend.flags)) {
+    case MARLIN_MODE_IPIP:
+        rc = marlin_ipip_encap_packet(ctx, mctx);
+        break;
+    case MARLIN_MODE_GUE:
+        rc = marlin_gue_encap_packet(ctx, mctx);
+        break;
+    case MARLIN_MODE_VXLAN:
+        rc = marlin_vxlan_encap_packet(ctx, mctx);
+        break;
+    default:
+        rc = MARLIN_OK;
+        break;
+    }
+
+    if(rc != MARLIN_OK) {
+        return rc;
+    }
+
     return marlin_nexthop_encapsulate(ctx, mctx);
 }
 
-/* ---- end interim nexthop.c call site ----------------------------------- */
-
 SEC("xdp")
-
 int xdp_main(struct xdp_md *ctx)
 {
     struct marlin_ctx mctx;
@@ -113,7 +122,15 @@ int xdp_main(struct xdp_md *ctx)
         return marlin_action(rc);
     }
 
-    mctx.acl_verdict = (__u8)marlin_acl_check(&mctx);
+    rc = marlin_acl_check(&mctx);
+
+    if(rc == MARLIN_ACL_ABORT) {
+        rc = MARLIN_ABORT_NULLREF;
+        marlin_count(rc);
+        return marlin_action(rc);
+    }
+
+    mctx.acl_verdict = (__u8)rc;
 
     if(mctx.acl_verdict == MARLIN_ACL_BLOCK) {
         rc = MARLIN_DROP_ACL_BLOCKED;

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <linux/bpf.h>
+#include <linux/udp.h>
 
 #include <marlin/abi/types.h>
 #include <marlin/marlin.h>
@@ -667,6 +668,8 @@ static const unsigned char NH_BACKEND_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0
 
 static const unsigned char NH_DECOY_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x0b};
 
+static const unsigned char VXLAN_INNER_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x04};
+
 static void nh_backend_write(const struct backend *be)
 {
     __u32 key = 0;
@@ -686,7 +689,8 @@ static void nh_backend_clear(void)
     nh_backend_write(&be);
 }
 
-static void nh_backend_seed(__u8 mode_and_flags, __be32 addr, const unsigned char *mac, __u32 egress_ifindex)
+static void nh_backend_seed(__u8 mode_and_flags, __be32 addr, const unsigned char *mac, __u32 egress_ifindex, __u32 vni,
+                            const unsigned char *inner_mac)
 {
     struct backend be;
 
@@ -694,9 +698,14 @@ static void nh_backend_seed(__u8 mode_and_flags, __be32 addr, const unsigned cha
     be.flags = (__u8)(mode_and_flags | MARLIN_BE_F_STATE);
     be.addr = addr;
     be.egress_ifindex = egress_ifindex;
+    be.vni = vni;
 
     if(mac != NULL) {
         memcpy(be.mac, mac, ETH_ALEN);
+    }
+
+    if(inner_mac != NULL) {
+        memcpy(be.inner_mac, inner_mac, ETH_ALEN);
     }
 
     nh_backend_write(&be);
@@ -724,6 +733,232 @@ static void nh_check_frame(const unsigned char *expect_dst, const unsigned char 
     CHECK_MEM(pb_arena + ETH_HLEN, out_buf + ETH_HLEN, pb_len - ETH_HLEN);
 }
 
+#define IPIP_TUNNEL_SRC 0x0d0d0d0dU /* 13.13.13.13 */
+
+/*
+ * config is process-global and outlives a case: every ipip_* case seeds its
+ * own tunnel_src/max_frame rather than relying on what an earlier case left,
+ * mirroring seed_acl_cfg's discipline above.
+ */
+static void seed_encap_cfg(__be32 tunnel_src, __u16 max_frame)
+{
+    struct marlin_config cfg;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.tunnel_src = tunnel_src;
+    cfg.max_frame = max_frame;
+    xdp_seed_config(&cfg);
+}
+
+static void nh_build_frame_v6(void)
+{
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv6(IPPROTO_TCP, SRC6, DST6);
+    pb_ports(11111, 80);
+}
+
+/*
+ * A from-scratch reimplementation, not a call into csum.h: including
+ * <marlin/csum.h> here would drag in the real <bpf/bpf_helpers.h> for
+ * __always_inline, which conflicts with the userspace <bpf/bpf.h>/
+ * <bpf/libbpf.h> this tier's own fib.h needs (both declare
+ * bpf_map_update_elem et al. with incompatible signatures). An independent
+ * implementation also means this assertion does not share a bug with the
+ * one it is checking; tests/csum_test.c verifies csum.h's own algorithm.
+ */
+static __sum16 test_ipv4_csum(const struct iphdr *iph)
+{
+    struct iphdr tmp = *iph;
+    const __u8 *p = (const __u8 *)&tmp;
+    __u32 sum = 0;
+    __u32 i;
+
+    tmp.check = 0;
+
+    for(i = 0; i + 1 < sizeof(tmp); i += 2) {
+        sum += ((__u32)p[i] << 8) | p[i + 1];
+    }
+
+    sum = (sum & 0xffffU) + (sum >> 16);
+    sum = (sum & 0xffffU) + (sum >> 16);
+
+    return bpf_htons((__u16)~sum);
+}
+
+/*
+ * IPIP-specific sibling of nh_check_frame(): the frame grew by
+ * MARLIN_OVERHEAD_IPIP, so neither "same length" nor "everything past
+ * ETH_HLEN is unchanged" applies. Asserts the outer Ethernet addresses, the
+ * whole outer IPv4 header byte-for-byte, and that the inner packet moved
+ * without otherwise changing.
+ */
+static void ipip_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
+                             __be32 backend_addr, __u8 inner_family, __u32 out_len)
+{
+    unsigned char expect_eth[ETH_HLEN];
+    __be16 outer_proto = bpf_htons(ETH_P_IP);
+    struct iphdr expect_iph;
+
+    CHECK_EQ(pb_len + MARLIN_OVERHEAD_IPIP, out_len);
+
+    /*
+     * The outer network layer is always IPv4 regardless of inner_family
+     * (docs/design/14-forwarding-modes.md SS7.5): the arriving frame's
+     * EtherType is not what the outer header carries, even though it
+     * mirrors inner_family exactly (parser.c).
+     */
+    memcpy(expect_eth, pb_arena, ETH_HLEN);
+    memcpy(expect_eth, expect_dst, ETH_ALEN);
+    memcpy(expect_eth + ETH_ALEN, expect_src, ETH_ALEN);
+    memcpy(expect_eth + 2 * ETH_ALEN, &outer_proto, sizeof(outer_proto));
+    CHECK_MEM(expect_eth, out_buf, sizeof(expect_eth));
+
+    memset(&expect_iph, 0, sizeof(expect_iph));
+    expect_iph.version = 4;
+    expect_iph.ihl = MARLIN_IPV4_IHL_MIN;
+    expect_iph.frag_off = bpf_htons(IP_DF);
+    expect_iph.ttl = MARLIN_OUTER_TTL;
+    expect_iph.protocol = (inner_family == AF_INET6) ? IPPROTO_IPV6 : IPPROTO_IPIP;
+    expect_iph.tot_len = bpf_htons((__u16)(pb_len - ETH_HLEN + MARLIN_OVERHEAD_IPIP));
+    expect_iph.saddr = tunnel_src;
+    expect_iph.daddr = backend_addr;
+    expect_iph.check = test_ipv4_csum(&expect_iph);
+    CHECK_MEM(&expect_iph, out_buf + ETH_HLEN, sizeof(expect_iph));
+
+    CHECK_MEM(pb_arena + ETH_HLEN, out_buf + ETH_HLEN + MARLIN_OVERHEAD_IPIP, pb_len - ETH_HLEN);
+}
+
+#define GUE_TUNNEL_SRC 0x0e0e0e0eU /* 14.14.14.14 */
+
+#define VXLAN_TUNNEL_SRC 0x0f0f0f0fU /* 15.15.15.15 */
+#define VXLAN_VNI        0x00abcdefU /* arbitrary, within the 24-bit field */
+
+/* Mirrors entropy.h's MARLIN_ENTROPY_SPORT_MIN; entropy.h cannot be included
+ * here for the same reason csum.h cannot (test_ipv4_csum above).
+ */
+#define GUE_ENTROPY_SPORT_MIN 49152U
+
+/* GUE-specific sibling of ipip_check_frame(): the frame grew by
+ * MARLIN_OVERHEAD_GUE and gained a UDP+GUE header past the outer IPv4 one.
+ * udp.source (the entropy port) is range-checked rather than matched
+ * exactly -- entropy.h's algorithm is independently verified by
+ * tests/entropy_test.c and tests/gue_test.c wires it against the real
+ * function; this tier only needs to know a real value landed there.
+ */
+static void gue_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
+                            __be32 backend_addr, __be16 encap_dport, __u8 inner_family, __u32 out_len)
+{
+    unsigned char expect_eth[ETH_HLEN];
+    __be16 outer_proto = bpf_htons(ETH_P_IP);
+    struct iphdr expect_iph;
+    struct udphdr udp;
+    struct marlin_gue_hdr expect_gue;
+
+    CHECK_EQ(pb_len + MARLIN_OVERHEAD_GUE, out_len);
+
+    /*
+     * The outer network layer is always IPv4 regardless of inner_family
+     * (docs/design/14-forwarding-modes.md SS7.5): the arriving frame's
+     * EtherType is not what the outer header carries, even though it
+     * mirrors inner_family exactly (parser.c).
+     */
+    memcpy(expect_eth, pb_arena, ETH_HLEN);
+    memcpy(expect_eth, expect_dst, ETH_ALEN);
+    memcpy(expect_eth + ETH_ALEN, expect_src, ETH_ALEN);
+    memcpy(expect_eth + 2 * ETH_ALEN, &outer_proto, sizeof(outer_proto));
+    CHECK_MEM(expect_eth, out_buf, sizeof(expect_eth));
+
+    memset(&expect_iph, 0, sizeof(expect_iph));
+    expect_iph.version = 4;
+    expect_iph.ihl = MARLIN_IPV4_IHL_MIN;
+    expect_iph.frag_off = bpf_htons(IP_DF);
+    expect_iph.ttl = MARLIN_OUTER_TTL;
+    expect_iph.protocol = IPPROTO_UDP;
+    expect_iph.tot_len = bpf_htons((__u16)(pb_len - ETH_HLEN + MARLIN_OVERHEAD_GUE));
+    expect_iph.saddr = tunnel_src;
+    expect_iph.daddr = backend_addr;
+    expect_iph.check = test_ipv4_csum(&expect_iph);
+    CHECK_MEM(&expect_iph, out_buf + ETH_HLEN, sizeof(expect_iph));
+
+    memcpy(&udp, out_buf + ETH_HLEN + sizeof(expect_iph), sizeof(udp));
+    CHECK_TRUE(bpf_ntohs(udp.source) >= GUE_ENTROPY_SPORT_MIN);
+    CHECK_EQ((encap_dport != 0) ? encap_dport : bpf_htons(MARLIN_GUE_DPORT_DEFAULT), udp.dest);
+    CHECK_EQ(bpf_htons((__u16)(MARLIN_UDP_HLEN + sizeof(expect_gue) + (pb_len - ETH_HLEN))), udp.len);
+    CHECK_EQ(0, udp.check);
+
+    memset(&expect_gue, 0, sizeof(expect_gue));
+    expect_gue.proto = (inner_family == AF_INET6) ? IPPROTO_IPV6 : IPPROTO_IPIP;
+    CHECK_MEM(&expect_gue, out_buf + ETH_HLEN + sizeof(expect_iph) + sizeof(udp), sizeof(expect_gue));
+
+    CHECK_MEM(pb_arena + ETH_HLEN, out_buf + ETH_HLEN + MARLIN_OVERHEAD_GUE, pb_len - ETH_HLEN);
+}
+
+/*
+ * VXLAN-specific sibling of gue_check_frame(): the frame grew by
+ * MARLIN_OVERHEAD_VXLAN, and unlike IPIP/GUE the arriving Ethernet header
+ * does not become the *outer* header -- it becomes the *inner* one, with its
+ * own two addresses rewritten (docs/design/14-forwarding-modes.md SS7.4).
+ * expect_dst/expect_src still name the *outer* header's addresses, the same
+ * convention as ipip_check_frame()/gue_check_frame(): what a next-hop MAC
+ * swap would have produced. udp.source reuses GUE_ENTROPY_SPORT_MIN --
+ * entropy.h's port floor is shared by GUE and VXLAN.
+ */
+static void vxlan_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
+                              __be32 backend_addr, __be16 encap_dport, const unsigned char *inner_mac, __u32 vni,
+                              __u32 out_len)
+{
+    unsigned char expect_eth[ETH_HLEN];
+    __be16 outer_proto = bpf_htons(ETH_P_IP);
+    struct ethhdr arriving_eth;
+    struct ethhdr inner_eth;
+    struct iphdr expect_iph;
+    struct udphdr udp;
+    struct marlin_vxlan_hdr expect_vxlan;
+
+    CHECK_EQ(pb_len + MARLIN_OVERHEAD_VXLAN, out_len);
+
+    memcpy(&arriving_eth, pb_arena, sizeof(arriving_eth));
+
+    memset(expect_eth, 0, sizeof(expect_eth));
+    memcpy(expect_eth, expect_dst, ETH_ALEN);
+    memcpy(expect_eth + ETH_ALEN, expect_src, ETH_ALEN);
+    memcpy(expect_eth + 2 * ETH_ALEN, &outer_proto, sizeof(outer_proto));
+    CHECK_MEM(expect_eth, out_buf, sizeof(expect_eth));
+
+    memset(&expect_iph, 0, sizeof(expect_iph));
+    expect_iph.version = 4;
+    expect_iph.ihl = MARLIN_IPV4_IHL_MIN;
+    expect_iph.frag_off = bpf_htons(IP_DF);
+    expect_iph.ttl = MARLIN_OUTER_TTL;
+    expect_iph.protocol = IPPROTO_UDP;
+    expect_iph.tot_len = bpf_htons((__u16)(pb_len - ETH_HLEN + MARLIN_OVERHEAD_VXLAN));
+    expect_iph.saddr = tunnel_src;
+    expect_iph.daddr = backend_addr;
+    expect_iph.check = test_ipv4_csum(&expect_iph);
+    CHECK_MEM(&expect_iph, out_buf + ETH_HLEN, sizeof(expect_iph));
+
+    memcpy(&udp, out_buf + ETH_HLEN + sizeof(expect_iph), sizeof(udp));
+    CHECK_TRUE(bpf_ntohs(udp.source) >= GUE_ENTROPY_SPORT_MIN);
+    CHECK_EQ((encap_dport != 0) ? encap_dport : bpf_htons(MARLIN_VXLAN_DPORT_DEFAULT), udp.dest);
+    CHECK_EQ(bpf_htons((__u16)(MARLIN_UDP_HLEN + sizeof(expect_vxlan) + pb_len)), udp.len);
+    CHECK_EQ(0, udp.check);
+
+    memset(&expect_vxlan, 0, sizeof(expect_vxlan));
+    expect_vxlan.flags = MARLIN_VXLAN_FLAG_VNI;
+    expect_vxlan.vni_and_reserved = bpf_htonl(vni << 8);
+    CHECK_MEM(&expect_vxlan, out_buf + ETH_HLEN + sizeof(expect_iph) + sizeof(udp), sizeof(expect_vxlan));
+
+    memcpy(&inner_eth, out_buf + MARLIN_OVERHEAD_VXLAN, sizeof(inner_eth));
+    CHECK_MEM(inner_mac, inner_eth.h_dest, ETH_ALEN);
+    CHECK_MEM(expect_src, inner_eth.h_source, ETH_ALEN);
+    CHECK_EQ(arriving_eth.h_proto, inner_eth.h_proto);
+
+    CHECK_MEM(pb_arena + ETH_HLEN, out_buf + MARLIN_OVERHEAD_VXLAN + ETH_HLEN, pb_len - ETH_HLEN);
+}
+
 MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback)
 {
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK);
@@ -733,7 +968,7 @@ MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback)
     fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
     fib_neigh_set(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS, FIB_MAC_BACKEND_A, "failed");
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -749,7 +984,8 @@ MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback)
 
 MARLIN_TEST(pending_phase2b_no_neigh_onlink_other_egress_is_drop)
 {
-    /* docs/design/24-testing.md:63-64 -- on-link but FIB returns another
+    /*
+     * docs/design/24-testing.md:63-64 -- on-link but FIB returns another
      * interface: drop fib_no_neigh, no frame emitted.
      */
     __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
@@ -759,7 +995,7 @@ MARLIN_TEST(pending_phase2b_no_neigh_onlink_other_egress_is_drop)
     fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
     fib_neigh_set(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS, FIB_MAC_BACKEND_B, "failed");
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -783,7 +1019,7 @@ MARLIN_TEST(pending_phase2b_no_neigh_gatewayed_ingress_is_drop)
     fib_neigh_del(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS);
     fib_neigh_set(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS, FIB_MAC_GATEWAY, "failed");
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -800,7 +1036,8 @@ MARLIN_TEST(pending_phase2b_no_neigh_gatewayed_ingress_is_drop)
 
 MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_zero_mac_is_drop)
 {
-    /* docs/design/24-testing.md:66-67 -- the on-link ingress case again
+    /*
+     * docs/design/24-testing.md:66-67 -- the on-link ingress case again
      * with an all-zero backend.mac: drop, nothing left to fall back to.
      */
     __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
@@ -810,7 +1047,7 @@ MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_zero_mac_is_drop)
     fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
     fib_neigh_set(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS, FIB_MAC_BACKEND_A, "failed");
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NULL, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NULL, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -832,13 +1069,18 @@ MARLIN_TEST(pending_phase2b_no_neigh_under_ipip_is_drop)
     fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
     fib_neigh_set(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS, FIB_MAC_BACKEND_A, "failed");
 
-    nh_backend_seed(MARLIN_MODE_IPIP | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NH_BACKEND_MAC, 0);
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_IPIP | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_DROP, result.retval);
-    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    /*
+     * Encapsulation precedes next-hop resolution: the frame already grew by
+     * MARLIN_OVERHEAD_IPIP by the time the FIB lookup fails.
+     */
+    ipip_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, IPIP_TUNNEL_SRC, FIB_ADDR_BACKEND_A, AF_INET, result.out_len);
     CHECK_EQ(no_neigh_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH));
 
     nh_backend_clear();
@@ -856,7 +1098,7 @@ MARLIN_TEST(pending_phase2b_fib_fallback_resolves_backend_not_vip)
     fib_neigh_del(V4_DST, FIB_DEV_INGRESS);
     fib_neigh_set(V4_DST, FIB_DEV_INGRESS, NH_DECOY_MAC, "permanent");
 
-    nh_backend_seed(MARLIN_MODE_L2DSR, FIB_ADDR_BACKEND_A, NULL, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR, FIB_ADDR_BACKEND_A, NULL, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -880,7 +1122,7 @@ MARLIN_TEST(pending_phase2b_fib_flag_beats_resolved_mac)
     fib_neigh_set(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS, FIB_MAC_BACKEND_B, "permanent");
     xdp_tx_ports_add((__u32)fib_ifindex(FIB_DEV_EGRESS));
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -889,7 +1131,7 @@ MARLIN_TEST(pending_phase2b_fib_flag_beats_resolved_mac)
     nh_check_frame(FIB_MAC_BACKEND_B, FIB_MAC_EGRESS, result.out_len);
     CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
 
-    nh_backend_seed(MARLIN_MODE_L2DSR, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -912,7 +1154,7 @@ MARLIN_TEST(pending_phase2b_l2dsr_refuses_gatewayed_ipip_forwards)
     fib_neigh_set(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS, FIB_MAC_GATEWAY, "permanent");
 
     gatewayed_before = xdp_drop_stats_total(MARLIN_DROP_FIB_GATEWAYED);
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -921,13 +1163,19 @@ MARLIN_TEST(pending_phase2b_l2dsr_refuses_gatewayed_ipip_forwards)
     nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
     CHECK_EQ(gatewayed_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_GATEWAYED));
 
-    nh_backend_seed(MARLIN_MODE_IPIP | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0);
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_IPIP | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    nh_check_frame(FIB_MAC_GATEWAY, FIB_MAC_INGRESS, result.out_len);
+    /*
+     * The mode split is the whole point here: the same route that L2DSR
+     * refused above forwards under IPIP, with the FIB's own smac/dmac
+     * overwriting the outer Ethernet header ipip.c relocated.
+     */
+    ipip_check_frame(FIB_MAC_GATEWAY, FIB_MAC_INGRESS, IPIP_TUNNEL_SRC, FIB_ADDR_GATEWAYED, AF_INET, result.out_len);
 
     nh_backend_clear();
     fib_neigh_del(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS);
@@ -945,7 +1193,7 @@ MARLIN_TEST(pending_phase2b_egress_mismatch_counts_verdict_unchanged)
     xdp_tx_ports_add((__u32)fib_ifindex(FIB_DEV_EGRESS));
     xdp_tx_ports_add((__u32)nofwd_ifindex);
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, (__u32)nofwd_ifindex);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, (__u32)nofwd_ifindex, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -970,7 +1218,7 @@ MARLIN_TEST(pending_phase2b_egress_mismatch_plus_no_tx_port_is_drop)
     fib_neigh_set(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS, FIB_MAC_BACKEND_B, "permanent");
     xdp_tx_ports_add((__u32)nofwd_ifindex); /* the FIB's own interface, mve1, is deliberately absent */
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, (__u32)nofwd_ifindex);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_B, NH_BACKEND_MAC, (__u32)nofwd_ifindex, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -991,7 +1239,7 @@ MARLIN_TEST(fib_blackhole_route_is_drop_and_counted)
     struct xdp_run_result result;
 
     fib_route_add_special("blackhole", FIB_ADDR_BLACKHOLE);
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BLACKHOLE, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BLACKHOLE, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -1010,7 +1258,7 @@ MARLIN_TEST(fib_unreachable_route_is_drop_and_counted)
     struct xdp_run_result result;
 
     fib_route_add_special("unreachable", FIB_ADDR_UNREACHABLE);
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_UNREACHABLE, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_UNREACHABLE, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -1029,7 +1277,7 @@ MARLIN_TEST(fib_prohibit_route_is_drop_and_counted)
     struct xdp_run_result result;
 
     fib_route_add_special("prohibit", FIB_ADDR_PROHIBIT);
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_PROHIBIT, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_PROHIBIT, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -1051,7 +1299,7 @@ MARLIN_TEST(fib_small_mtu_route_is_frag_needed_drop)
     fib_neigh_del(FIB_ADDR_MTU_ROUTE, FIB_DEV_INGRESS);
     fib_neigh_set(FIB_ADDR_MTU_ROUTE, FIB_DEV_INGRESS, FIB_MAC_BACKEND_A, "permanent");
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_MTU_ROUTE, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_MTU_ROUTE, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
     pb_pad(700);
 
@@ -1071,7 +1319,7 @@ MARLIN_TEST(fib_unrouted_destination_is_unspec_drop)
     __u64 before = xdp_drop_stats_total(MARLIN_DROP_FIB_UNSPEC);
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_UNROUTED, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_UNROUTED, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -1080,7 +1328,7 @@ MARLIN_TEST(fib_unrouted_destination_is_unspec_drop)
     nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
     CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_UNSPEC));
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_INGRESS, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_INGRESS, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
@@ -1097,7 +1345,7 @@ MARLIN_TEST(fib_ingress_forwarding_disabled_is_drop)
     __u64 before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_UNROUTED, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_UNROUTED, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_packet_on(fib_ifindex(FIB_DEV_NOFWD));
@@ -1115,7 +1363,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_stored_mac_is_tx_on_backend_mac)
     __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_current_packet();
@@ -1134,7 +1382,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_egress_mismatch_counts_verdict_unchanged)
     __u64 before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, NH_INGRESS_IFINDEX + 1);
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, NH_INGRESS_IFINDEX + 1, 0, NULL);
     nh_build_frame();
 
     result = run_current_packet();
@@ -1151,7 +1399,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_egress_match_does_not_count)
     __u64 before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, NH_INGRESS_IFINDEX);
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, NH_INGRESS_IFINDEX, 0, NULL);
     nh_build_frame();
 
     result = run_current_packet();
@@ -1169,7 +1417,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_zero_mac_zero_addr_is_backend_unresolved)
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_L2DSR, 0, NULL, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR, 0, NULL, 0, 0, NULL);
     nh_build_frame();
 
     result = run_current_packet();
@@ -1188,7 +1436,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_zero_mac_resolvable_addr_counts_mac_fallback)
     __u64 fwd_disabled_before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NULL, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NULL, 0, 0, NULL);
     nh_build_frame();
 
     result = run_current_packet();
@@ -1207,7 +1455,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_fib_flag_does_not_use_stored_mac)
     __u64 fwd_disabled_before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_current_packet();
@@ -1220,53 +1468,359 @@ MARLIN_TEST(nexthop_interim_l2dsr_fib_flag_does_not_use_stored_mac)
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_encap_ipip_swaps_ethernet_addresses)
+MARLIN_TEST(ipip_encap_zero_lookup_swaps_ethernet_and_builds_outer_header)
 {
     __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    nh_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, result.out_len);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len);
     CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
 
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_encap_vxlan_leaves_ethernet_addresses_alone)
+MARLIN_TEST(ipip_encap_ipv6_inner_sets_protocol_41)
 {
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_VXLAN, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
-    nh_build_frame();
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+    nh_build_frame_v6();
 
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET6, result.out_len);
 
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_encap_fib_flag_beats_the_vxlan_no_swap_test)
+MARLIN_TEST(ipip_encap_frame_too_big_drops_before_adjust_head)
 {
-    __u64 fwd_disabled_before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
-    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    __u64 too_big_before;
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_VXLAN | MARLIN_BE_F_FIB, NH_BACKEND_ADDR, NH_BACKEND_MAC, NH_INGRESS_IFINDEX + 1);
+    /*
+     * Far smaller than any encapsulated test frame: this is a wiring proof
+     * that ipip.c checks and drops before touching the packet, not the
+     * boundary arithmetic itself, which tests/mtu_test.c already covers.
+     */
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 10);
+    too_big_before = xdp_drop_stats_total(MARLIN_DROP_FRAME_TOO_BIG);
+
+    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
 
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_DROP, result.retval);
     nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(too_big_before + 1, xdp_drop_stats_total(MARLIN_DROP_FRAME_TOO_BIG));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(ipip_encap_max_frame_zero_disables_the_check)
+{
+    struct xdp_run_result result;
+
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 0);
+    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+    nh_build_frame();
+    pb_pad(2000); /* well past any real MTU; only max_frame == 0 lets this through */
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_zero_lookup_swaps_ethernet_and_builds_outer_header)
+{
+    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+
+    seed_encap_cfg(GUE_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET, result.out_len);
+    CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_ipv6_inner_sets_gue_proto_41)
+{
+    struct xdp_run_result result;
+
+    seed_encap_cfg(GUE_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+    nh_build_frame_v6();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET6, result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_frame_too_big_drops_before_adjust_head)
+{
+    __u64 too_big_before;
+    struct xdp_run_result result;
+
+    /* Far smaller than any encapsulated test frame: this is a wiring proof
+     * that gue.c checks and drops before touching the packet, not the
+     * boundary arithmetic itself, which tests/mtu_test.c already covers.
+     */
+    seed_encap_cfg(GUE_TUNNEL_SRC, 10);
+    too_big_before = xdp_drop_stats_total(MARLIN_DROP_FRAME_TOO_BIG);
+
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(too_big_before + 1, xdp_drop_stats_total(MARLIN_DROP_FRAME_TOO_BIG));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_max_frame_zero_disables_the_check)
+{
+    struct xdp_run_result result;
+
+    seed_encap_cfg(GUE_TUNNEL_SRC, 0);
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+    nh_build_frame();
+    pb_pad(2000); /* well past any real MTU; only max_frame == 0 lets this through */
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET, result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_entropy_source_port_differs_for_different_inner_ports)
+{
+    /* The real-kernel counterpart to entropy_test.c's algorithm-level
+     * differentiation case: proves marlin_ctx.tuple, as populated by the
+     * compiled parser.c and threaded through the compiled gue.c, actually
+     * varies the emitted source port -- not just the algorithm in
+     * isolation (docs/design/14-forwarding-modes.md SS7.3).
+     */
+    struct xdp_run_result result;
+    struct udphdr udp_a, udp_b;
+
+    seed_encap_cfg(GUE_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(11111, 80);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    memcpy(&udp_a, out_buf + ETH_HLEN + sizeof(struct iphdr), sizeof(udp_a));
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(22222, 80);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    memcpy(&udp_b, out_buf + ETH_HLEN + sizeof(struct iphdr), sizeof(udp_b));
+
+    CHECK_TRUE(udp_a.source != udp_b.source);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(vxlan_encap_zero_lookup_writes_outer_and_inner_ethernet_headers)
+{
+    /*
+     * Formerly nexthop_interim_encap_vxlan_leaves_ethernet_addresses_alone:
+     * before vxlan.c existed, MARLIN_MODE_VXLAN fell through main.c's switch
+     * untouched and nexthop.c's early return (nexthop.c:179-181) skipped the
+     * swap, so the frame passed through byte-for-byte unchanged. Now vxlan.c
+     * runs first and builds the 50-byte-larger frame itself -- from the same
+     * saved addresses the swap would have used
+     * (docs/design/14-forwarding-modes.md SS7.4), so the outer header ends
+     * up identical to what a swap-then-relocate would have produced.
+     */
+    struct xdp_run_result result;
+
+    seed_encap_cfg(VXLAN_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_VXLAN, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, VXLAN_VNI, VXLAN_INNER_MAC);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    vxlan_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, VXLAN_TUNNEL_SRC, NH_BACKEND_ADDR, 0, VXLAN_INNER_MAC, VXLAN_VNI,
+                      result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(nexthop_interim_encap_fib_flag_beats_the_vxlan_no_swap_test)
+{
+    /*
+     * The FIB path is unaffected by vxlan.c's exception
+     * (docs/design/14-forwarding-modes.md SS7.4): bpf_fib_lookup() would
+     * overwrite the outer addresses on success exactly as under IPIP/GUE,
+     * but this route has no forwarding enabled, so the drop fires before
+     * that ever happens -- the outer header at drop time is still whatever
+     * vxlan.c itself wrote.
+     */
+    __u64 fwd_disabled_before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
+    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+
+    seed_encap_cfg(VXLAN_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_VXLAN | MARLIN_BE_F_FIB, NH_BACKEND_ADDR, NH_BACKEND_MAC, NH_INGRESS_IFINDEX + 1, VXLAN_VNI,
+                    VXLAN_INNER_MAC);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    vxlan_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, VXLAN_TUNNEL_SRC, NH_BACKEND_ADDR, 0, VXLAN_INNER_MAC, VXLAN_VNI,
+                      result.out_len);
     CHECK_EQ(fwd_disabled_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED));
     CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(vxlan_encap_ipv6_inner_preserves_ethertype)
+{
+    /*
+     * Unlike IPIP/GUE, VXLAN carries no separate inner-protocol field --
+     * the inner EtherType is the only family signal a receiving vxlan
+     * device gets (docs/design/14-forwarding-modes.md SS7.4), so it must
+     * survive relocation unchanged. vxlan_check_frame() derives its
+     * expectation from the arriving frame itself, so this only needs to
+     * arm a v6 frame and let the shared checker prove it.
+     */
+    struct xdp_run_result result;
+
+    seed_encap_cfg(VXLAN_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_VXLAN, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, VXLAN_VNI, VXLAN_INNER_MAC);
+    nh_build_frame_v6();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    vxlan_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, VXLAN_TUNNEL_SRC, NH_BACKEND_ADDR, 0, VXLAN_INNER_MAC, VXLAN_VNI,
+                      result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(vxlan_encap_frame_too_big_drops_before_adjust_head)
+{
+    __u64 too_big_before;
+    struct xdp_run_result result;
+
+    /* Far smaller than any encapsulated test frame: this is a wiring proof
+     * that vxlan.c checks and drops before touching the packet, not the
+     * boundary arithmetic itself, which tests/mtu_test.c already covers.
+     */
+    seed_encap_cfg(VXLAN_TUNNEL_SRC, 10);
+    too_big_before = xdp_drop_stats_total(MARLIN_DROP_FRAME_TOO_BIG);
+
+    nh_backend_seed(MARLIN_MODE_VXLAN, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, VXLAN_VNI, VXLAN_INNER_MAC);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(too_big_before + 1, xdp_drop_stats_total(MARLIN_DROP_FRAME_TOO_BIG));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(vxlan_encap_max_frame_zero_disables_the_check)
+{
+    struct xdp_run_result result;
+
+    seed_encap_cfg(VXLAN_TUNNEL_SRC, 0);
+    nh_backend_seed(MARLIN_MODE_VXLAN, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, VXLAN_VNI, VXLAN_INNER_MAC);
+    nh_build_frame();
+    pb_pad(2000); /* well past any real MTU; only max_frame == 0 lets this through */
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    vxlan_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, VXLAN_TUNNEL_SRC, NH_BACKEND_ADDR, 0, VXLAN_INNER_MAC, VXLAN_VNI,
+                      result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(vxlan_encap_entropy_source_port_differs_for_different_inner_ports)
+{
+    /* The real-kernel counterpart to entropy_test.c's algorithm-level
+     * differentiation case: proves marlin_ctx.tuple, as populated by the
+     * compiled parser.c and threaded through the compiled vxlan.c, actually
+     * varies the emitted source port -- not just the algorithm in
+     * isolation (docs/design/14-forwarding-modes.md SS7.3).
+     */
+    struct xdp_run_result result;
+    struct udphdr udp_a, udp_b;
+
+    seed_encap_cfg(VXLAN_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_VXLAN, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, VXLAN_VNI, VXLAN_INNER_MAC);
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(11111, 80);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    memcpy(&udp_a, out_buf + ETH_HLEN + sizeof(struct iphdr), sizeof(udp_a));
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(22222, 80);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    memcpy(&udp_b, out_buf + ETH_HLEN + sizeof(struct iphdr), sizeof(udp_b));
+
+    CHECK_TRUE(udp_a.source != udp_b.source);
 
     nh_backend_clear();
 }
@@ -1275,7 +1829,7 @@ MARLIN_TEST(nexthop_interim_gate_closed_leaves_every_other_case_alone)
 {
     struct xdp_run_result result;
 
-    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
     nh_backend_clear();
     nh_build_frame();
 
@@ -1295,13 +1849,13 @@ MARLIN_TEST(fib_cases_leave_no_route_or_neigh_state)
 
     CHECK_TRUE(xdp_tx_ports_is_empty());
 
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_GATEWAYED, NH_BACKEND_MAC, 0, 0, NULL);
     nh_build_frame();
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_DROP, result.retval);
     CHECK_EQ(unspec_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_UNSPEC));
-    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NULL, 0);
+    nh_backend_seed(MARLIN_MODE_L2DSR | MARLIN_BE_F_FIB, FIB_ADDR_BACKEND_A, NULL, 0, 0, NULL);
     nh_build_frame();
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
     CHECK_EQ(0, result.err);

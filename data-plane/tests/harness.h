@@ -32,7 +32,8 @@ static int marlin_test_count;
 static int marlin_case_failures;
 static const char *marlin_case_skip_reason;
 
-/* enum marlin_ret -> name, so a failure reads "expected MARLIN_DROP_..., got
+/*
+ * enum marlin_ret -> name, so a failure reads "expected MARLIN_DROP_..., got
  * MARLIN_OK" instead of "expected 9, got 0". Only the values a translation
  * unit under native-tier test can return need a case; everything else falls
  * through to the numeric default. Unused in the bpf_prog_test_run tier,
@@ -66,12 +67,21 @@ static __attribute__((unused)) const char *marlin_ret_name(int ret)
             return "MARLIN_PASS_NOT_FORWARDED";
         case MARLIN_DROP_ACL_BLOCKED:
             return "MARLIN_DROP_ACL_BLOCKED";
+        case MARLIN_DROP_ADJUST_HEAD:
+            return "MARLIN_DROP_ADJUST_HEAD";
+        case MARLIN_DROP_ENCAP_LENGTH:
+            return "MARLIN_DROP_ENCAP_LENGTH";
+        case MARLIN_DROP_FRAME_TOO_BIG:
+            return "MARLIN_DROP_FRAME_TOO_BIG";
+        case MARLIN_ABORT_NULLREF:
+            return "MARLIN_ABORT_NULLREF";
         default:
             return "<unknown enum marlin_ret>";
     }
 }
 
-/* enum xdp_action -> name, for the bpf_prog_test_run tier's verdict
+/*
+ * enum xdp_action -> name, for the bpf_prog_test_run tier's verdict
  * assertions (tests/packet/xdp_test.c). linux/bpf.h defines the enum;
  * nothing here depends on marlin.h. Unused in the native tier, which asserts
  * enum marlin_ret directly and never runs a program through the kernel.
@@ -103,7 +113,8 @@ static void marlin_test_register(const char *name, marlin_test_fn fn)
     }
 }
 
-/* Registers `test_name` via a constructor, so listing every case in a table
+/*
+ * Registers `test_name` via a constructor, so listing every case in a table
  * by hand -- and forgetting to add one to it -- is not a way to lose coverage.
  */
 #define MARLIN_TEST(test_name)                                                                                       \
@@ -120,7 +131,8 @@ static void marlin_test_register(const char *name, marlin_test_fn fn)
         marlin_case_failures++;                                                                                      \
     } while(0)
 
-/* Marks a case not yet implemented and returns from its body immediately --
+/*
+ * Marks a case not yet implemented and returns from its body immediately --
  * placed first (and alone) in the body, so a skipped case never also runs
  * CHECK_* assertions against code that does not exist yet. `reason` should
  * name the doc line the missing behaviour is tracked against, so `make
@@ -132,7 +144,8 @@ static void marlin_test_register(const char *name, marlin_test_fn fn)
         return;                                                                                                      \
     } while(0)
 
-/* Casts both sides to a common signed width rather than comparing the raw
+/*
+ * Casts both sides to a common signed width rather than comparing the raw
  * argument types: the fields under test span __u8 to __be32, and mismatched
  * signedness between "expected" (usually a literal int) and "actual" (usually
  * an unsigned struct field) would otherwise fail -Wsign-compare.
@@ -192,7 +205,8 @@ static int marlin_tests_main(void)
         marlin_tests[i].fn();
 
         if(marlin_case_skip_reason != NULL) {
-            /* Checked ahead of failures: MARLIN_SKIP returns before any
+            /*
+             * Checked ahead of failures: MARLIN_SKIP returns before any
              * CHECK_* in the case body can run, so a skip is never also a
              * failure -- reporting both would double-count the same case.
              */

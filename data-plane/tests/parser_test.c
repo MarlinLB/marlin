@@ -16,7 +16,8 @@
 
 #include "../src/parser.c"
 
-/* ---- fixed addresses, reused across cases -------------------------------
+/*
+ * ---- fixed addresses, reused across cases -------------------------------
  * Outer v4/v6 endpoints for ordinary (non-ICMP) traffic.
  */
 #define V4_SRC 0x01010101U /* 1.1.1.1 */
@@ -27,7 +28,8 @@ static const unsigned char SRC6[16] = {0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
 static const unsigned char DST6[16] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
                                        0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30};
 
-/* Embedded (quoted) client/VIP for the ICMP error path -- distinct from the
+/*
+ * Embedded (quoted) client/VIP for the ICMP error path -- distinct from the
  * outer addresses so a test that mixes them up is caught by CHECK_MEM.
  */
 #define EMB4_SRC 0x0a000005U /* 10.0.0.5 -- original client */
@@ -38,14 +40,16 @@ static const unsigned char EMB6_SRC[16] = {0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0
 static const unsigned char EMB6_DST[16] = {0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
                                            0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f, 0x60};
 
-/* Non-error, non-echo type used to prove marlin_icmp_is_error/echo return
+/*
+ * Non-error, non-echo type used to prove marlin_icmp_is_error/echo return
  * false for it; not in proto.h because parser.c never needs it by name. */
 #define TEST_ICMP_REDIRECT 5
 #define TEST_ICMP_TIMESTAMP 13
 
 static void mctx_init(struct marlin_ctx *mctx)
 {
-    /* Poisoned rather than zeroed (unlike src/main.c:57) so a field the
+    /*
+     * Poisoned rather than zeroed (unlike src/main.c:57) so a field the
      * parser is not supposed to touch on some path reads back as garbage,
      * not as a coincidentally-correct zero.
      */
@@ -53,7 +57,8 @@ static void mctx_init(struct marlin_ctx *mctx)
     mctx->flags = 0;
 }
 
-/* ======================================================================
+/*
+ * ======================================================================
  * Tier A -- helpers, called directly with real host pointers
  * ====================================================================== */
 
@@ -101,7 +106,8 @@ MARLIN_TEST(frag4_mf_alone_is_frag_first)
     CHECK_EQ(MARLIN_CTX_F_FRAG_FIRST, marlin_parse_frag4(bpf_htons(IP_MF)));
 }
 
-/* The ordinary middle fragment: MF set AND a non-zero offset. Proves the
+/*
+ * The ordinary middle fragment: MF set AND a non-zero offset. Proves the
  * offset check (parser.c:57) is tested before the MF check (parser.c:61).
  */
 MARLIN_TEST(frag4_mf_and_offset_is_frag_only)
@@ -145,7 +151,8 @@ MARLIN_TEST(is_ext6_false_for_upper_layer_and_none)
     CHECK_TRUE(!marlin_is_ext6(IPPROTO_MH));
 }
 
-/* max_ext == 0: the limit must fire at i == 0, before any header is read --
+/*
+ * max_ext == 0: the limit must fire at i == 0, before any header is read --
  * data_end == data proves nothing was dereferenced.
  */
 MARLIN_TEST(walk_ext6_max_zero_is_limit_without_dereference)
@@ -201,7 +208,8 @@ MARLIN_TEST(walk_ext6_nine_headers_is_limit)
     CHECK_RET(MARLIN_DROP_EXT_HDR_LIMIT, rc);
 }
 
-/* ESP as the 9th header: the unsupported-proto check (parser.c:97) runs
+/*
+ * ESP as the 9th header: the unsupported-proto check (parser.c:97) runs
  * before the limit check (parser.c:107), so this must NOT be EXT_HDR_LIMIT.
  */
 MARLIN_TEST(walk_ext6_esp_after_eight_is_unsupported_not_limit)
@@ -233,7 +241,8 @@ MARLIN_TEST(walk_ext6_ah_first_is_unsupported)
     CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
 }
 
-/* sizeof(struct ipv6_opt_hdr) == 2, so 0 or 1 available bytes is what
+/*
+ * sizeof(struct ipv6_opt_hdr) == 2, so 0 or 1 available bytes is what
  * actually reaches parser.c:113 -- 7 bytes, as an earlier draft of this
  * matrix proposed, passes that check and depends on whatever nexthdr byte
  * happens to be there instead.
@@ -259,7 +268,8 @@ MARLIN_TEST(walk_ext6_one_byte_of_opt_hdr_is_parse_error)
     CHECK_RET(MARLIN_DROP_PARSE_ERROR, rc);
 }
 
-/* struct marlin_frag_hdr is 8 bytes; 2-7 available bytes passes the 2-byte
+/*
+ * struct marlin_frag_hdr is 8 bytes; 2-7 available bytes passes the 2-byte
  * ipv6_opt_hdr check but fails parser.c:120's fragment-header-specific one.
  */
 MARLIN_TEST(walk_ext6_truncated_frag_hdr_is_parse_error)
@@ -273,7 +283,8 @@ MARLIN_TEST(walk_ext6_truncated_frag_hdr_is_parse_error)
     CHECK_RET(MARLIN_DROP_PARSE_ERROR, rc);
 }
 
-/* hdrlen==255 is the largest single ext header (2048 bytes); pins the width
+/*
+ * hdrlen==255 is the largest single ext header (2048 bytes); pins the width
  * the _Static_assert at parser.c:86 and the (__u16) cast at parser.c:329
  * depend on.
  */
@@ -303,7 +314,8 @@ MARLIN_TEST(walk_ext6_eight_max_hdrlen_headers_advances_by_16384)
     CHECK_RET(MARLIN_DROP_EXT_HDR_LIMIT, rc); /* 8 ext headers exhausts max_ext before a 9th, non-ext one is seen */
 }
 
-/* Two chained FRAGMENT headers: the first (MF only) accumulates F_FRAG_FIRST,
+/*
+ * Two chained FRAGMENT headers: the first (MF only) accumulates F_FRAG_FIRST,
  * the second (offset set) accumulates F_FRAG -- parser.c:124 uses |=, so both
  * end up set at once. include/marlin/marlin.h:26-27 documents them as if
  * mutually exclusive; this is Observation 2, pinned rather than fixed.
@@ -313,7 +325,8 @@ MARLIN_TEST(walk_ext6_two_fragment_headers_sets_both_frag_flags)
     struct marlin_l3 out;
     int rc;
 
-    /* Unlike marlin_parse_l3, marlin_walk_ext6 does not zero *out itself
+    /*
+     * Unlike marlin_parse_l3, marlin_walk_ext6 does not zero *out itself
      * (parser.c:153 is the caller's job); called directly, this test must
      * do it, or out.flags's |= accumulates onto stack garbage.
      */
@@ -328,7 +341,8 @@ MARLIN_TEST(walk_ext6_two_fragment_headers_sets_both_frag_flags)
     CHECK_EQ(16, out.l4_off);
 }
 
-/* max_ext=9 exceeds MAX_EXT_HDRS(8), so the loop (bounded at i<=MAX_EXT_HDRS)
+/*
+ * max_ext=9 exceeds MAX_EXT_HDRS(8), so the loop (bounded at i<=MAX_EXT_HDRS)
  * runs out before parser.c:107's `i >= max_ext` ever fires -- the only way
  * to reach the dead-looking return at parser.c:147 (Observation 5).
  */
@@ -440,7 +454,8 @@ MARLIN_TEST(parse_l3_v6_copies_addresses_verbatim)
     CHECK_MEM(DST6, out.dst, 16);
 }
 
-/* parser.c:155 has no explicit AF_INET6 guard: any family that isn't
+/*
+ * parser.c:155 has no explicit AF_INET6 guard: any family that isn't
  * AF_INET falls into the IPv6 branch. Observation 8, pinned as-is.
  */
 MARLIN_TEST(parse_l3_unknown_family_is_parsed_as_v6)
@@ -565,11 +580,12 @@ MARLIN_TEST(icmp_is_echo_v6_types)
     CHECK_TRUE(!marlin_icmp_is_echo(AF_INET6, ICMPV6_MGM_QUERY));
 }
 
-/* ======================================================================
+/*
+ * ======================================================================
  * Tier B -- marlin_parse end-to-end through struct xdp_md
  * ====================================================================== */
 
-MARLIN_TEST(parse_null_mctx_is_parse_error)
+MARLIN_TEST(parse_null_mctx_aborts)
 {
     struct xdp_md md;
     int rc;
@@ -580,10 +596,21 @@ MARLIN_TEST(parse_null_mctx_is_parse_error)
     pb_ports(1, 2);
     pb_xdp(&md);
     rc = marlin_parse(&md, NULL);
-    CHECK_RET(MARLIN_DROP_PARSE_ERROR, rc);
+    CHECK_RET(MARLIN_ABORT_NULLREF, rc);
 }
 
-/* pkt_len is written before the eth bounds check (parser.c:302 precedes
+MARLIN_TEST(parse_null_ctx_aborts)
+{
+    struct marlin_ctx mctx;
+    int rc;
+
+    mctx_init(&mctx);
+    rc = marlin_parse(NULL, &mctx);
+    CHECK_RET(MARLIN_ABORT_NULLREF, rc);
+}
+
+/*
+ * pkt_len is written before the eth bounds check (parser.c:302 precedes
  * :306), so a too-short frame still gets a correct pkt_len.
  */
 MARLIN_TEST(parse_pkt_len_set_before_validation_on_truncated_frame)
@@ -624,7 +651,8 @@ static __u32 build_valid_ipv4_tcp(void)
     return pb_len;
 }
 
-/* mctx->pkt_len is (__u16)(data_end - data) -- parser.c:302 -- so it wraps
+/*
+ * mctx->pkt_len is (__u16)(data_end - data) -- parser.c:302 -- so it wraps
  * once the frame is 64 KiB or larger. The well-formed header at the front
  * still parses, independent of how far past it data_end sits.
  */
@@ -711,7 +739,8 @@ MARLIN_TEST(parse_8023_length_field_not_forwarded)
     check_ethertype_not_forwarded(0x0006);
 }
 
-/* If parser.c's own bpf_htons(ETH_P_IP) at parser.c:310 were ever dropped,
+/*
+ * If parser.c's own bpf_htons(ETH_P_IP) at parser.c:310 were ever dropped,
  * this host-order-stored h_proto would start matching. Today it does not.
  */
 MARLIN_TEST(parse_host_order_ethertype_not_forwarded)
@@ -866,7 +895,8 @@ MARLIN_TEST(parse_ipv4_tcp_zero_l4_bytes_is_parse_error)
 
 /* --- fragments, IPv4 ---------------------------------------------------- */
 
-/* A non-first fragment: no L4 header is present on the wire, so ports must
+/*
+ * A non-first fragment: no L4 header is present on the wire, so ports must
  * stay untouched even though the outer proto is TCP.
  */
 MARLIN_TEST(parse_ipv4_non_first_fragment_tcp_is_ok_no_ports)
@@ -889,7 +919,8 @@ MARLIN_TEST(parse_ipv4_non_first_fragment_tcp_is_ok_no_ports)
     CHECK_EQ(0xbeef, mctx.tuple.dport);
 }
 
-/* The first fragment: ports ARE present and must be parsed, and the flag is
+/*
+ * The first fragment: ports ARE present and must be parsed, and the flag is
  * F_FRAG_FIRST, not F_FRAG. docs/design/24-testing.md:27-30 -- this is the
  * one assertion nothing else catches.
  */
@@ -912,7 +943,8 @@ MARLIN_TEST(parse_ipv4_first_fragment_tcp_is_ok_with_ports)
     CHECK_EQ(bpf_htons(80), mctx.tuple.dport);
 }
 
-/* A fragment tail carries no ICMP header, so the ICMP branch must never be
+/*
+ * A fragment tail carries no ICMP header, so the ICMP branch must never be
  * taken for it -- parser.c:332-338.
  */
 MARLIN_TEST(parse_ipv4_non_first_fragment_icmp_is_not_forwarded)
@@ -930,7 +962,8 @@ MARLIN_TEST(parse_ipv4_non_first_fragment_icmp_is_not_forwarded)
     CHECK_RET(MARLIN_PASS_NOT_FORWARDED, rc);
 }
 
-/* The fragment early-return bypasses the ESP/AH rejection entirely: an
+/*
+ * The fragment early-return bypasses the ESP/AH rejection entirely: an
  * unfragmented ESP packet is DROP_UNSUPPORTED_PROTO, but a fragment of one
  * is not. Two policies for one protocol -- Observation 3, pinned as-is.
  */
@@ -950,7 +983,8 @@ MARLIN_TEST(parse_ipv4_non_first_fragment_esp_is_ok_not_unsupported)
     CHECK_EQ(IPPROTO_ESP, mctx.tuple.proto);
 }
 
-/* parser.c:332 branches on mctx->flags, not the l3.flags this call computed
+/*
+ * parser.c:332 branches on mctx->flags, not the l3.flags this call computed
  * -- a caller-supplied stale F_FRAG bit makes an ordinary packet take the
  * fragment early-return and skip port parsing entirely. Safe today only
  * because src/main.c:57 memsets the whole struct first. Observation 1.
@@ -990,7 +1024,8 @@ MARLIN_TEST(parse_stale_frag_flag_skips_icmp_echo)
     CHECK_RET(MARLIN_PASS_NOT_FORWARDED, rc); /* would be MARLIN_PASS_ICMP_ECHO without the stale flag */
 }
 
-/* parser.c:330 uses |=: a caller-supplied flag bit unrelated to fragmentation
+/*
+ * parser.c:330 uses |=: a caller-supplied flag bit unrelated to fragmentation
  * must survive the call. */
 MARLIN_TEST(parse_preserves_unrelated_preset_flag_bit)
 {
@@ -1155,7 +1190,8 @@ MARLIN_TEST(parse_ipv6_dstopts_header_is_ok)
     CHECK_RET(MARLIN_OK, rc);
 }
 
-/* An atomic fragment header (offset zero, MF clear) sets neither flag and
+/*
+ * An atomic fragment header (offset zero, MF clear) sets neither flag and
  * walk_ext6's "return 0" path (parser.c:78) is otherwise unreachable from a
  * full parse.
  */
@@ -1244,7 +1280,8 @@ MARLIN_TEST(parse_icmpv4_echo_reply_is_pass_icmp_echo)
     CHECK_RET(MARLIN_PASS_ICMP_ECHO, rc);
 }
 
-/* Exactly 2 ICMP bytes with an echo type: parser.c:250's 2-byte check passes
+/*
+ * Exactly 2 ICMP bytes with an echo type: parser.c:250's 2-byte check passes
  * and parser.c:258 returns before parser.c:261's 8-byte check is ever
  * reached -- proving the type check runs first.
  */
@@ -1282,7 +1319,8 @@ MARLIN_TEST(parse_icmpv4_zero_bytes_is_parse_error)
     CHECK_RET(MARLIN_DROP_PARSE_ERROR, rc);
 }
 
-/* 2-7 bytes with an ERROR type: the type byte is readable but the embedded
+/*
+ * 2-7 bytes with an ERROR type: the type byte is readable but the embedded
  * header never is -- parser.c:262.
  */
 MARLIN_TEST(parse_icmpv4_error_truncated_to_two_bytes_is_unparseable)
@@ -1304,7 +1342,8 @@ MARLIN_TEST(parse_icmpv4_error_truncated_to_two_bytes_is_unparseable)
     CHECK_RET(MARLIN_DROP_ICMP_UNPARSEABLE, rc);
 }
 
-/* Exactly 8 ICMP bytes, nothing after: passes parser.c:261 but the embedded
+/*
+ * Exactly 8 ICMP bytes, nothing after: passes parser.c:261 but the embedded
  * iphdr check at parser.c:159 then fails -- distinguishes :268 from :262.
  */
 MARLIN_TEST(parse_icmpv4_error_exactly_eight_bytes_is_unparseable)
@@ -1543,7 +1582,8 @@ MARLIN_TEST(parse_icmpv4_embedded_sctp_is_unparseable)
     CHECK_RET(MARLIN_DROP_ICMP_UNPARSEABLE, rc);
 }
 
-/* Embedded TCP truncated to 2 bytes: a third, distinct route into
+/*
+ * Embedded TCP truncated to 2 bytes: a third, distinct route into
  * parser.c:276, via marlin_parse_ports's own truncation check rather than
  * an unsupported/non-TCP-UDP proto. */
 MARLIN_TEST(parse_icmpv4_embedded_tcp_truncated_is_unparseable)
@@ -1582,7 +1622,8 @@ MARLIN_TEST(parse_icmpv4_embedded_non_first_fragment_is_unparseable)
     CHECK_RET(MARLIN_DROP_ICMP_UNPARSEABLE, rc);
 }
 
-/* A quoted FIRST fragment carries F_FRAG_FIRST, not F_FRAG -- parser.c:271
+/*
+ * A quoted FIRST fragment carries F_FRAG_FIRST, not F_FRAG -- parser.c:271
  * tests F_FRAG alone, so this one is NOT dropped, and the ports it carries
  * are recovered normally. An earlier draft of this matrix conflated the two
  * (see the plan's ERRORS list, item 4). */
@@ -1687,7 +1728,8 @@ MARLIN_TEST(parse_icmpv6_embedded_truncated_hdr_is_unparseable)
     CHECK_RET(MARLIN_DROP_ICMP_UNPARSEABLE, rc);
 }
 
-/* MARLIN_ICMP_EMB_EXT_HDRS == 2 (parser.c:29): a 3-header embedded chain
+/*
+ * MARLIN_ICMP_EMB_EXT_HDRS == 2 (parser.c:29): a 3-header embedded chain
  * exceeds the embedded-parse budget even though the outer walk allows 8. */
 MARLIN_TEST(parse_icmpv6_embedded_three_ext_hdrs_is_unparseable)
 {
@@ -1729,7 +1771,8 @@ MARLIN_TEST(parse_icmpv6_embedded_two_ext_hdrs_is_ok)
     CHECK_RET(MARLIN_OK, rc);
 }
 
-/* ======================================================================
+/*
+ * ======================================================================
  * QUIC classification -- marlin_parse_quic(), the parser half of
  * docs/design/30-quic.md. balancer.c does not exist yet, so nothing reads
  * MARLIN_CTX_F_QUIC downstream; these cases assert the classification
@@ -1772,7 +1815,8 @@ static void check_quic_long_header_no_flag(__u8 first_byte)
     CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
 }
 
-/* Every long-header packet type -- Initial, Handshake and Retry alike --
+/*
+ * Every long-header packet type -- Initial, Handshake and Retry alike --
  * must leave the flag clear: RFC 9000 SS9 forbids migrating before the
  * handshake completes, so none of them can arrive off a migrated path, and
  * an Initial's client-invented DCID must never be steered (docs/design/30-quic.md).
@@ -1809,7 +1853,8 @@ MARLIN_TEST(parse_quic_zero_length_udp_payload_no_flag)
     CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
 }
 
-/* Every truncation from the start of the UDP header through one byte short
+/*
+ * Every truncation from the start of the UDP header through one byte short
  * of a complete form byte must leave the flag clear without reading past
  * data_end -- ASan (-fsanitize=address, data-plane/Makefile) is what
  * actually catches an out-of-bounds read here; CHECK_EQ only catches the
@@ -1839,7 +1884,8 @@ MARLIN_TEST(parse_quic_truncated_udp_header_no_flag)
     }
 }
 
-/* proto is TCP, so marlin_parse() must never call marlin_parse_quic() at
+/*
+ * proto is TCP, so marlin_parse() must never call marlin_parse_quic() at
  * all -- the same byte that would set the flag on UDP must not on TCP.
  */
 MARLIN_TEST(parse_quic_short_header_byte_on_tcp_no_flag)
@@ -1861,7 +1907,8 @@ MARLIN_TEST(parse_quic_short_header_byte_on_tcp_no_flag)
     CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
 }
 
-/* A non-first fragment carries no L4 header on the wire, so the QUIC
+/*
+ * A non-first fragment carries no L4 header on the wire, so the QUIC
  * classifier must not run -- mctx.flags must equal MARLIN_CTX_F_FRAG
  * exactly, not MARLIN_CTX_F_FRAG with the QUIC bit also set.
  */
@@ -1881,7 +1928,8 @@ MARLIN_TEST(parse_quic_non_first_fragment_udp_no_flag)
     CHECK_EQ(MARLIN_CTX_F_FRAG, mctx.flags);
 }
 
-/* An ICMP error's embedded header carries at most 8 bytes of L4
+/*
+ * An ICMP error's embedded header carries at most 8 bytes of L4
  * (marlin_l4_ports) and never a CID -- marlin_parse_icmp() has no call site
  * for marlin_parse_quic() at all, so the flag must stay clear even when a
  * QUIC-shaped byte follows the embedded ports word.
@@ -1906,7 +1954,8 @@ MARLIN_TEST(parse_quic_icmpv4_embedded_udp_no_flag)
     CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
 }
 
-/* The form byte is read off l4_off after the IPv6 extension-header walk,
+/*
+ * The form byte is read off l4_off after the IPv6 extension-header walk,
  * not a fixed ethernet+ipv4 offset -- l4_off=62 matches the sibling TCP
  * case at parse_ipv6_one_hopopts_hdrlen_zero_l4_off.
  */
@@ -1930,7 +1979,8 @@ MARLIN_TEST(parse_quic_ipv6_hopopts_flag_set_off_walked_l4_off)
     CHECK_EQ(MARLIN_CTX_F_QUIC, mctx.flags & MARLIN_CTX_F_QUIC);
 }
 
-/* The parser's outward behaviour is unchanged by this payload: rc and the
+/*
+ * The parser's outward behaviour is unchanged by this payload: rc and the
  * tuple are identical whether or not a QUIC-shaped byte follows the UDP
  * header, and mctx.flags differs from the no-payload case by exactly
  * MARLIN_CTX_F_QUIC. Nothing downstream reads the new bit yet

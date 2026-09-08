@@ -1,9 +1,8 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * Wire-protocol constants the UAPI headers do not supply under -target bpf.
- * NOT ABI: nothing here is mirrored by the control plane (docs/REPO-STRUCTURE.md,
- * "every file under abi/ has a C# counterpart -- nothing else does").
+ * Wire-protocol constants not supplied by UAPI headers under -target bpf.
+ * NOT ABI: not mirrored by control plane.
  */
 
 #pragma once
@@ -17,7 +16,7 @@
 #define IP_MF 0x2000
 #endif
 #ifndef IP_DF
-#define IP_DF 0x4000 /* unused in Phase 1; the encap units set it in 2b */
+#define IP_DF 0x4000
 #endif
 
 #define MARLIN_IPV4_IHL_MIN 5
@@ -44,7 +43,8 @@ _Static_assert(sizeof(struct marlin_frag_hdr) == 8, "the IPv6 fragment header mu
 #define ICMP_TIME_EXCEEDED 11
 #define ICMP_PARAMETERPROB 12
 
-/* Both families' error and echo messages share this layout to the end of the
+/*
+ * Both families' error and echo messages share this layout to the end of the
  * per-type word; the offending header (errors) or identifier/sequence (echo)
  * follows.
  */
@@ -64,13 +64,43 @@ struct marlin_l4_ports {
 
 _Static_assert(sizeof(struct marlin_l4_ports) == 4, "marlin_l4_ports must overlay the first word of a TCP or UDP header");
 
-#define MARLIN_UDP_HLEN         8 /* source, dest, len, check -- fixed width, no options */
+#define MARLIN_UDP_HLEN  8 /* source, dest, len, check -- fixed width, no options */
 
-/* RFC 8999 SS4.1: the header-form bit is the one field every QUIC version
- * keeps at a fixed offset. A short header (bit clear) is 1-RTT and
- * steerable by connection ID; a long header (bit set) spans the whole
- * handshake, which RFC 9000 SS9 forbids migrating before, so it needs no
- * steering (docs/design/30-quic.md).
+/*
+ * Zero-lookup encap default has no bpf_fib_lookup() result for TTL, so
+ * encap units fix one. 64 matches Linux and Katran defaults.
+ */
+#define MARLIN_OUTER_TTL 64
+
+/*
+ * GUE (RFC 8086), version 0. No control message or optional fields.
+ * Only proto field varies; vcf and flags always zero.
+ */
+struct marlin_gue_hdr {
+    __u8 vcf; /* version(2) | C-bit(1) | Hlen(5) */
+    __u8 proto;
+    __be16 flags;
+};
+
+_Static_assert(sizeof(struct marlin_gue_hdr) == 4, "GUE header must be 4 bytes");
+
+#define MARLIN_VXLAN_FLAG_VNI 0x08 /* the "I" bit: marks the VNI field valid */
+
+/*
+ * VXLAN (RFC 7348). vni_and_reserved holds bpf_htonl(vni << 8):
+ * VNI in high 3 bytes, trailing reserved byte zeroed by shift.
+ */
+struct marlin_vxlan_hdr {
+    __u8 flags; /* MARLIN_VXLAN_FLAG_VNI, rest reserved */
+    __u8 reserved0[3];
+    __be32 vni_and_reserved;
+};
+
+_Static_assert(sizeof(struct marlin_vxlan_hdr) == 8, "VXLAN header must be 8 bytes");
+
+/*
+ * RFC 8999 SS4.1: header-form bit at fixed offset. Short header (bit clear)
+ * is 1-RTT, steerable by connection ID. Long header spans handshake, no steering.
  */
 #define MARLIN_QUIC_LONG_HEADER 0x80
 

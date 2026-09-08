@@ -60,7 +60,7 @@ static __always_inline int acl_check_v6(const struct marlin_ctx *mctx)
 int marlin_acl_check(const struct marlin_ctx *mctx)
 {
     if(mctx == NULL) {
-        return MARLIN_ACL_NONE;
+        return MARLIN_ACL_ABORT;
     }
 
     if((mctx->cfg.flags & CFG_ACL_ENABLE) == 0U) {
