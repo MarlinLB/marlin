@@ -24,7 +24,7 @@ that writes them — `backend` by the encapsulation units and `nexthop.c`, `cfg`
 
 **Measured, not estimated, as of `parser.c`/`acl.c`/`nexthop.c`/all three encapsulation units
 being reachable from `xdp_main` via `main.c`'s interim call site:** `make verifier-stats`
-(`data-plane/tools/verifier_stats.c`, which loads `marlin.bpf.o` through libbpf directly — no
+(`tools/verifier_stats.c`, which loads `marlin.bpf.o` through libbpf directly — no
 `bpftool`, no bpffs pin, since some hosts' LSM policy blocks bpffs writes even under root)
 reports **152 bytes** as the worst combined stack depth, comfortably inside the 512-byte limit
 with ~360 bytes to spare.

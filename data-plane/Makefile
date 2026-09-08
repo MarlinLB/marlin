@@ -139,8 +139,8 @@ packet-tests: $(MARLIN_OBJ) $(PACKET_TEST_BIN)
 	@$(PACKET_TEST_BIN) $(MARLIN_OBJ)
 
 # Verifier processed-instructions and worst combined stack depth
-# (docs/design/05-budgets.md). tools/verifier_stats.c loads marlin.bpf.o via
-# libbpf directly and pins nothing: bpftool prog load/loadall's pin step
+# (docs/design/05-budgets.md). ../tools/verifier_stats.c loads marlin.bpf.o
+# via libbpf directly and pins nothing: bpftool prog load/loadall's pin step
 # needs bpffs write access, which this host's LSM policy denies even under
 # root (confirmed: mkdir, and even mktemp -u's stat, both EPERM on
 # /sys/fs/bpf here) -- an unrelated bpf-type mount already visible in
@@ -151,9 +151,10 @@ packet-tests: $(MARLIN_OBJ) $(PACKET_TEST_BIN)
 # labelled report instead of relaying it raw -- the kernel's "stack depth"
 # line lists one figure per function, not a chain to sum, and reads exactly
 # like one if left as-is.
+TOOLS_DIR := $(MARLIN_REPO_ROOT)/tools
 VERIFIER_STATS_BIN := $(BUILD_DIR)/tools/verifier_stats
 
-$(VERIFIER_STATS_BIN): tools/verifier_stats.c
+$(VERIFIER_STATS_BIN): $(TOOLS_DIR)/verifier_stats.c
 	@mkdir -p $(BUILD_DIR)/tools
 	@echo "compile $(notdir $<)"
 	@$(HOST_CC) $(TEST_CFLAGS) -o $@ $< -lbpf
