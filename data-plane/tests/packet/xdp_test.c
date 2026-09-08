@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <linux/bpf.h>
+#include <linux/udp.h>
 
 #include <marlin/abi/types.h>
 #include <marlin/marlin.h>
@@ -814,6 +815,60 @@ static void ipip_check_frame(const unsigned char *expect_dst, const unsigned cha
     CHECK_MEM(pb_arena + ETH_HLEN, out_buf + ETH_HLEN + MARLIN_OVERHEAD_IPIP, pb_len - ETH_HLEN);
 }
 
+#define GUE_TUNNEL_SRC 0x0e0e0e0eU /* 14.14.14.14 */
+
+/* Mirrors entropy.h's MARLIN_ENTROPY_SPORT_MIN; entropy.h cannot be included
+ * here for the same reason csum.h cannot (test_ipv4_csum above).
+ */
+#define GUE_ENTROPY_SPORT_MIN 49152U
+
+/* GUE-specific sibling of ipip_check_frame(): the frame grew by
+ * MARLIN_OVERHEAD_GUE and gained a UDP+GUE header past the outer IPv4 one.
+ * udp.source (the entropy port) is range-checked rather than matched
+ * exactly -- entropy.h's algorithm is independently verified by
+ * tests/entropy_test.c and tests/gue_test.c wires it against the real
+ * function; this tier only needs to know a real value landed there.
+ */
+static void gue_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
+                            __be32 backend_addr, __be16 encap_dport, __u8 inner_family, __u32 out_len)
+{
+    unsigned char expect_eth[ETH_HLEN];
+    struct iphdr expect_iph;
+    struct udphdr udp;
+    struct marlin_gue_hdr expect_gue;
+
+    CHECK_EQ(pb_len + MARLIN_OVERHEAD_GUE, out_len);
+
+    memcpy(expect_eth, pb_arena, ETH_HLEN);
+    memcpy(expect_eth, expect_dst, ETH_ALEN);
+    memcpy(expect_eth + ETH_ALEN, expect_src, ETH_ALEN);
+    CHECK_MEM(expect_eth, out_buf, sizeof(expect_eth));
+
+    memset(&expect_iph, 0, sizeof(expect_iph));
+    expect_iph.version = 4;
+    expect_iph.ihl = MARLIN_IPV4_IHL_MIN;
+    expect_iph.frag_off = bpf_htons(IP_DF);
+    expect_iph.ttl = MARLIN_OUTER_TTL;
+    expect_iph.protocol = IPPROTO_UDP;
+    expect_iph.tot_len = bpf_htons((__u16)(pb_len - ETH_HLEN + MARLIN_OVERHEAD_GUE));
+    expect_iph.saddr = tunnel_src;
+    expect_iph.daddr = backend_addr;
+    expect_iph.check = test_ipv4_csum(&expect_iph);
+    CHECK_MEM(&expect_iph, out_buf + ETH_HLEN, sizeof(expect_iph));
+
+    memcpy(&udp, out_buf + ETH_HLEN + sizeof(expect_iph), sizeof(udp));
+    CHECK_TRUE(bpf_ntohs(udp.source) >= GUE_ENTROPY_SPORT_MIN);
+    CHECK_EQ((encap_dport != 0) ? encap_dport : bpf_htons(MARLIN_GUE_DPORT_DEFAULT), udp.dest);
+    CHECK_EQ(bpf_htons((__u16)(MARLIN_UDP_HLEN + sizeof(expect_gue) + (pb_len - ETH_HLEN))), udp.len);
+    CHECK_EQ(0, udp.check);
+
+    memset(&expect_gue, 0, sizeof(expect_gue));
+    expect_gue.proto = (inner_family == AF_INET6) ? IPPROTO_IPV6 : IPPROTO_IPIP;
+    CHECK_MEM(&expect_gue, out_buf + ETH_HLEN + sizeof(expect_iph) + sizeof(udp), sizeof(expect_gue));
+
+    CHECK_MEM(pb_arena + ETH_HLEN, out_buf + ETH_HLEN + MARLIN_OVERHEAD_GUE, pb_len - ETH_HLEN);
+}
+
 MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback)
 {
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK);
@@ -1395,6 +1450,122 @@ MARLIN_TEST(ipip_encap_max_frame_zero_disables_the_check)
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
     ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_zero_lookup_swaps_ethernet_and_builds_outer_header)
+{
+    __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
+    struct xdp_run_result result;
+
+    seed_encap_cfg(GUE_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET, result.out_len);
+    CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_ipv6_inner_sets_gue_proto_41)
+{
+    struct xdp_run_result result;
+
+    seed_encap_cfg(GUE_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame_v6();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET6, result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_frame_too_big_drops_before_adjust_head)
+{
+    __u64 too_big_before;
+    struct xdp_run_result result;
+
+    /* Far smaller than any encapsulated test frame: this is a wiring proof
+     * that gue.c checks and drops before touching the packet, not the
+     * boundary arithmetic itself, which tests/mtu_test.c already covers.
+     */
+    seed_encap_cfg(GUE_TUNNEL_SRC, 10);
+    too_big_before = xdp_drop_stats_total(MARLIN_DROP_FRAME_TOO_BIG);
+
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(too_big_before + 1, xdp_drop_stats_total(MARLIN_DROP_FRAME_TOO_BIG));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_max_frame_zero_disables_the_check)
+{
+    struct xdp_run_result result;
+
+    seed_encap_cfg(GUE_TUNNEL_SRC, 0);
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+    nh_build_frame();
+    pb_pad(2000); /* well past any real MTU; only max_frame == 0 lets this through */
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET, result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_entropy_source_port_differs_for_different_inner_ports)
+{
+    /* The real-kernel counterpart to entropy_test.c's algorithm-level
+     * differentiation case: proves marlin_ctx.tuple, as populated by the
+     * compiled parser.c and threaded through the compiled gue.c, actually
+     * varies the emitted source port -- not just the algorithm in
+     * isolation (docs/design/14-forwarding-modes.md SS7.3).
+     */
+    struct xdp_run_result result;
+    struct udphdr udp_a, udp_b;
+
+    seed_encap_cfg(GUE_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0);
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(11111, 80);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    memcpy(&udp_a, out_buf + ETH_HLEN + sizeof(struct iphdr), sizeof(udp_a));
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(22222, 80);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    memcpy(&udp_b, out_buf + ETH_HLEN + sizeof(struct iphdr), sizeof(udp_b));
+
+    CHECK_TRUE(udp_a.source != udp_b.source);
 
     nh_backend_clear();
 }
