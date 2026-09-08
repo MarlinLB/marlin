@@ -584,9 +584,17 @@ MARLIN_TEST(gue_encap_builds_the_outer_headers_byte_for_byte)
 
 MARLIN_TEST(gue_encap_ipv6_inner_sets_gue_proto_41)
 {
-    /* Mirrors gue_encap_ipv6_inner_sets_gue_proto_41 (tests/packet/xdp_test.c). */
+    /*
+     * Mirrors gue_encap_ipv6_inner_sets_gue_proto_41 (tests/packet/xdp_test.c).
+     * Also a regression test for the bug where the outer Ethernet header's
+     * EtherType carried the arriving frame's ETH_P_IPV6 forward unchanged:
+     * the arriving EtherType mirrors tuple.family exactly (parser.c), but
+     * the outer network layer is always IPv4
+     * (docs/design/14-forwarding-modes.md SS7.5).
+     */
     struct marlin_ctx mctx;
     struct xdp_md ctx;
+    struct ethhdr eth;
     struct iphdr iph;
     struct udphdr udp;
     struct marlin_gue_hdr gue;
@@ -601,9 +609,10 @@ MARLIN_TEST(gue_encap_ipv6_inner_sets_gue_proto_41)
     gue_arm(&ctx, GUE_HEADROOM);
 
     CHECK_RET(MARLIN_OK, marlin_gue_encap_packet(&ctx, &mctx));
-    gue_read_outer(&ctx, NULL, &iph, &udp, &gue);
+    gue_read_outer(&ctx, &eth, &iph, &udp, &gue);
     CHECK_EQ(IPPROTO_UDP, iph.protocol);
     CHECK_EQ(IPPROTO_IPV6, gue.proto);
+    CHECK_EQ(bpf_htons(ETH_P_IP), eth.h_proto);
 }
 
 MARLIN_TEST(gue_encap_frame_too_big_returns_before_the_helper)

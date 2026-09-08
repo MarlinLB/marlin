@@ -520,9 +520,17 @@ MARLIN_TEST(ipip_encap_builds_the_outer_ipv4_header_byte_for_byte)
 
 MARLIN_TEST(ipip_encap_ipv6_inner_sets_protocol_41)
 {
-    /* Mirrors ipip_encap_ipv6_inner_sets_protocol_41 (tests/packet/xdp_test.c:1337). */
+    /*
+     * Mirrors ipip_encap_ipv6_inner_sets_protocol_41 (tests/packet/xdp_test.c:1337).
+     * Also a regression test for the bug where the outer Ethernet header's
+     * EtherType carried the arriving frame's ETH_P_IPV6 forward unchanged:
+     * the arriving EtherType mirrors tuple.family exactly (parser.c), but
+     * the outer network layer is always IPv4
+     * (docs/design/14-forwarding-modes.md SS7.5).
+     */
     struct marlin_ctx mctx;
     struct xdp_md ctx;
+    struct ethhdr eth;
     struct iphdr iph;
 
     pb_reset();
@@ -535,8 +543,9 @@ MARLIN_TEST(ipip_encap_ipv6_inner_sets_protocol_41)
     ipip_arm(&ctx, IPIP_HEADROOM);
 
     CHECK_RET(MARLIN_OK, marlin_ipip_encap_packet(&ctx, &mctx));
-    ipip_read_outer(&ctx, NULL, &iph);
+    ipip_read_outer(&ctx, &eth, &iph);
     CHECK_EQ(IPPROTO_IPV6, iph.protocol);
+    CHECK_EQ(bpf_htons(ETH_P_IP), eth.h_proto);
 }
 
 MARLIN_TEST(ipip_encap_frame_too_big_returns_before_the_helper)

@@ -3,7 +3,7 @@
  *
  * GUE tunnel encapsulation: outer IPv4 + UDP + a 4-byte GUE header carrying
  * the inner protocol, with the outer UDP source port carrying per-connection
- * entropy for ECMP and RSS spread (docs/design/14-forwarding-modes.md SS7.3).
+ * entropy for ECMP and RSS spread.
  */
 
 #include <linux/bpf.h>
@@ -66,6 +66,13 @@ int marlin_gue_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
 
     /* Relocate inner Ethernet header to frame start for nexthop.c's MAC swap. */
     __builtin_memcpy(&eth, (char *)data + MARLIN_OVERHEAD_GUE, sizeof(eth));
+
+    /*
+     * The outer network layer is always IPv4 (docs/design/14-forwarding-modes.md
+     * SS7.5), regardless of tuple.family, so the arriving EtherType -- which
+     * mirrors tuple.family exactly (parser.c) -- must not carry forward unchanged.
+     */
+    eth.h_proto = bpf_htons(ETH_P_IP);
     __builtin_memcpy(data, &eth, sizeof(eth));
 
     /* tos/id=0, frag_off=DF: frame_fits() prevents fragmentation. */
