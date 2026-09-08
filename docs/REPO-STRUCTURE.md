@@ -76,7 +76,8 @@ marlin/
 │   │   ├── gue.c
 │   │   ├── vxlan.c
 │   │   ├── nexthop.c
-│   │   └── acl.c                    # marlin_acl_check()
+│   │   ├── acl.c                    # marlin_acl_check()
+│   │   └── ratelimit.c              # marlin_ratelimit()
 │   ├── include/
 │   │   ├── marlin.h                  # marlin_ctx, enum marlin_ret, marlin_* prototypes
 │   │   └── marlin/
@@ -90,12 +91,13 @@ marlin/
 │   │       ├── siphash.h
 │   │       ├── stats.h
 │   │       ├── acl.h
-│   │       └── ratelimit.h
+│   │       └── ratelimit.h          # marlin_ratelimit() prototype
 │   └── tests/                       # native unit tests, `make tests` — Principle 5's exception
 │       ├── parser_test.c            # #includes src/parser.c to reach its static helpers
 │       ├── acl_test.c               # #includes src/acl.c; map lookups answered by stubs/ below
 │       ├── ipip_test.c              # #includes src/ipip.c; bpf_xdp_adjust_head() answered by stubs/ below
 │       ├── nexthop_test.c           # #includes src/nexthop.c; NULL-argument aborts only
+│       ├── ratelimit_test.c         # #includes src/ratelimit.c; hash map + clock answered by stubs/ below
 │       ├── csum_test.c              # <marlin/csum.h>, header-only
 │       ├── mtu_test.c               # <marlin/mtu.h>, header-only
 │       ├── entropy_test.c           # <marlin/entropy.h>, header-only
@@ -103,9 +105,11 @@ marlin/
 │       ├── harness.h                # shared with tests/packet/ below
 │       ├── stubs/                   # shadows <bpf/bpf_helpers.h> for the native tier only
 │       │   ├── map_stub.h           # host LPM trie answering bpf_map_lookup_elem
+│       │   ├── hash_stub.h          # host hash map (exact key, no eviction) for the ratelimit map
 │       │   ├── xdp_stub.h           # headroom bounds + shadow diff answering bpf_xdp_adjust_head
+│       │   ├── time_stub.h          # settable clock answering bpf_ktime_get_ns
 │       │   └── bpf/
-│       │       └── bpf_helpers.h    # SEC/__uint/__type/__always_inline + the map and adjust_head stubs
+│       │       └── bpf_helpers.h    # SEC/__uint/__type/__always_inline + the map/adjust_head/clock stubs
 │       └── packet/                  # bpf_prog_test_run, exact bytes — §7.2: landed here, not the repo root
 │           ├── xdp_test.c           # cases + main()
 │           ├── prog.h               # load/run wrapper over libbpf

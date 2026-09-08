@@ -121,7 +121,7 @@ __u64 marlin_toolchain_probe_cas(__u64 *p, __u64 old, __u64 new)
 }
 EOF
 if ! "$$CLANG" -target bpf -mcpu=v3 -c "$$p2_src" -o "$$p2_obj" >"$$tmpdir/p2.log" 2>&1; then
-	fail "clang must accept -mcpu=v3 (required by ratelimit.h's compare-and-swap)" \
+	fail "clang must accept -mcpu=v3 (required by ratelimit.c's compare-and-swap)" \
 		"$$CLANG -target bpf -mcpu=v3 -c $$p2_src -o $$p2_obj" "$$tmpdir/p2.log" \
 		"upgrade clang -- -mcpu=v3 needs LLVM's BPF v3 ISA support"
 else

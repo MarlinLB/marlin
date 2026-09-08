@@ -179,11 +179,32 @@ with what key — never a prefix outcome. `ipip.c` carries the equivalent rule: 
 counterpart, and a native case with none asserts only what the packet tier cannot observe — an
 `mctx` write-back, a NULL argument, a headroom failure, or a helper call count.
 
-`main.c` and `nexthop.c` still do not qualify: they write maps and call `bpf_redirect_map`,
-`bpf_fib_lookup` and `bpf_ktime_get_ns`, `ratelimit` is an LRU whose eviction is not a function of
-the arguments, and the stats maps are per-CPU. `ipip.c` does qualify — its only helper is
-`bpf_xdp_adjust_head` (`data-plane/tests/stubs/xdp_stub.h`), and it reads no map. `gue.c` and
-`vxlan.c` are still placeholders (a NULL check and `return MARLIN_OK`) with nothing to test yet.
+`ratelimit.c` qualifies under a narrower form of the same test, in two parts. `rl_spend()` — the
+token-bucket arithmetic, factored out for exactly this reason — reads no map and no packet byte
+and is a pure function of its arguments, so `data-plane/tests/ratelimit_test.c` calls it directly
+with no stub at all: refill, both clamps, the sub-one-token drop, and the wrap-or-backwards-clock
+resync all move to zero-stub cases this way. `marlin_ratelimit()` itself calls three helpers, and
+all three are answered: `data-plane/tests/stubs/hash_stub.h` for `bpf_map_lookup_elem` and
+`bpf_map_update_elem` (exact-key match, no eviction), `data-plane/tests/stubs/time_stub.h` for
+`bpf_ktime_get_ns()` (settable — `bpf_prog_test_run` cannot fake the kernel's clock, and the
+native tier needs no faking, since it calls the real function on the real argument). Purity holds
+only under the stub's restriction to a single non-evicting map: the real `ratelimit` is an
+`LRU_HASH`, whose eviction is not a function of the arguments, so eviction and capacity at
+`MAX_RL_ENTRIES`, and `rl_cas_exhausted` under real cross-CPU contention, stay packet-tier-only —
+`data-plane/tests/packet/xdp_test.c`'s `rl_*` cases are the real-kernel counterpart the third
+condition requires. Matching `acl.c`'s rule, a native case duplicating one of those assertions
+names its counterpart; a native case with none — the NULL abort, the gates admitting with zero
+lookups, the key's byte-exact construction with `pad` zeroed, an insert failure still admitting —
+asserts what the packet tier cannot observe, the same reasoning as the ACL cases native-tier-only
+above. `ratelimit.c`'s own two `marlin_count()` calls (`rl_cas_exhausted`, `rl_insert_failed`)
+share `drop_stats`'s per-CPU disqualification below and stay unasserted at this tier regardless;
+only `marlin_ratelimit()`'s return value and the `ratelimit` map's own contents are.
+
+`main.c` and `nexthop.c` still do not qualify: they call `bpf_redirect_map` and `bpf_fib_lookup`,
+which have no native model, and their own map writes — `vip_stats`, `backend_stats`, `drop_stats`
+— are all per-CPU. `ipip.c` does qualify — its only helper is `bpf_xdp_adjust_head`
+(`data-plane/tests/stubs/xdp_stub.h`), and it reads no map. `gue.c` and `vxlan.c` are still
+placeholders (a NULL check and `return MARLIN_OK`) with nothing to test yet.
 
 The NULL-argument abort convention (`docs/design/04-calling-convention.md`) is native-tier-only
 for the same reason as the ACL case above: a global subprogram's BTF struct-pointer argument is
@@ -205,13 +226,16 @@ milliseconds with no root privilege and no kernel involved, so it is the tier a 
 
 What it cannot do: assert an emitted frame, a map write, or anything downstream of
 `marlin_parse` — that stays with `bpf_prog_test_run`, which is the only tier that runs the code as
-compiled for the datapath. The map stub answers reads only; the packet-adjusting stub
-(`data-plane/tests/stubs/xdp_stub.h`) is the one exception, answering `bpf_xdp_adjust_head()`.
+compiled for the datapath. The ACL map stub (`data-plane/tests/stubs/map_stub.h`) answers reads
+only; the packet-adjusting stub (`data-plane/tests/stubs/xdp_stub.h`) and the ratelimit hash stub
+(`data-plane/tests/stubs/hash_stub.h`) are the exceptions, answering `bpf_xdp_adjust_head()` and
+`bpf_map_update_elem()` respectively.
 `make tests` (not part of `make all`; part of `make ci`) builds and runs one binary per test
 file — `data-plane/tests/csum_test.c`, `data-plane/tests/mtu_test.c`,
 `data-plane/tests/entropy_test.c`, `data-plane/tests/parser_test.c`, `data-plane/tests/acl_test.c`,
-`data-plane/tests/nexthop_test.c` and `data-plane/tests/ipip_test.c` today; `docs/PHASES.md`
-tracks which translation units the mechanism covers as more are added.
+`data-plane/tests/nexthop_test.c`, `data-plane/tests/ipip_test.c` and
+`data-plane/tests/ratelimit_test.c` today; `docs/PHASES.md` tracks which translation units the
+mechanism covers as more are added.
 
 This is also why a sub-`ETH_HLEN` truncation case cannot move to the packet-level harness: the
 kernel's XDP `BPF_PROG_TEST_RUN` path rejects `data_size_in` below `ETH_HLEN` (14 bytes) before

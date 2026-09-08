@@ -21,9 +21,10 @@ A single drop counter is insufficient. `drop_stats` is indexed by reason:
 `fib_prohibit`, `fib_gatewayed` (L2 DSR only; `docs/design/16-fib-lookup.md`), `frag_needed`,
 `frame_too_big` (`docs/design/23-mtu.md`), `mac_fallback` (not a drop, counted), `adjust_head_failed`,
 `acl_blocked` (`docs/design/27-source-filtering.md`), `ratelimited` (`docs/design/28-rate-limiting.md`), `rl_cas_exhausted` (an admit, counted; `docs/design/28-rate-limiting.md`),
+`rl_insert_failed` (an admit, counted; `docs/design/28-rate-limiting.md`),
 `egress_mismatch` (not a drop, counted; `docs/design/16-fib-lookup.md`), `neigh_fallback` (not a drop, counted; `docs/design/16-fib-lookup.md`).
 
-Twenty-three of `DROP_REASON_MAX`. `enum marlin_ret` carries several more that this list does not
+Twenty-four of `DROP_REASON_MAX`. `enum marlin_ret` carries several more that this list does not
 name; reconciling the two is `marlin.h`'s open decision D6. One of those unnamed values gets its
 meaning fixed here regardless, since it is otherwise a footgun for whoever implements the
 encapsulation units: **`encap_length`** means the measured inner length will not fit the outer
@@ -61,6 +62,7 @@ not invented twice.
 | `ratelimited` | instance | a source is over budget |
 | `frag_unsupported` | instance | a fragment arrived for a `VIP_HASH_5TUPLE` VIP; non-zero means the flag is set on a VIP whose traffic fragments (`docs/design/12-selection.md`) |
 | `rl_cas_exhausted` | instance | `RL_CAS_RETRIES` too low under contention (`docs/design/28-rate-limiting.md`) |
+| `rl_insert_failed` | instance | the `ratelimit` map is rejecting inserts — the insert-cost signal `docs/design/28-rate-limiting.md`'s Phase 4 measurement needs |
 
 Backend distribution is derivable from `backend_stats` alone, which makes hash skew behind
 CGNAT observable without additional instrumentation. It is also the measurement that decides

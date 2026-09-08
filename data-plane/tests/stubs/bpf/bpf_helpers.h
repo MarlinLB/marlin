@@ -19,7 +19,9 @@
 #define __BPF_HELPERS__
 
 #include "../map_stub.h"
+#include "../hash_stub.h"
 #include "../xdp_stub.h"
+#include "../time_stub.h"
 
 #define __uint(name, val)  int (*name)[val]
 #define __type(name, val)  typeof(val) *name
@@ -50,9 +52,34 @@
 #define NULL ((void *)0)
 #endif
 
+/*
+ * hash_stub_owns() first, unconditionally: acl_stub_open() adopts any
+ * address it has not seen before as a fresh, empty trie, so checking the
+ * ACL stub first would silently turn the ratelimit map into one instead of
+ * routing to the hash stub.
+ */
 static __attribute__((unused)) void *bpf_map_lookup_elem(void *map, const void *key)
 {
+    if(hash_stub_owns(map)) {
+        return hash_stub_lookup(map, key);
+    }
+
     return acl_stub_lookup(map, key);
+}
+
+static __attribute__((unused)) long bpf_map_update_elem(void *map, const void *key, const void *value, __u64 flags)
+{
+    if(hash_stub_owns(map)) {
+        return hash_stub_update(map, key, value, flags);
+    }
+
+    fprintf(stderr, "tests: bpf_map_update_elem() has no native stub for this map\n");
+    exit(1);
+}
+
+static __attribute__((unused)) __u64 bpf_ktime_get_ns(void)
+{
+    return time_stub_get_ns();
 }
 
 static __attribute__((unused)) long bpf_xdp_adjust_head(struct xdp_md *ctx, int delta)

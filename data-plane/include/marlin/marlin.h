@@ -83,6 +83,7 @@ enum marlin_ret {
     MARLIN_DROP_FRAG_UNSUPPORTED,
     MARLIN_PASS_NOT_FORWARDED,
     MARLIN_ABORT_NULLREF,
+    MARLIN_COUNT_RL_INSERT_FAILED, /* counted in place, never returned */
 
     MARLIN_RET_MAX
 };

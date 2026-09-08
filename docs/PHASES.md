@@ -54,9 +54,9 @@ a pure function of `packet_tuple.src`. Neither belongs with the rate limiter.
 - **Packet tests are built first, not last** (`docs/design/24-testing.md`). They are affordable because Marlin holds
   no per-flow state, so output is a deterministic function of the packet and map contents.
   Anything that breaks that property is a design change, not an implementation detail.
-- **Both feature flags stay off until their phase.** `acl.c` already exists and is already
-  called — from `marlin.c`, an interim site pending `balancer.c` (open decision below) — and
-  `ratelimit.h` already exists; the phase gate is `CFG_ACL_ENABLE` (Phase 3) and `CFG_RL_ENABLE`
+- **Both feature flags stay off until their phase.** `acl.c` and `ratelimit.c` already exist and
+  are already called — both from `marlin.c`, interim sites pending `balancer.c` (open decisions
+  below); the phase gate is `CFG_ACL_ENABLE` (Phase 3) and `CFG_RL_ENABLE`
   (Phase 4) plus the control-plane side, not the datapath code.
 - **The verifier is a build product.** CI fails on a load failure and records reported
   complexity as a regression signal, because it degrades gradually as code is added
@@ -284,11 +284,11 @@ configuration surface for either would resolve both.
    three consequences accepted explicitly**: `marlin_ctx` moves to a per-CPU scratch map, the
    accumulated stack cap drops to 256 bytes, and tail calls do not return. **Measured**, not via
    `balancer.c` (which does not exist) but via `main.c`'s interim call site, which already
-   reaches both `marlin_nexthop_*` entry points and all three encapsulation units: `make
-   verifier-stats` reports 15,155 processed instructions (limit 1,000,000) and a 152-byte worst
-   combined stack depth (limit 512) — comfortably inside both budgets
-   (`docs/design/05-budgets.md`). Re-measure once `balancer.c` lands, since its own frame is not
-   part of this reachable set yet.
+   reaches both `marlin_nexthop_*` entry points, all three encapsulation units, and
+   `marlin_ratelimit()`: `make verifier-stats` reports 15,733 processed instructions (limit
+   1,000,000) and a 152-byte worst combined stack depth (limit 512) — comfortably inside both
+   budgets (`docs/design/05-budgets.md`). Re-measure once `balancer.c` lands, since its own frame
+   is not part of this reachable set yet.
 
 ---
 
@@ -359,9 +359,11 @@ rate-limiter conversion.
 
 **Goal:** the rate limiter is safe to enable on a link carrying production traffic.
 
-The datapath token bucket already exists in `ratelimit.h`. What this phase adds is the
-measurement that decides whether it may be turned on, the control-plane conversion, and the
-concurrency evidence.
+The datapath token bucket already exists in `ratelimit.c`, called from an interim site in
+`src/main.c` pending `balancer.c` (open decision below), and is covered at both the native
+(`data-plane/tests/ratelimit_test.c`) and packet (`data-plane/tests/packet/xdp_test.c`'s `rl_*`
+cases) tiers. What this phase adds is the measurement that decides whether it may be turned on,
+the control-plane conversion, and the concurrency evidence.
 
 ### Deliverables
 
@@ -416,6 +418,8 @@ section it affects, not in a document of its own.
 | `mtu_result` has no reporting mechanism: `docs/design/23-mtu.md` requires it be counted alongside `frag_needed`, but `drop_stats` holds counts, not values | `docs/design/23-mtu.md:23-24` | 2b |
 | Interim call site: `marlin_acl_check()` is called from `marlin.c` (`src/main.c`), not from `marlin_balance()` as `docs/design/11-pipeline.md` step 3 places it, because `balancer.c` does not exist yet | `docs/design/11-pipeline.md` step 3 | 2b |
 | Interim call site: `marlin_nexthop_l2dsr()`/`marlin_nexthop_encapsulate()` are called from `xdp_interim_nexthop()` in `src/main.c`, not from `marlin_balance()` as `docs/design/11-pipeline.md` step 9 places it, because `balancer.c` does not exist yet | `docs/design/11-pipeline.md` step 9 | 2b |
+| Interim call site: `marlin_ratelimit()` is called from `src/main.c` directly after the ACL block, not from `marlin_balance()` as `docs/design/11-pipeline.md` step 5 places it (after the VIP lookup), because `balancer.c` does not exist yet — host-bound traffic is metered rather than exempted at step 4 in the interim, acceptable only because `CFG_RL_ENABLE` defaults off | `docs/design/11-pipeline.md` step 5 | 2b |
+| `VIP_RATELIMIT` has no carrier: `marlin_ctx` holds no VIP flags, and the interim call site has no VIP lookup to read them from, so only the instance-wide `CFG_RL_ENABLE` gates enforcement until `balancer.c` holds `vip_meta.flags` at the call site | `marlin.h`, `docs/design/28-rate-limiting.md` "Off by default" | 2b |
 | Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly | `docs/design/11-pipeline.md` step 3 | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
 | `nexthop.c` maps ten kernel `bpf_fib_lookup()` return codes onto seven named `drop_stats` reasons. `BPF_FIB_LKUP_RET_NOT_FWDED` (the ordinary no-route outcome), `UNSUPP_LWT` and `NO_SRC_ADDR` all fall to the `default:` arm, `MARLIN_DROP_FIB_UNSPEC` — so "no route" is indistinguishable from a helper contract violation in `drop_stats` | `docs/design/16-fib-lookup.md:56-66`, `nexthop.c:86-111` | 2b |

@@ -14,7 +14,7 @@ All below Marlin's 6.0 minimum. Listed for the case where the floor is challenge
 | `bpf_map_lookup_batch` | 5.6 |
 | `DEVMAP_HASH` | 5.4 |
 | `bpf_map_get_next_key` on `LPM_TRIE` | 4.20 |
-| `BPF_ATOMIC \| BPF_CMPXCHG` — `ratelimit.h`'s compare-and-swap | 5.12 |
+| `BPF_ATOMIC \| BPF_CMPXCHG` — `ratelimit.c`'s compare-and-swap | 5.12 |
 
 `ARRAY_OF_MAPS`, `DEVMAP`, `LPM_TRIE`, `LRU_HASH`, `PERCPU_ARRAY`, `bpf_csum_diff()` and
 `bpf_xdp_adjust_head()` all predate 4.18.

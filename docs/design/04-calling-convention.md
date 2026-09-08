@@ -50,7 +50,8 @@ whether the arriving Ethernet header must be copied first (`docs/design/14-forwa
 §7.2-7.4) — there is no common shape left to factor out once the disagreement is accounted for.
 
 Every global subprogram that takes a pointer parameter — the three encapsulation units,
-`marlin_parse()`, `marlin_nexthop_l2dsr()`, `marlin_nexthop_encapsulate()`, and `marlin_acl_check()`
+`marlin_parse()`, `marlin_nexthop_l2dsr()`, `marlin_nexthop_encapsulate()`, `marlin_acl_check()`,
+and `marlin_ratelimit()`
 — null-checks every pointer it receives and returns `MARLIN_ABORT_NULLREF` (`marlin_acl_check()`
 returns `MARLIN_ACL_ABORT`, its own verdict type's spelling of the same outcome; see below). A NULL
 argument to one of these is a caller bug, not a property of the packet, so it is distinct from

@@ -13,6 +13,7 @@
 #include <marlin/maps.h>
 #include <marlin/nexthop.h>
 #include <marlin/parser.h>
+#include <marlin/ratelimit.h>
 #include <marlin/stats.h>
 
 static __always_inline int xdp_load_config(struct marlin_ctx *ctx)
@@ -134,6 +135,21 @@ int xdp_main(struct xdp_md *ctx)
 
     if(mctx.acl_verdict == MARLIN_ACL_BLOCK) {
         rc = MARLIN_DROP_ACL_BLOCKED;
+        marlin_count(rc);
+        return marlin_action(rc);
+    }
+
+    /*
+     * Interim ratelimit.c call site; remove with balancer.c. docs/design/11-pipeline.md
+     * places metering at step 5, after the VIP lookup, so that host-bound traffic leaves
+     * at step 4 as a VIP miss and is never metered. There is no VIP lookup yet, so this
+     * runs ahead of it and would meter host-bound traffic -- and cannot honour
+     * VIP_RATELIMIT, which is the caller's gate. CFG_RL_ENABLE defaulting off is what
+     * keeps that safe.
+     */
+    rc = marlin_ratelimit(&mctx);
+
+    if(rc != MARLIN_OK) {
         marlin_count(rc);
         return marlin_action(rc);
     }

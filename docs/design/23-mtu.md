@@ -39,7 +39,7 @@ ETH_HLEN" (`docs/design/08-types.md`) — so neither side needs adjusting before
 Each encapsulation unit calls it once, with its own `MARLIN_OVERHEAD_*` constant, **before**
 `bpf_xdp_adjust_head()` and before anything updates `pkt_len`: the check is meaningless against
 a `pkt_len` that already reflects the growth it exists to catch. `mtu.h` is a header rather
-than a translation unit for the same reason `ratelimit.h` and `entropy.h` are
+than a translation unit for the same reason `stats.h` and `entropy.h` are
 (`docs/design/03-translation-units.md:50-55`) — it takes only `mctx`, a BTF struct pointer
 already resolved by the caller, and reads no packet bytes.
 

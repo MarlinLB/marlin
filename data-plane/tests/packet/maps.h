@@ -216,3 +216,65 @@ static __attribute__((unused)) void xdp_tx_ports_clear(void)
         }
     }
 }
+
+/*
+ * ratelimit (LRU_HASH, struct rl_key -> struct rl_bucket): built from the
+ * real ABI structs, same discipline as the ACL helpers above. `addr16` is
+ * the full 16-byte rl_key.addr -- a caller keying an IPv4 case zero-extends
+ * it, mirroring the zeroed key ratelimit.c itself builds.
+ */
+static __attribute__((unused)) void xdp_rl_seed(__u8 family, const unsigned char addr16[16], __u64 state)
+{
+    struct rl_key key;
+    struct rl_bucket bucket;
+    int fd = xdp_map_fd("ratelimit");
+
+    memset(&key, 0, sizeof(key));
+    key.family = family;
+    memcpy(key.addr, addr16, sizeof(key.addr));
+
+    bucket.state = state;
+
+    if(bpf_map_update_elem(fd, &key, &bucket, BPF_ANY) != 0) {
+        fprintf(stderr, "packet-tests: failed to seed ratelimit: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+/* Returns 0 on a miss rather than exiting: a case asserting the miss path
+ * inserted a bucket needs to distinguish "not present" from "present".
+ */
+static __attribute__((unused)) int xdp_rl_get(__u8 family, const unsigned char addr16[16], __u64 *state)
+{
+    struct rl_key key;
+    struct rl_bucket bucket;
+    int fd = xdp_map_fd("ratelimit");
+
+    memset(&key, 0, sizeof(key));
+    key.family = family;
+    memcpy(key.addr, addr16, sizeof(key.addr));
+
+    if(bpf_map_lookup_elem(fd, &key, &bucket) != 0) {
+        return 0;
+    }
+
+    *state = bucket.state;
+    return 1;
+}
+
+/*
+ * Drains every entry -- the same drain-first-key loop as xdp_acl_clear and
+ * xdp_tx_ports_clear, for an LRU_HASH with no fixed baseline to reset to.
+ */
+static __attribute__((unused)) void xdp_rl_clear(void)
+{
+    int fd = xdp_map_fd("ratelimit");
+    struct rl_key next;
+
+    while(bpf_map_get_next_key(fd, NULL, &next) == 0) {
+        if(bpf_map_delete_elem(fd, &next) != 0) {
+            fprintf(stderr, "packet-tests: failed to clear an entry from ratelimit: %s\n", strerror(errno));
+            exit(1);
+        }
+    }
+}
