@@ -726,7 +726,8 @@ static void nh_check_frame(const unsigned char *expect_dst, const unsigned char 
 
 #define IPIP_TUNNEL_SRC 0x0d0d0d0dU /* 13.13.13.13 */
 
-/* config is process-global and outlives a case: every ipip_* case seeds its
+/*
+ * config is process-global and outlives a case: every ipip_* case seeds its
  * own tunnel_src/max_frame rather than relying on what an earlier case left,
  * mirroring seed_acl_cfg's discipline above.
  */
@@ -750,7 +751,8 @@ static void nh_build_frame_v6(void)
     pb_ports(11111, 80);
 }
 
-/* A from-scratch reimplementation, not a call into csum.h: including
+/*
+ * A from-scratch reimplementation, not a call into csum.h: including
  * <marlin/csum.h> here would drag in the real <bpf/bpf_helpers.h> for
  * __always_inline, which conflicts with the userspace <bpf/bpf.h>/
  * <bpf/libbpf.h> this tier's own fib.h needs (both declare
@@ -777,7 +779,8 @@ static __sum16 test_ipv4_csum(const struct iphdr *iph)
     return bpf_htons((__u16)~sum);
 }
 
-/* IPIP-specific sibling of nh_check_frame(): the frame grew by
+/*
+ * IPIP-specific sibling of nh_check_frame(): the frame grew by
  * MARLIN_OVERHEAD_IPIP, so neither "same length" nor "everything past
  * ETH_HLEN is unchanged" applies. Asserts the outer Ethernet addresses, the
  * whole outer IPv4 header byte-for-byte, and that the inner packet moved
@@ -836,7 +839,8 @@ MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback)
 
 MARLIN_TEST(pending_phase2b_no_neigh_onlink_other_egress_is_drop)
 {
-    /* docs/design/24-testing.md:63-64 -- on-link but FIB returns another
+    /*
+     * docs/design/24-testing.md:63-64 -- on-link but FIB returns another
      * interface: drop fib_no_neigh, no frame emitted.
      */
     __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
@@ -887,7 +891,8 @@ MARLIN_TEST(pending_phase2b_no_neigh_gatewayed_ingress_is_drop)
 
 MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_zero_mac_is_drop)
 {
-    /* docs/design/24-testing.md:66-67 -- the on-link ingress case again
+    /*
+     * docs/design/24-testing.md:66-67 -- the on-link ingress case again
      * with an all-zero backend.mac: drop, nothing left to fall back to.
      */
     __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
@@ -926,7 +931,8 @@ MARLIN_TEST(pending_phase2b_no_neigh_under_ipip_is_drop)
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_DROP, result.retval);
-    /* Encapsulation precedes next-hop resolution: the frame already grew by
+    /*
+     * Encapsulation precedes next-hop resolution: the frame already grew by
      * MARLIN_OVERHEAD_IPIP by the time the FIB lookup fails.
      */
     ipip_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, IPIP_TUNNEL_SRC, FIB_ADDR_BACKEND_A, AF_INET, result.out_len);
@@ -1019,7 +1025,8 @@ MARLIN_TEST(pending_phase2b_l2dsr_refuses_gatewayed_ipip_forwards)
     result = run_packet_on(fib_ifindex(FIB_DEV_INGRESS));
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    /* The mode split is the whole point here: the same route that L2DSR
+    /*
+     * The mode split is the whole point here: the same route that L2DSR
      * refused above forwards under IPIP, with the FIB's own smac/dmac
      * overwriting the outer Ethernet header ipip.c relocated.
      */
@@ -1355,7 +1362,8 @@ MARLIN_TEST(ipip_encap_frame_too_big_drops_before_adjust_head)
     __u64 too_big_before;
     struct xdp_run_result result;
 
-    /* Far smaller than any encapsulated test frame: this is a wiring proof
+    /*
+     * Far smaller than any encapsulated test frame: this is a wiring proof
      * that ipip.c checks and drops before touching the packet, not the
      * boundary arithmetic itself, which tests/mtu_test.c already covers.
      */

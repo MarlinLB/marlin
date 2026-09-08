@@ -35,7 +35,8 @@ struct acl_stub_trie {
     unsigned int rules;
     struct acl_stub_rule rule[ACL_STUB_MAX_RULES];
 
-    /* What the code under test last asked this map for, so a case can
+    /*
+     * What the code under test last asked this map for, so a case can
      * assert a lookup was skipped rather than only that its verdict was
      * unchanged -- the two are indistinguishable from the return value.
      */
@@ -89,7 +90,8 @@ static struct acl_stub_trie *acl_stub_open(const void *map, __u32 addr_bits)
     return trie;
 }
 
-/* Cases share this file-static storage the way the packet tier shares a
+/*
+ * Cases share this file-static storage the way the packet tier shares a
  * loaded map, so each starts from a known-empty state rather than from
  * whatever the last one left (tests/packet/maps.h's xdp_acl_clear).
  */
@@ -99,7 +101,8 @@ static __attribute__((unused)) void acl_stub_reset(void)
     acl_stub_trie_count = 0;
 }
 
-/* Builds the key through struct acl_key4/acl_key6 rather than a local
+/*
+ * Builds the key through struct acl_key4/acl_key6 rather than a local
  * re-declaration, same as tests/packet/maps.h -- a types.h layout change
  * must fail a test, not quietly seed a rule no lookup can match.
  */
@@ -177,7 +180,8 @@ static __attribute__((unused)) const unsigned char *acl_stub_last_addr(const voi
     return trie == NULL ? none : trie->last_addr;
 }
 
-/* Byte-order-free by construction: both key structs hold the address in
+/*
+ * Byte-order-free by construction: both key structs hold the address in
  * network order, so byte 0 carries the leading octet and the prefix is the
  * first `prefixlen` bits of memory -- the same bit string the kernel's trie
  * descends.
@@ -204,7 +208,8 @@ static int acl_stub_prefix_match(const unsigned char *rule, const unsigned char 
 
 static void *acl_stub_lookup(void *map, const void *key)
 {
-    /* prefixlen is at offset 0 in both key structs (abi/types.h asserts it),
+    /*
+     * prefixlen is at offset 0 in both key structs (abi/types.h asserts it),
      * so it is readable before the key's width is known.
      */
     const struct acl_key4 *hdr = key;
@@ -218,7 +223,8 @@ static void *acl_stub_lookup(void *map, const void *key)
     trie->last_addr_len = 0;
     memset(trie->last_addr, 0, sizeof(trie->last_addr));
 
-    /* The helper signature carries no key size, so the width comes from the
+    /*
+     * The helper signature carries no key size, so the width comes from the
      * trie the rules were seeded at, and a key not presenting exactly that
      * is refused: reading an 8-byte acl_key4 as an acl_key6 is an
      * out-of-bounds read of the caller's stack frame, and both a

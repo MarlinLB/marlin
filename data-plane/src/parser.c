@@ -203,7 +203,8 @@ static __always_inline int marlin_parse_ports(const void *data, const void *data
     return MARLIN_OK;
 }
 
-/* Only short-header QUIC packets can migrate connections; long-header packets
+/*
+ * Only short-header QUIC packets can migrate connections; long-header packets
  * share the ingress 4-tuple. This identifies short-header form only.
  */
 static __always_inline __u32 marlin_parse_quic(const void *data, const void *data_end, __u32 l4_off)

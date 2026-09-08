@@ -45,7 +45,8 @@ MARLIN_TEST(entropy_sport_differs_when_only_the_inner_source_port_differs)
     struct packet_tuple a;
     struct packet_tuple b;
 
-    /* The assertion that separates this from the selection hash
+    /*
+     * The assertion that separates this from the selection hash
      * (docs/design/12-selection.md:10), which reads tuple.src only and
      * would return the same row for both of these.
      */
@@ -65,7 +66,8 @@ MARLIN_TEST(entropy_sport_stays_in_the_ephemeral_range)
     __u16 dport;
     int i;
 
-    /* Sweep a spread of tuples rather than asserting one: containment in
+    /*
+     * Sweep a spread of tuples rather than asserting one: containment in
      * range is a property of the whole function, not one input.
      */
     for(i = 0; i < 4096; i++) {
@@ -90,7 +92,8 @@ MARLIN_TEST(entropy_sport_is_stable_for_a_fragment_with_zero_ports)
     struct packet_tuple a;
     struct packet_tuple b;
 
-    /* A non-first fragment carries no L4 header: sport and dport stay zero
+    /*
+     * A non-first fragment carries no L4 header: sport and dport stay zero
      * in both directions, and the hash must still produce one stable value
      * per connection rather than failing or colliding on the missing ports
      * alone (docs/design/14-forwarding-modes.md:66-68).

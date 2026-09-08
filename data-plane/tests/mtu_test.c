@@ -23,7 +23,8 @@ MARLIN_TEST(frame_fits_max_frame_zero_disables_the_check)
 {
     struct marlin_ctx m;
 
-    /* An unconfigured max_frame must forward rather than drop every
+    /*
+     * An unconfigured max_frame must forward rather than drop every
      * encapsulated packet (docs/design/23-mtu.md), regardless of overhead
      * or how large pkt_len already is.
      */
@@ -68,7 +69,8 @@ MARLIN_TEST(frame_fits_pkt_len_near_u16_max_does_not_wrap)
 {
     struct marlin_ctx m;
 
-    /* pkt_len + overhead is done in __u32 specifically so this does not
+    /*
+     * pkt_len + overhead is done in __u32 specifically so this does not
      * wrap back under max_frame and produce a false pass.
      */
     mctx_init(&m, 65530, 1500);

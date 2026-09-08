@@ -40,7 +40,8 @@ __attribute__((weak)) struct {
     __uint(max_entries, MAX_VIPS);
 } vip_map SEC(".maps");
 
-/* Keyed by kernel ifindex from bpf_fib_lookup() egress result. DEVMAP_HASH
+/*
+ * Keyed by kernel ifindex from bpf_fib_lookup() egress result. DEVMAP_HASH
  * used because host ifindex may exceed MAX_TX_PORTS. Ingress interface
  * is omitted: no devmap needed for transmission back out.
  */

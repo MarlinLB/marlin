@@ -37,19 +37,22 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/libbpf.h>
 
-/* mve0: the ingress device every FIB case not naming another one uses.
+/*
+ * mve0: the ingress device every FIB case not naming another one uses.
  * Forwarding on; carries the connected /24 that makes 192.0.2.0/24 on-link.
  */
 #define FIB_DEV_INGRESS      "mve0"
 #define FIB_DEV_INGRESS_PEER "mve0p"
 
-/* mve1: the off-segment egress device -- on-link for 198.51.100.0/24, never
+/*
+ * mve1: the off-segment egress device -- on-link for 198.51.100.0/24, never
  * an ingress in any case below. Forwarding on.
  */
 #define FIB_DEV_EGRESS      "mve1"
 #define FIB_DEV_EGRESS_PEER "mve1p"
 
-/* mve2: forwarding deliberately left off, so ingress here reproduces
+/*
+ * mve2: forwarding deliberately left off, so ingress here reproduces
  * BPF_FIB_LKUP_RET_FWD_DISABLED the same way lo does today for the
  * nexthop_interim_* section, but from a real, addressable device.
  */
@@ -79,7 +82,8 @@ static const unsigned char FIB_MAC_GATEWAY[ETH_ALEN]   = {0x02, 0x00, 0x00, 0x00
 
 /* ---- ip(8) driver ---------------------------------------------------- */
 
-/* fatal: exit(1) on a non-zero exit status. Callers pass 0 for teardown --
+/*
+ * fatal: exit(1) on a non-zero exit status. Callers pass 0 for teardown --
  * a "del" against state a failed earlier case never created must not stop
  * the next case from running (the same reasoning as tests/packet/maps.h's
  * xdp_acl_clear).
@@ -112,7 +116,8 @@ static int fib_ip(int fatal, ...)
     }
 
     if(pid == 0) {
-        /* Non-fatal calls are teardown against state a failed earlier case
+        /*
+         * Non-fatal calls are teardown against state a failed earlier case
          * never created (the comment above) -- ip(8)'s "No such file or
          * directory" on those is expected noise, not a diagnostic, so it is
          * suppressed rather than left to obscure a real failure's output.
@@ -149,13 +154,15 @@ static int fib_ip(int fatal, ...)
     return WEXITSTATUS(status);
 }
 
-/* "255.255.255.255\0": 16 bytes -- not <netinet/in.h>'s INET_ADDRSTRLEN,
+/*
+ * "255.255.255.255\0": 16 bytes -- not <netinet/in.h>'s INET_ADDRSTRLEN,
  * which this file avoids depending on (see the header comment on why
  * <arpa/inet.h> is not included at all).
  */
 #define FIB_ADDRSTRLEN 16
 
-/* addr is already network (big-endian) byte order by construction --
+/*
+ * addr is already network (big-endian) byte order by construction --
  * bpf_htonl() and every FIB_ADDR_* constant below produce one -- so byte 0
  * of its in-memory representation is the leading octet on every host,
  * regardless of the host's own endianness. Formatted by hand rather than
@@ -235,7 +242,8 @@ static void fib_route_add_special(const char *type, __be32 addr)
     fib_ip(1, "route", "add", type, cidr, NULL);
 }
 
-/* "mtu lock", not bare "mtu": bpf_fib_lookup()'s RET_FRAG_NEEDED check reads
+/*
+ * "mtu lock", not bare "mtu": bpf_fib_lookup()'s RET_FRAG_NEEDED check reads
  * fi->fib_mtu, which only takes the route metric over the device MTU when
  * either net.ipv4.ip_forward_use_pmtu is set or the metric is locked -- an
  * unlocked mtu here is invisible to the helper and the route falls back to
@@ -253,7 +261,8 @@ static void fib_route_add_mtu(__be32 addr, const char *dev, int mtu)
     fib_ip(1, "route", "add", cidr, "dev", dev, "mtu", "lock", mtubuf, NULL);
 }
 
-/* Idempotent and non-fatal: called at both ends of a case body (see
+/*
+ * Idempotent and non-fatal: called at both ends of a case body (see
  * xdp_test.c), so a case that failed an earlier assertion cannot leave
  * state the next one inherits. Matches whatever route type currently
  * occupies the prefix, special or ordinary, without the caller naming it.
@@ -268,7 +277,8 @@ static void fib_route_del(__be32 addr)
     fib_ip(0, "route", "del", cidr, NULL);
 }
 
-/* nud is "permanent" (resolved) or "failed" (RET_NO_NEIGH) --
+/*
+ * nud is "permanent" (resolved) or "failed" (RET_NO_NEIGH) --
  * docs/design/16-fib-lookup.md:60,68-70 -- "replace" rather than "add" so a
  * case flipping an existing entry's state (permanent <-> failed) need not
  * delete first.
@@ -295,7 +305,8 @@ static void fib_neigh_del(__be32 addr, const char *dev)
 
 static int fib_anchor_fd = -1;
 
-/* A two-instruction XDP_PASS program, not xdp_main: any frame this
+/*
+ * A two-instruction XDP_PASS program, not xdp_main: any frame this
  * namespace generates on its own (IGMP membership reports on addr add,
  * IPv6 ND/MLD) must not run through xdp_main and move drop_stats, which
  * would break every delta assertion in this file. mov64 r0, XDP_PASS;
@@ -320,7 +331,8 @@ static void fib_anchor_load(void)
     }
 }
 
-/* Registers XDP rxq info on dev (veth_enable_xdp(), called from
+/*
+ * Registers XDP rxq info on dev (veth_enable_xdp(), called from
  * veth_xdp_set() only once IFF_UP and a program are both present) -- what
  * makes a non-zero ctx_in.ingress_ifindex naming dev acceptable to
  * xdp_convert_md_to_buff() (net/bpf/test_run.c). Attach after bringing the
@@ -348,7 +360,8 @@ static void fib_veth_pair(const char *dev, const char *peer, const unsigned char
     fib_ip(1, "link", "set", peer, "up", NULL);
 }
 
-/* Per device, never conf.all/conf.default/net.ipv4.ip_forward: a global
+/*
+ * Per device, never conf.all/conf.default/net.ipv4.ip_forward: a global
  * write reaches lo too, and the nexthop_interim_* section's three
  * FWD_DISABLED assertions (xdp_test.c) depend on lo staying at 0. Plain
  * open()+write() rather than sysctl(8): /proc/sys/net is resolved through
@@ -375,7 +388,8 @@ static void fib_forwarding_on(const char *dev)
     close(fd);
 }
 
-/* Called once from main(), between unshare(CLONE_NEWNET) and
+/*
+ * Called once from main(), between unshare(CLONE_NEWNET) and
  * xdp_prog_load() -- a topology failure then reports before the slower
  * program load. No matching teardown: the namespace and everything in it
  * is freed when the process exits.

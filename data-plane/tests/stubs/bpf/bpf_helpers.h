@@ -12,7 +12,8 @@
 
 #pragma once
 
-/* Also claims libbpf's own guard, so the real header is inert if some other
+/*
+ * Also claims libbpf's own guard, so the real header is inert if some other
  * include path ever reaches it after this one. */
 #define __BPF_HELPERS__
 
@@ -22,7 +23,8 @@
 #define __type(name, val)  typeof(val) *name
 #define __array(name, val) typeof(val) *name[]
 
-/* No section attribute: nothing native reads ELF sections, and a custom
+/*
+ * No section attribute: nothing native reads ELF sections, and a custom
  * section would exclude the map objects from AddressSanitizer's global
  * instrumentation -- these are the objects whose addresses the stub keys on.
  * `used` still matters, so a map only ever referenced by address survives -O1.

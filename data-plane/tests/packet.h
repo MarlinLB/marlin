@@ -109,7 +109,8 @@ static __u32 pb_eth(__u16 ethertype_host)
     return pb_raw(&eth, sizeof(eth));
 }
 
-/* frag_off_host carries both the 3 flag bits and the 13-bit offset, already
+/*
+ * frag_off_host carries both the 3 flag bits and the 13-bit offset, already
  * combined by the caller (e.g. IP_MF | 0x0001) -- marlin_parse_frag4 masks
  * the wire (big-endian) value, so the combination is what is under test.
  */
@@ -150,7 +151,8 @@ static __u32 pb_ipv6(__u8 nexthdr, const unsigned char src[16], const unsigned c
     return pb_raw(&ip6, sizeof(ip6));
 }
 
-/* hdrlen follows RFC 8200 sizing: (hdrlen + 1) * 8 total bytes. Pads the TLV
+/*
+ * hdrlen follows RFC 8200 sizing: (hdrlen + 1) * 8 total bytes. Pads the TLV
  * area with zero option data -- marlin_walk_ext6 never inspects it.
  */
 static __u32 pb_ext6(__u8 nexthdr, __u8 hdrlen)
@@ -189,7 +191,8 @@ static __u32 pb_ports(__u16 sport_host, __u16 dport_host)
     return pb_raw(&ports, sizeof(ports));
 }
 
-/* Full 8-byte UDP header -- source and dest overlay marlin_l4_ports exactly
+/*
+ * Full 8-byte UDP header -- source and dest overlay marlin_l4_ports exactly
  * as pb_ports() writes them; len_host and check are never read by parser.c
  * but are filled in so a captured packet's fixed header matches the wire.
  */
@@ -210,7 +213,8 @@ static __attribute__((unused)) __u32 pb_udp(__u16 sport_host, __u16 dport_host, 
     return pb_raw(&udp, sizeof(udp));
 }
 
-/* One byte carrying only the QUIC header-form bit (RFC 8999 SS4.1;
+/*
+ * One byte carrying only the QUIC header-form bit (RFC 8999 SS4.1;
  * MARLIN_QUIC_LONG_HEADER in proto.h): 0x80 set selects a long header, clear
  * selects short. Nothing in this repo decodes past the form bit yet
  * (docs/design/30-quic.md), so this is the whole of a QUIC payload the
@@ -232,7 +236,8 @@ static __u32 pb_icmp(__u8 type, __u8 code)
     return pb_raw(&icmp, sizeof(icmp));
 }
 
-/* Sets data_end to exactly n bytes from the start of the packet -- the one
+/*
+ * Sets data_end to exactly n bytes from the start of the packet -- the one
  * primitive every truncation/boundary case needs; n may be less than pb_len
  * so far (truncating what was already built) or, for the pkt_len-only cases,
  * larger (padding with zeroed arena bytes that are never dereferenced).

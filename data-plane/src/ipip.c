@@ -1,7 +1,8 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * IPIP encapsulation implementation.
+ * IPIP tunnel encapsulation: wraps inner packets in an outer IPv4 header for
+ * backend delivery, with DF set to prevent outer-layer fragmentation.
  */
 
 #include <linux/bpf.h>
@@ -31,10 +32,7 @@ int marlin_ipip_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
         return MARLIN_ABORT_NULLREF;
     }
 
-    /* Every successfully parsed packet has pkt_len >= ETH_HLEN; this guards
-     * the subtraction below against wrapping if that invariant is ever
-     * violated, rather than silently building a garbage-length header.
-     */
+    /* Guard against pkt_len invariant violation to prevent garbage-length headers. */
     if(mctx->pkt_len < ETH_HLEN) {
         return MARLIN_DROP_ENCAP_LENGTH;
     }
@@ -51,26 +49,18 @@ int marlin_ipip_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
         return MARLIN_DROP_ADJUST_HEAD;
     }
 
-    data = (void *)(unsigned long)ctx->data;         // NOLINT(performance-no-int-to-ptr)
-    data_end = (void *)(unsigned long)ctx->data_end; // NOLINT(performance-no-int-to-ptr)
+    data = (void *)(unsigned long)ctx->data;
+    data_end = (void *)(unsigned long)ctx->data_end;
 
     if((char *)data + ETH_HLEN + MARLIN_OVERHEAD_IPIP > (char *)data_end) {
         return MARLIN_DROP_ADJUST_HEAD;
     }
 
-    /* adjust_head shifted the arriving frame forward by MARLIN_OVERHEAD_IPIP;
-     * the Ethernet header that was at the old frame start now sits at that
-     * offset. Relocate it to the new frame start so nexthop.c's MAC swap
-     * still finds it there, freeing its old slot for the outer header.
-     */
+    /* Relocate inner Ethernet header to frame start for nexthop.c's MAC swap. */
     __builtin_memcpy(&eth, (char *)data + MARLIN_OVERHEAD_IPIP, sizeof(eth));
     __builtin_memcpy(data, &eth, sizeof(eth));
 
-    /* tos and id stay 0: DSCP/ECN copy-through and outer fragmentation are
-     * both out of scope (docs/design/14-forwarding-modes.md). frag_off
-     * carries IP_DF because Marlin never fragments the outer packet --
-     * frame_fits() above is the check that takes its place.
-     */
+    /* tos/id=0, frag_off=DF: frame_fits() prevents fragmentation. */
     __builtin_memset(&iph, 0, sizeof(iph));
     iph.version = 4;
     iph.ihl = MARLIN_IPV4_IHL_MIN;

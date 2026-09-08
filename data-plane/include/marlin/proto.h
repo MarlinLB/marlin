@@ -43,7 +43,8 @@ _Static_assert(sizeof(struct marlin_frag_hdr) == 8, "the IPv6 fragment header mu
 #define ICMP_TIME_EXCEEDED 11
 #define ICMP_PARAMETERPROB 12
 
-/* Both families' error and echo messages share this layout to the end of the
+/*
+ * Both families' error and echo messages share this layout to the end of the
  * per-type word; the offending header (errors) or identifier/sequence (echo)
  * follows.
  */
@@ -65,12 +66,14 @@ _Static_assert(sizeof(struct marlin_l4_ports) == 4, "marlin_l4_ports must overla
 
 #define MARLIN_UDP_HLEN  8 /* source, dest, len, check -- fixed width, no options */
 
-/* Zero-lookup encap default has no bpf_fib_lookup() result for TTL, so
+/*
+ * Zero-lookup encap default has no bpf_fib_lookup() result for TTL, so
  * encap units fix one. 64 matches Linux and Katran defaults.
  */
 #define MARLIN_OUTER_TTL 64
 
-/* GUE (RFC 8086), version 0. No control message or optional fields.
+/*
+ * GUE (RFC 8086), version 0. No control message or optional fields.
  * Only proto field varies; vcf and flags always zero.
  */
 struct marlin_gue_hdr {
@@ -83,7 +86,8 @@ _Static_assert(sizeof(struct marlin_gue_hdr) == 4, "GUE header must be 4 bytes")
 
 #define MARLIN_VXLAN_FLAG_VNI 0x08 /* the "I" bit: marks the VNI field valid */
 
-/* VXLAN (RFC 7348). vni_and_reserved holds bpf_htonl(vni << 8):
+/*
+ * VXLAN (RFC 7348). vni_and_reserved holds bpf_htonl(vni << 8):
  * VNI in high 3 bytes, trailing reserved byte zeroed by shift.
  */
 struct marlin_vxlan_hdr {
@@ -94,7 +98,8 @@ struct marlin_vxlan_hdr {
 
 _Static_assert(sizeof(struct marlin_vxlan_hdr) == 8, "VXLAN header must be 8 bytes");
 
-/* RFC 8999 SS4.1: header-form bit at fixed offset. Short header (bit clear)
+/*
+ * RFC 8999 SS4.1: header-form bit at fixed offset. Short header (bit clear)
  * is 1-RTT, steerable by connection ID. Long header spans handshake, no steering.
  */
 #define MARLIN_QUIC_LONG_HEADER 0x80

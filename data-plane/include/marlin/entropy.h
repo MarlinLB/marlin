@@ -26,7 +26,8 @@ static __always_inline __u32 marlin_entropy_mix(__u32 h, __u32 v)
     return h;
 }
 
-/* Hash the five 5-tuple fields individually, not the whole struct. Skip
+/*
+ * Hash the five 5-tuple fields individually, not the whole struct. Skip
  * tuple.pad and family: family is implied by src/dst trailing zeros.
  */
 static __always_inline __be16 marlin_entropy_sport(const struct packet_tuple *tuple)

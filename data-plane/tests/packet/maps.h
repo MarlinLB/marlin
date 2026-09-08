@@ -44,7 +44,8 @@ static int xdp_map_fd(const char *name)
     return fd;
 }
 
-/* config is BPF_MAP_TYPE_ARRAY with max_entries=1, so it is pre-allocated
+/*
+ * config is BPF_MAP_TYPE_ARRAY with max_entries=1, so it is pre-allocated
  * and zero-filled at load -- bpf_map_lookup_elem never returns NULL for
  * index 0 (main.c:20-24's !cfgp branch is dynamically unreachable, see the
  * plan). Seeding it exercises the write path rather than something a test
@@ -62,7 +63,8 @@ static void xdp_seed_config(const struct marlin_config *cfg)
     }
 }
 
-/* drop_stats is BPF_MAP_TYPE_PERCPU_ARRAY: one __u64 slot per possible CPU
+/*
+ * drop_stats is BPF_MAP_TYPE_PERCPU_ARRAY: one __u64 slot per possible CPU
  * per index (stride is value_size rounded up to 8 bytes -- already 8 here,
  * so no padding between slots). Summed across CPUs since a test packet can
  * land on any of them and a prior case's traffic may have run on others.
@@ -100,7 +102,8 @@ static __u64 xdp_drop_stats_total(int rc)
     return total;
 }
 
-/* Builds the key from struct acl_key4/acl_key6 rather than a local
+/*
+ * Builds the key from struct acl_key4/acl_key6 rather than a local
  * re-declaration, same as every other helper here -- a types.h layout change
  * must fail a test, not corrupt a map write silently.
  */
@@ -132,7 +135,8 @@ static __attribute__((unused)) void xdp_acl_add6(const char *map, __u32 prefixle
     }
 }
 
-/* BPF_F_NO_PREALLOC tries have no fixed slot set to zero between cases --
+/*
+ * BPF_F_NO_PREALLOC tries have no fixed slot set to zero between cases --
  * bpf_map_get_next_key() walks whatever the previous case left, so each ACL
  * case must clear its own trie rather than relying on a zeroed baseline.
  * The largest key in this file (acl_key6) sized the buffer; a smaller key
@@ -144,7 +148,8 @@ static __attribute__((unused)) void xdp_acl_clear(const char *map)
     int fd = xdp_map_fd(map);
     unsigned char next[sizeof(struct acl_key6)];
 
-    /* Re-querying with prev_key == NULL each pass rather than advancing
+    /*
+     * Re-querying with prev_key == NULL each pass rather than advancing
      * from `next`: this map has no fixed key we could re-seed as a
      * sentinel, and re-querying "the first key still present" drains the
      * trie in max_entries iterations without needing one.
@@ -157,7 +162,8 @@ static __attribute__((unused)) void xdp_acl_clear(const char *map)
     }
 }
 
-/* tx_ports (DEVMAP_HASH, ifindex -> ifindex): the redirect target set for
+/*
+ * tx_ports (DEVMAP_HASH, ifindex -> ifindex): the redirect target set for
  * data-plane/tests/packet/fib.h's FIB cases. Per-case like the ACL helpers
  * above, for the same order-independence reason.
  */
@@ -171,7 +177,8 @@ static __attribute__((unused)) void xdp_tx_ports_add(__u32 ifindex)
     }
 }
 
-/* Non-fatal on ENOENT: teardown at the start of a case must tolerate an
+/*
+ * Non-fatal on ENOENT: teardown at the start of a case must tolerate an
  * entry a failed earlier case never inserted.
  */
 static __attribute__((unused)) void xdp_tx_ports_del(__u32 ifindex)
@@ -192,7 +199,8 @@ static __attribute__((unused)) int xdp_tx_ports_is_empty(void)
     return bpf_map_get_next_key(fd, NULL, &next) != 0;
 }
 
-/* Drains every entry, not just the one(s) a case knows it added -- the same
+/*
+ * Drains every entry, not just the one(s) a case knows it added -- the same
  * drain-first-key loop as xdp_acl_clear, for a DEVMAP_HASH with no fixed
  * baseline to reset to.
  */

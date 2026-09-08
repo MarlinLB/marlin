@@ -27,7 +27,8 @@ MARLIN_TEST(csum_words_pads_a_trailing_odd_byte_as_its_high_half)
 {
     static const __u8 buf[3] = { 0x12, 0x34, 0x56 };
 
-    /* RFC 1071: an odd-length region's last byte is summed as the high
+    /*
+     * RFC 1071: an odd-length region's last byte is summed as the high
      * byte of its own word, the low byte implicitly zero.
      */
     CHECK_EQ(0x1234 + 0x5600, marlin_csum_words(buf, sizeof(buf), 0));
@@ -42,7 +43,8 @@ MARLIN_TEST(csum_words_continues_an_existing_running_sum)
 
 MARLIN_TEST(csum_fold_all_ones_input_becomes_zero)
 {
-    /* An accumulated sum of exactly 0xFFFF has no carry to fold, and
+    /*
+     * An accumulated sum of exactly 0xFFFF has no carry to fold, and
      * ~0xFFFF is zero -- the edge every checksum fold must get right.
      */
     CHECK_EQ(0, bpf_ntohs(marlin_csum_fold(0xFFFFU)));
@@ -50,7 +52,8 @@ MARLIN_TEST(csum_fold_all_ones_input_becomes_zero)
 
 MARLIN_TEST(csum_fold_carry_out_of_first_fold_is_absorbed)
 {
-    /* sum = 0x1FFFF: the first fold produces 0xFFFF + 0x1 = 0x10000, itself
+    /*
+     * sum = 0x1FFFF: the first fold produces 0xFFFF + 0x1 = 0x10000, itself
      * carrying out of 16 bits. A single-fold implementation stops here and
      * returns an incorrect 17-bit intermediate; the second fold absorbs
      * that carry, reaching 0x0001, whose complement is 0xFFFE.
@@ -62,7 +65,8 @@ MARLIN_TEST(ipv4_csum_known_vector_matches_hand_computed_value)
 {
     struct iphdr iph;
 
-    /* The textbook worked example for the IPv4 header checksum: this exact
+    /*
+     * The textbook worked example for the IPv4 header checksum: this exact
      * 20-byte header's independently verified checksum is 0xb1e6.
      */
     memset(&iph, 0, sizeof(iph));
@@ -103,7 +107,8 @@ MARLIN_TEST(ipv4_csum_self_check_zeros)
     struct iphdr iph;
     __u32 sum;
 
-    /* A header carrying its own correct checksum re-sums, unfolded, to
+    /*
+     * A header carrying its own correct checksum re-sums, unfolded, to
      * all-ones -- the one's-complement identity every correct checksum
      * satisfies, independent of any hand-computed vector.
      */

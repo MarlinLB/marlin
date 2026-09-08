@@ -73,7 +73,8 @@ static __always_inline int xdp_interim_nexthop(struct xdp_md *ctx, struct marlin
         return marlin_nexthop_l2dsr(ctx, mctx);
     }
 
-    /* Encapsulation precedes next-hop resolution: nexthop.c's FIB lookup and
+    /*
+     * Encapsulation precedes next-hop resolution: nexthop.c's FIB lookup and
      * MAC-swap default both need the already-encapsulated frame.
      */
     switch(ENCAP_MODE(mctx->backend.flags)) {

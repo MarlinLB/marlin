@@ -16,7 +16,8 @@
 #define AF_INET6 10
 #endif
 
-/* ---- compile-time sizing ---------------------------------------------
+/*
+ * ---- compile-time sizing ---------------------------------------------
  * All maps are sized here rather than at load time.
  */
 #define MAX_EXT_HDRS                   8 /* IPv6 extension headers walked */
@@ -66,7 +67,8 @@
 #define VIP_HASH_5TUPLE_BIT            2
 #define VIP_QUIC_BIT                   3
 
-/* QUIC connection-ID length for short-header decode: 7-20 inclusive, 0 = unset.
+/*
+ * QUIC connection-ID length for short-header decode: 7-20 inclusive, 0 = unset.
  * RFC 8999 SS4.2: DCID length not on wire, must come from configuration.
  */
 #define VIP_QUIC_CID_LEN_SHIFT         8
