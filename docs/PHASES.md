@@ -251,10 +251,10 @@ datapath is feature-complete and further work is control-plane work.
   `backend.inner_mac` (`docs/design/19-control-plane.md`). Refreshing `max_frame` from netlink
   link events is Phase 3.
 
-**Decision required in this phase:** `nexthop.c:144-149` — `docs/design/16-fib-lookup.md` calls
+**Decision required in this phase:** `nexthop.c:80` — `docs/design/16-fib-lookup.md` calls
 `BPF_FIB_LOOKUP_DIRECT` optional but gives it no configuration surface, so policy routing rules
 currently apply. The same decision covers `fib.ipv4_src`/`tos`/`l4_protocol`
-(`nexthop.c:119-128`): they are left unseeded because the correct per-mode value is not one
+(`nexthop.c:75-78`): they are left unseeded because the correct per-mode value is not one
 `nexthop.c` has in hand (`cfg` is not among its readers, `04-calling-convention.md:48-51`), and
 configuration surface for either would resolve both.
 
@@ -414,15 +414,14 @@ section it affects, not in a document of its own.
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
-| `BPF_FIB_LOOKUP_DIRECT` has no configuration surface, and neither does `fib.ipv4_src`/`tos`/`l4_protocol`/`sport`/`dport`, left unseeded for the same reason | `nexthop.c:144-149` | 2b |
-| `mtu_result` has no reporting mechanism: `docs/design/23-mtu.md` requires it be counted alongside `frag_needed`, but `drop_stats` holds counts, not values | `docs/design/23-mtu.md:23-24` | 2b |
+| `BPF_FIB_LOOKUP_DIRECT` has no configuration surface, and neither does `fib.ipv4_src`/`tos`/`l4_protocol`/`sport`/`dport`, left unseeded for the same reason | `nexthop.c:75-80` | 2b |
 | Interim call site: `marlin_acl_check()` is called from `marlin.c` (`src/main.c`), not from `marlin_balance()` as `docs/design/11-pipeline.md` step 3 places it, because `balancer.c` does not exist yet | `docs/design/11-pipeline.md` step 3 | 2b |
 | Interim call site: `marlin_nexthop_l2dsr()`/`marlin_nexthop_encapsulate()` are called from `xdp_interim_nexthop()` in `src/main.c`, not from `marlin_balance()` as `docs/design/11-pipeline.md` step 9 places it, because `balancer.c` does not exist yet | `docs/design/11-pipeline.md` step 9 | 2b |
 | Interim call site: `marlin_ratelimit()` is called from `src/main.c` directly after the ACL block, not from `marlin_balance()` as `docs/design/11-pipeline.md` step 5 places it (after the VIP lookup), because `balancer.c` does not exist yet — host-bound traffic is metered rather than exempted at step 4 in the interim, acceptable only because `CFG_RL_ENABLE` defaults off | `docs/design/11-pipeline.md` step 5 | 2b |
 | `VIP_RATELIMIT` has no carrier: `marlin_ctx` holds no VIP flags, and the interim call site has no VIP lookup to read them from, so only the instance-wide `CFG_RL_ENABLE` gates enforcement until `balancer.c` holds `vip_meta.flags` at the call site | `marlin.h`, `docs/design/28-rate-limiting.md` "Off by default" | 2b |
 | Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly | `docs/design/11-pipeline.md` step 3 | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
-| `nexthop.c` maps ten kernel `bpf_fib_lookup()` return codes onto seven named `drop_stats` reasons. `BPF_FIB_LKUP_RET_NOT_FWDED` (the ordinary no-route outcome), `UNSUPP_LWT` and `NO_SRC_ADDR` all fall to the `default:` arm, `MARLIN_DROP_FIB_UNSPEC` — so "no route" is indistinguishable from a helper contract violation in `drop_stats` | `docs/design/16-fib-lookup.md:56-66`, `nexthop.c:86-111` | 2b |
+| `nexthop.c` maps ten kernel `bpf_fib_lookup()` return codes onto seven named `drop_stats` reasons. `BPF_FIB_LKUP_RET_NOT_FWDED` (the ordinary no-route outcome), `UNSUPP_LWT` and `NO_SRC_ADDR` all fall to the `default:` arm, `MARLIN_DROP_FIB_UNSPEC` — so "no route" is indistinguishable from a helper contract violation in `drop_stats` | `docs/design/16-fib-lookup.md:56-66`, `nexthop.c:82-111` | 2b |
 | Whether a connection ID naming a `DOWN` backend falls through to hash or drops | `docs/design/30-quic.md` | 2b |
 | Whether `ipip.c`'s, `gue.c`'s and `vxlan.c`'s `tot_len`/`pkt_len` arithmetic needs a `__u32` guard against `__u16` wraparound when `cfg.max_frame == 0` disables `frame_fits()` — unreachable from the datapath today (`pkt_len` derives from `data_end - data`), covered by `ipip_test.c`, `gue_test.c` and `vxlan_test.c` only at the boundary that does not wrap; one guard for all three once decided, the same reasoning that makes them one boundary rather than three (`docs/PHASES.md:34-39`) | `ipip.c:77,85`, `gue.c:85,105`, `vxlan.c:120,143` | 2b |
 | Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |

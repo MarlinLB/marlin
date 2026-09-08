@@ -117,5 +117,11 @@ and is exactly the signal the insert-cost measurement above needs.
 multiply the map by the VIP count and need a composite key, and the rate a source may send at is
 a property of the source — the argument `docs/design/17-reconfiguration.md` makes against a per-VIP down-set (`docs/design/25-rejected.md`).
 
+`VIP_RATELIMIT` gates the call, not the bucket: it decides whether a given packet's VIP invokes
+`marlin_ratelimit()` at all (`docs/design/11-pipeline.md` step 5), not which bucket a packet
+charges. A source addressing both a metered and an unmetered VIP spends tokens only on the
+metered VIP's packets, from the one bucket above — the unmetered VIP's packets to that same
+source never reach the token check and never spend one.
+
 An allowlisted source is never metered (`docs/design/27-source-filtering.md`), which is what keeps the management-prefix escape
 hatch intact when rate limiting is enabled.

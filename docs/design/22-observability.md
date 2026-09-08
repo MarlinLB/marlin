@@ -36,12 +36,13 @@ that produces an impossible length has a named reason instead of falling to a `d
 Reasons that are passes or fallbacks rather than drops are marked as such, so the sum of
 `drop_stats` is not mistaken for total drops.
 
-**Four counters are reserved for `VIP_QUIC` and land with `balancer.c`, not before**
+**Four counters are reserved for `VIP_QUIC`; `balancer.c` is their producer, not before**
 (`docs/design/30-quic.md`): `quic_cid_routed` (steered by connection ID), and
 `quic_cid_check_failed`, `quic_cid_unknown_backend`, `quic_cid_backend_down` — three distinct
 ways a steered packet instead falls through to the hash path. None of the four is a drop, so
-none changes the count above, and none exists in `enum marlin_ret` yet; named here so they are
-not invented twice.
+none changes the count above. All four are reserved as `MARLIN_COUNT_*` enumerators
+(`marlin.h`), kept out of the enumerated reason list above for the same reason as the other
+`MARLIN_COUNT_*` values, and are otherwise inert until `balancer.c` writes them.
 
 ## Counters
 
@@ -63,6 +64,14 @@ not invented twice.
 | `frag_unsupported` | instance | a fragment arrived for a `VIP_HASH_5TUPLE` VIP; non-zero means the flag is set on a VIP whose traffic fragments (`docs/design/12-selection.md`) |
 | `rl_cas_exhausted` | instance | `RL_CAS_RETRIES` too low under contention (`docs/design/28-rate-limiting.md`) |
 | `rl_insert_failed` | instance | the `ratelimit` map is rejecting inserts — the insert-cost signal `docs/design/28-rate-limiting.md`'s Phase 4 measurement needs |
+
+`bytes` in both maps counts the ingress frame length, not the emitted one, so a VIP's four
+forwarding modes stay comparable against each other and the figure matches what the client
+sent; per-mode encapsulation overhead is a known constant and is not this map's job to carry.
+Both maps are written at selection — after the validity and state checks
+(`docs/design/11-pipeline.md` step 7), before dispatch — so `backend_stats` reflects the
+backend hashing chose even when a later stage (an MTU or FIB drop) discards the packet, which
+is what keeps it usable as the hash-skew signal below.
 
 Backend distribution is derivable from `backend_stats` alone, which makes hash skew behind
 CGNAT observable without additional instrumentation. It is also the measurement that decides

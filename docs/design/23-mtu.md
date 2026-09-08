@@ -20,10 +20,13 @@ datagrams with DPLPMTUD sit below 1500 even with VXLAN's 50 bytes of overhead, n
 case among the three — 1250 is still comfortably under 1500. Large non-QUIC UDP
 is covered only by jumbo frames.
 
-`RET_FRAG_NEEDED` and `mtu_result` from `bpf_fib_lookup()` are counted rather than merely
-dropped, which is what makes the misconfiguration diagnosable (`docs/design/22-observability.md`).
+`RET_FRAG_NEEDED` is counted rather than merely dropped, which is what makes the
+misconfiguration diagnosable (`docs/design/22-observability.md`). `mtu_result` — the MTU value
+`bpf_fib_lookup()` writes back over the same field on this return code — is not recorded:
+`drop_stats` holds counts, not values, and the MTU is already visible in the route that
+produced it.
 
-**They do not cover the default path.** The zero-lookup next-hop default — MAC swap under IPIP
+**`RET_FRAG_NEEDED` does not cover the default path.** The zero-lookup next-hop default — MAC swap under IPIP
 and GUE, `vxlan.c`'s own outer header under VXLAN (`docs/design/15-nexthop-l2dsr.md`) —
 performs no FIB lookup, so `RET_FRAG_NEEDED` never fires there. The datapath
 therefore checks the emitted frame against `config.max_frame` before transmitting, and drops

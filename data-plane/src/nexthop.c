@@ -54,7 +54,7 @@ static __always_inline int marlin_fib_onlink(const struct bpf_fib_lookup *fib, _
 static __always_inline void marlin_nexthop_check_egress(const struct backend *be, __u32 ifindex)
 {
     if(be->egress_ifindex != 0 && be->egress_ifindex != ifindex) {
-        marlin_count(MARLIN_COUNT_EGRESS_MISMATCH);
+        marlin_stats_reason(MARLIN_COUNT_EGRESS_MISMATCH);
     }
 }
 
@@ -87,7 +87,7 @@ static __always_inline int marlin_nexthop_fib(struct xdp_md *ctx, struct marlin_
            marlin_backend_mac_set(&mctx->backend) != 0) {
             marlin_nexthop_check_egress(&mctx->backend, fib.ifindex);
             marlin_nexthop_store_mac(eth, &mctx->backend);
-            marlin_count(MARLIN_COUNT_NEIGH_FALLBACK);
+            marlin_stats_reason(MARLIN_COUNT_NEIGH_FALLBACK);
             return MARLIN_OK_TX;
         }
 
@@ -101,6 +101,10 @@ static __always_inline int marlin_nexthop_fib(struct xdp_md *ctx, struct marlin_
     case BPF_FIB_LKUP_RET_PROHIBIT:
         return MARLIN_DROP_FIB_PROHIBIT;
     case BPF_FIB_LKUP_RET_FRAG_NEEDED:
+        /* fib.mtu_result (union'd with tot_len above) is deliberately not
+         * recorded: drop_stats holds counts, not values, and the MTU is
+         * already visible in the route that produced it (docs/design/23-mtu.md).
+         */
         return MARLIN_DROP_FRAG_NEEDED;
     default:
         return MARLIN_DROP_FIB_UNSPEC;
@@ -148,7 +152,7 @@ int marlin_nexthop_l2dsr(struct xdp_md *ctx, struct marlin_ctx *mctx)
         }
 
         if(mctx->backend.addr != 0) {
-            marlin_count(MARLIN_COUNT_MAC_FALLBACK);
+            marlin_stats_reason(MARLIN_COUNT_MAC_FALLBACK);
         }
     }
 

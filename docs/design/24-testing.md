@@ -196,7 +196,7 @@ condition requires. Matching `acl.c`'s rule, a native case duplicating one of th
 names its counterpart; a native case with none — the NULL abort, the gates admitting with zero
 lookups, the key's byte-exact construction with `pad` zeroed, an insert failure still admitting —
 asserts what the packet tier cannot observe, the same reasoning as the ACL cases native-tier-only
-above. `ratelimit.c`'s own two `marlin_count()` calls (`rl_cas_exhausted`, `rl_insert_failed`)
+above. `ratelimit.c`'s own two `marlin_stats_reason()` calls (`rl_cas_exhausted`, `rl_insert_failed`)
 share `drop_stats`'s per-CPU disqualification below and stay unasserted at this tier regardless;
 only `marlin_ratelimit()`'s return value and the `ratelimit` map's own contents are.
 

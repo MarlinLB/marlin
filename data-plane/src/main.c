@@ -116,7 +116,7 @@ int xdp_main(struct xdp_md *ctx)
     }
 
     rc = marlin_parse(ctx, &mctx);
-    marlin_count(rc);
+    marlin_stats_reason(rc);
 
     if(rc != MARLIN_OK) {
         bpf_printk("Packet parsing failed: rc=%d\n", rc);
@@ -127,7 +127,7 @@ int xdp_main(struct xdp_md *ctx)
 
     if(rc == MARLIN_ACL_ABORT) {
         rc = MARLIN_ABORT_NULLREF;
-        marlin_count(rc);
+        marlin_stats_reason(rc);
         return marlin_action(rc);
     }
 
@@ -135,7 +135,7 @@ int xdp_main(struct xdp_md *ctx)
 
     if(mctx.acl_verdict == MARLIN_ACL_BLOCK) {
         rc = MARLIN_DROP_ACL_BLOCKED;
-        marlin_count(rc);
+        marlin_stats_reason(rc);
         return marlin_action(rc);
     }
 
@@ -150,7 +150,7 @@ int xdp_main(struct xdp_md *ctx)
     rc = marlin_ratelimit(&mctx);
 
     if(rc != MARLIN_OK) {
-        marlin_count(rc);
+        marlin_stats_reason(rc);
         return marlin_action(rc);
     }
 
@@ -163,7 +163,7 @@ int xdp_main(struct xdp_md *ctx)
     rc = xdp_interim_nexthop(ctx, &mctx);
 
     if(rc != MARLIN_OK) {
-        marlin_count(rc);
+        marlin_stats_reason(rc);
         return marlin_action(rc);
     }
 

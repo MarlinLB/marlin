@@ -895,6 +895,22 @@ MARLIN_TEST(pending_phase1_criterion2_backend_down_is_drop)
     MARLIN_SKIP("docs/PHASES.md:144 -- needs the VIP lookup xdp_main does not have yet");
 }
 
+MARLIN_TEST(pending_phase2b_vip_stats_written_at_selection)
+{
+    /* docs/design/22-observability.md -- packets+bytes per VIP, keyed by
+     * vip_num, which only balancer.c's VIP lookup derives.
+     */
+    MARLIN_SKIP("docs/design/22-observability.md -- needs balancer.c's VIP lookup xdp_main does not have yet");
+}
+
+MARLIN_TEST(pending_phase2b_backend_stats_written_at_selection)
+{
+    /* docs/design/22-observability.md -- packets+bytes per backend, keyed by
+     * backend_id, bumped at selection so a later drop still counts here.
+     */
+    MARLIN_SKIP("docs/design/22-observability.md -- needs balancer.c's backend selection xdp_main does not have yet");
+}
+
 #define NH_INGRESS_IFINDEX 1U
 
 #define NH_BACKEND_ADDR 0x0c0c0c0cU /* 12.12.12.12 */

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
  * Map access for the bpf_prog_test_run tier: fd lookup by name, config
- * seeding, and drop_stats reads. Uses the real ABI structs from
+ * seeding, and drop_stats/vip_stats/backend_stats reads. Uses the real ABI structs from
  * include/marlin/abi/types.h -- never a local re-declaration, so a
  * types.h layout change fails a test instead of corrupting a map write
  * silently.
@@ -96,6 +96,79 @@ static __u64 xdp_drop_stats_total(int rc)
 
     for(i = 0; i < ncpus; i++) {
         total += percpu[i];
+    }
+
+    free(percpu);
+    return total;
+}
+
+/*
+ * vip_stats/backend_stats are BPF_MAP_TYPE_PERCPU_ARRAY of struct stats --
+ * same per-CPU summing as xdp_drop_stats_total above, but the value is
+ * packets+bytes rather than one __u64, so the sum is taken per field.
+ * Unreferenced until balancer.c writes these maps (docs/PHASES.md); the
+ * cases that will call them are MARLIN_SKIP placeholders below.
+ */
+static __attribute__((unused)) struct stats xdp_vip_stats_total(__u32 vip_num)
+{
+    int fd = xdp_map_fd("vip_stats");
+    int ncpus = libbpf_num_possible_cpus();
+    struct stats *percpu;
+    struct stats total = {0};
+    int i;
+
+    if(ncpus <= 0) {
+        fprintf(stderr, "packet-tests: libbpf_num_possible_cpus failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    percpu = calloc((size_t)ncpus, sizeof(*percpu));
+    if(percpu == NULL) {
+        fprintf(stderr, "packet-tests: out of memory reading vip_stats\n");
+        exit(1);
+    }
+
+    if(bpf_map_lookup_elem(fd, &vip_num, percpu) != 0) {
+        fprintf(stderr, "packet-tests: vip_stats lookup for index %u failed: %s\n", vip_num, strerror(errno));
+        exit(1);
+    }
+
+    for(i = 0; i < ncpus; i++) {
+        total.packets += percpu[i].packets;
+        total.bytes += percpu[i].bytes;
+    }
+
+    free(percpu);
+    return total;
+}
+
+static __attribute__((unused)) struct stats xdp_backend_stats_total(__u32 backend_id)
+{
+    int fd = xdp_map_fd("backend_stats");
+    int ncpus = libbpf_num_possible_cpus();
+    struct stats *percpu;
+    struct stats total = {0};
+    int i;
+
+    if(ncpus <= 0) {
+        fprintf(stderr, "packet-tests: libbpf_num_possible_cpus failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    percpu = calloc((size_t)ncpus, sizeof(*percpu));
+    if(percpu == NULL) {
+        fprintf(stderr, "packet-tests: out of memory reading backend_stats\n");
+        exit(1);
+    }
+
+    if(bpf_map_lookup_elem(fd, &backend_id, percpu) != 0) {
+        fprintf(stderr, "packet-tests: backend_stats lookup for index %u failed: %s\n", backend_id, strerror(errno));
+        exit(1);
+    }
+
+    for(i = 0; i < ncpus; i++) {
+        total.packets += percpu[i].packets;
+        total.bytes += percpu[i].bytes;
     }
 
     free(percpu);

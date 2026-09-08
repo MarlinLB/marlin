@@ -6,8 +6,9 @@ Also used where backends are reached via a different interface than ingress. The
 always `backend.addr`, in every mode — the outer tunnel destination for IPIP, GUE and VXLAN, the
 backend's segment address for L2 DSR — so the lookup is `AF_INET` throughout. Set `ifindex` to
 the ingress interface and call with flags `0`, or optionally `BPF_FIB_LOOKUP_DIRECT` to skip
-policy rules. On success the helper returns egress `ifindex`, `smac`, `dmac` and `mtu_result`.
-Then `XDP_TX` if egress equals ingress, otherwise `XDP_REDIRECT` via `tx_ports`.
+policy rules. On success the helper returns egress `ifindex`, `smac` and `dmac`; `mtu_result`
+is the same field as the input `tot_len` and is populated only on `RET_FRAG_NEEDED`, below, not
+on success. Then `XDP_TX` if egress equals ingress, otherwise `XDP_REDIRECT` via `tx_ports`.
 
 **`RET_SUCCESS` includes gatewayed routes, and L2 DSR must reject them.** `dmac` is the next
 hop's MAC either way — the backend's where the route is on-link, a router's where it is not.

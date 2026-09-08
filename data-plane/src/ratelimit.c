@@ -145,7 +145,7 @@ int marlin_ratelimit(const struct marlin_ctx *mctx)
          * docs/design/28-rate-limiting.md wants.
          */
         if(bpf_map_update_elem(&ratelimit, &key, &fresh, BPF_ANY) != 0) {
-            marlin_count(MARLIN_COUNT_RL_INSERT_FAILED);
+            marlin_stats_reason(MARLIN_COUNT_RL_INSERT_FAILED);
         }
 
         return MARLIN_OK;
@@ -182,6 +182,6 @@ int marlin_ratelimit(const struct marlin_ctx *mctx)
         old = prev;
     }
 
-    marlin_count(MARLIN_COUNT_RL_CAS_EXHAUSTED);
+    marlin_stats_reason(MARLIN_COUNT_RL_CAS_EXHAUSTED);
     return MARLIN_OK;
 }
