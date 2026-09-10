@@ -137,7 +137,7 @@ packet: for an ICMP error it is reconstructed from the embedded header.
 
 | Bit | Meaning |
 |---|---|
-| 0 | reserved, must be zero |
+| 0 | `VIP_ACL` — enforce the ACL verdict on this VIP (docs/design/27-source-filtering.md) |
 | 1 | `VIP_RATELIMIT` — meter sources addressing this VIP (docs/design/28-rate-limiting.md) |
 | 2 | `VIP_HASH_5TUPLE` — hash the whole tuple for row selection, not the source address alone; drops every fragment on this VIP (docs/design/12-selection.md) |
 | 3 | `VIP_QUIC` — steer short-header UDP packets by connection ID instead of the hash path (docs/design/30-quic.md) |

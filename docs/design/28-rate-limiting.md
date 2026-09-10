@@ -125,3 +125,9 @@ source never reach the token check and never spend one.
 
 An allowlisted source is never metered (`docs/design/27-source-filtering.md`), which is what keeps the management-prefix escape
 hatch intact when rate limiting is enabled.
+
+**The `acl_verdict` test in "Update" above carries no `VIP_ACL` test beside it**, and needs none.
+`docs/design/20-configuration-validation.md` rejects `VIP_RATELIMIT` on a VIP whose `VIP_ACL` is
+clear, so any packet reaching `marlin_ratelimit()` came from a VIP whose verdict is enforced. The
+absent test is a consequence of that rejection, not an omission; adding a redundant one would
+obscure which of the two mechanisms is load-bearing.

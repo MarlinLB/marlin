@@ -1,7 +1,7 @@
 # Marlin — Implementation Phases
 
 **Status:** established 2026-08-20
-**Reconciled against:** `docs/design/README.md` revision 6, `DEPLOYMENT.md` first revision
+**Reconciled against:** `docs/design/README.md` revision 10, `DEPLOYMENT.md` first revision
 
 Five boundaries. Each states what must be **true** to cross it, not what someone intends to
 work on. A phase closes when its exit criteria hold in CI, not when its code is written.
@@ -42,7 +42,9 @@ the shortest path to a forwarding packet.
 
 `docs/design/20-configuration-validation.md` rejects `CFG_RL_ENABLE` set while `CFG_ACL_ENABLE` is clear: without the ACL
 no packet carries an allow verdict, so the rate limiter would meter management prefixes with
-no escape hatch. **The ACL is therefore a prerequisite of Phase 4, not a peer of it.** Its
+no escape hatch. It rejects `VIP_RATELIMIT` on a `VIP_ACL`-clear VIP for the same reason, so the
+dependency is per-VIP as well as instance-wide. **The ACL is therefore a prerequisite of Phase 4,
+not a peer of it.** Its
 control-plane work — reconciling four `LPM_TRIE` maps and maintaining `config.acl_lists` — is
 the same kind of work as backend reconciliation, and its datapath cost is two trie lookups on
 a pure function of `packet_tuple.src`. Neither belongs with the rate limiter.
@@ -54,10 +56,9 @@ a pure function of `packet_tuple.src`. Neither belongs with the rate limiter.
 - **Packet tests are built first, not last** (`docs/design/24-testing.md`). They are affordable because Marlin holds
   no per-flow state, so output is a deterministic function of the packet and map contents.
   Anything that breaks that property is a design change, not an implementation detail.
-- **Both feature flags stay off until their phase.** `acl.c` and `ratelimit.c` already exist and
-  are already called — both from `marlin.c`, interim sites pending `balancer.c` (open decisions
-  below); the phase gate is `CFG_ACL_ENABLE` (Phase 3) and `CFG_RL_ENABLE`
-  (Phase 4) plus the control-plane side, not the datapath code.
+- **Both feature flags stay off until their phase.** The phase gate is `CFG_ACL_ENABLE`
+  (Phase 3) and `CFG_RL_ENABLE` (Phase 4) plus the control-plane side, not the datapath code:
+  `acl.c` and `ratelimit.c` are written and called well before either flag may be set.
 - **The verifier is a build product.** CI fails on a load failure and records reported
   complexity as a regression signal, because it degrades gradually as code is added
   (`docs/design/24-testing.md`).
@@ -71,14 +72,13 @@ a pure function of `packet_tuple.src`. Neither belongs with the rate limiter.
 **Goal:** one packet arrives on a VIP and leaves for a backend, and a C# process put the
 configuration there. Nothing beyond that.
 
-### Entry state
+### Scope
 
-Sources exist ahead of any build: `marlin.c`, `balancer.c`, `nexthop.c`, and every header
-`docs/design/03-translation-units.md` names except `csum.h` and `entropy.h`. Not yet written:
-`parser.c`, `ipip.c`, `gue.c`, `vxlan.c`, `csum.h` and `entropy.h`;
-`marlin-load.sh` and its systemd unit; and CI, whose obligations `docs/design/24-testing.md` states
-without naming a system. There is no build system, no test harness, no control-plane tree and no
-version control. Phase 1 is largely about making what exists compile, load and be driven.
+Phase 1 is about making the datapath compile, load and be driven, not about completing it. It
+owns the build system, the test harness, the loader and its systemd unit, CI — whose
+obligations `docs/design/24-testing.md` states without naming a system — the control-plane tree
+and version control. The forwarding work it needs is the vertical slice below and nothing
+further.
 
 ### Build
 
@@ -148,10 +148,10 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 1. `marlin.bpf.o` builds with BTF, loads, and attaches in `xdpdrv` mode in a netns.
 2. `bpf_prog_test_run` asserts exact output bytes for: a VIP hit rewriting the destination MAC
    and returning `XDP_TX`; a miss returning `XDP_PASS` counting `vip_miss`; `backend_id == 0`
-   dropping `no_backend`; `state != MARLIN_UP` dropping `backend_down`. None of these are
-   reachable yet — `xdp_main` has no VIP lookup or forwarding path (`src/main.c`) — and are
-   registered in `data-plane/tests/packet/xdp_test.c` via `MARLIN_SKIP`, each naming this line,
-   so `make packet-tests` reports them as `skip`, not a pass, until Phase 2 lands the code.
+   dropping `no_backend`; `state != MARLIN_UP` dropping `backend_down`. Each is registered in
+   `data-plane/tests/packet/xdp_test.c` and, for as long as the path it asserts is unreachable,
+   carries a `MARLIN_SKIP` naming this line — so `make packet-tests` reports it as `skip` rather
+   than a pass.
 3. The C# service configures that VIP and backend from scratch on a running datapath, and the
    forwarding change is observed in `vip_stats` and `backend_stats` — not in service logs.
 4. Restarting the C# service disturbs neither the attachment nor forwarding
@@ -181,13 +181,17 @@ revisable once a control plane has recorded a counter or read a struct in the fi
 - `VIP_HASH_5TUPLE` and `MARLIN_DROP_FRAG_UNSUPPORTED` land here or not at all
   (`docs/design/12-selection.md`). The flag is a `vip_meta.flags` bit and the reason is a
   `drop_stats` index, so both are exactly what this phase freezes; adding either afterwards is a
-  post-freeze `types.h` change under exit criterion 4. The datapath half is already written —
-  `balancer.c`'s `marlin_balance_frag()` and `marlin_balance_hash()` — and the flag stays
-  unusable until Phase 2b supplies its producer, below.
+  post-freeze `types.h` change under exit criterion 4. Its datapath consumers are `balancer.c`'s
+  frag and hash stages; the flag stays unusable until Phase 2b supplies its producer, below.
 - `VIP_QUIC` and the CID-length field land here or not at all (`docs/design/30-quic.md`), on the
-  same freeze logic as `VIP_HASH_5TUPLE` above. Unlike that flag, `parser.c`'s half —
-  `marlin_parse_quic()`, classifying short- from long-header packets — is already written; the
-  steering step that consumes the flag is `balancer.c`'s, in Phase 2b.
+  same freeze logic as `VIP_HASH_5TUPLE` above. `parser.c` classifies short- from long-header
+  packets; the steering step that consumes the flag is `balancer.c`'s, in Phase 2b.
+- `VIP_ACL` lands here or not at all, on the same freeze logic again
+  (`docs/design/27-source-filtering.md`). It takes `vip_meta.flags` bit 0, which both sides of the
+  ABI otherwise fold into `VIP_FLAGS_RESERVED` — `data-plane/include/marlin/abi/defines.h` and
+  `control-plane/Marlin.Abi/Defines/VipFlags.cs` — so the two reserved masks and the
+  `_Static_assert` guarding them are one commit spanning both languages, exactly as exit criterion
+  3 requires. Its only consumer is Phase 2b's enforcement gate.
 - Byte offsets stated in comments on both the C and C# sides for every mirrored struct, so
   parity is reviewable by reading — which `docs/design/06-map-abi.md` records as the only mechanism there is.
 - `drop_stats` enumerators appended from here, never reordered (`marlin.h:142`).
@@ -220,6 +224,14 @@ datapath is feature-complete and further work is control-plane work.
   destination port first, then port 0 on a miss — both with a fully zeroed key
   (`docs/design/11-pipeline.md`). `parser.c` has no access to `vip_map`; this is step 4, not
   parsing.
+- **`balancer.c`'s ACL enforcement gate**, which is the other half of the same step: the block
+  verdict enforced instance-wide on the `vip_map` miss, and gated on `VIP_ACL` on the hit
+  (`docs/design/27-source-filtering.md`). It lands here because it is datapath code reading
+  `vip_meta.flags`, and it is inert until Phase 3 makes `CFG_ACL_ENABLE` usable. Moving
+  Retiring the duplicate site in `src/main.c` is what closes the enforcement-placement decision
+  below. The assertions that cover it are Phase 3's exit criterion 4 and not this phase's
+  criterion 1, because two of the three need a VIP configured with the bit and an enabled ACL,
+  which Phase 3 is where the control plane can supply.
 - **`parser.c` supplies what `VIP_HASH_5TUPLE` consumes.** The flag is inert without two
   additions, and both are silent if omitted rather than failing visibly:
   `MARLIN_CTX_F_FRAG_FIRST` set on the first fragment of a fragmented datagram — without it
@@ -234,8 +246,9 @@ datapath is feature-complete and further work is control-plane work.
   decodes a `backend_id` from its connection ID and indexes `backends[]` directly, bypassing
   `fwd_table`; any decode failure — check mismatch, an out-of-range or unpopulated
   `backend_id`, or a backend not `MARLIN_UP` — falls through to the existing hash path, uncounted
-  as a drop (`docs/design/30-quic.md`). The four `MARLIN_COUNT_*` counters this needs are
-  reserved but not yet in `enum marlin_ret` (`docs/design/22-observability.md`).
+  as a drop (`docs/design/30-quic.md`). It needs two `MARLIN_COUNT_*` counters,
+  `quic_cid_routed` and `quic_cid_check_failed`; the other fall-through paths are deliberately
+  uncounted (`docs/design/22-observability.md`).
 - `ipip.c`, `gue.c`, `vxlan.c`, `csum.h`, `entropy.h`: IPIP, GUE and VXLAN,
   IPv6 inner over IPv4 outer, VXLAN's VNI, its inner Ethernet header rewrite and its outer
   Ethernet header, the entropy source port shared by GUE and VXLAN, and the zero UDP checksum
@@ -272,23 +285,21 @@ configuration surface for either would resolve both.
    `ipip`/`sit` devices, and a real `vxlan` device accept what Marlin emits, including the zero
    UDP checksum (`docs/design/24-testing.md`).
 3. An extension-header chain at `MAX_EXT_HDRS` and one beyond it are distinguishable —
-   `ext_hdr_limit`, not `parse_error`. The harness and this exact assertion already exist
+   `ext_hdr_limit`, not `parse_error`
    (`data-plane/tests/packet/xdp_test.c`,
-   `ext_hdr_limit_nine_headers_is_drop_and_distinct_from_parse_error`) — parsing does not depend
-   on Phase 2b's forwarding code, so what remains for this criterion is that forwarding not
-   regress it.
+   `ext_hdr_limit_nine_headers_is_drop_and_distinct_from_parse_error`). Parsing does not depend
+   on Phase 2b's forwarding code, so this criterion is that forwarding not regress it.
 4. A redirect to an ifindex absent from `tx_ports` is a countable `XDP_ABORTED`, not a silent
    loss (`docs/design/09-sizing.md`).
 5. Reported verifier complexity is inside budget with all four modes and both families
    linked. If it is not, `docs/design/05-budgets.md`'s `PROG_ARRAY` fallback is taken **with its
    three consequences accepted explicitly**: `marlin_ctx` moves to a per-CPU scratch map, the
-   accumulated stack cap drops to 256 bytes, and tail calls do not return. **Measured**, not via
-   `balancer.c` (which does not exist) but via `main.c`'s interim call site, which already
-   reaches both `marlin_nexthop_*` entry points, all three encapsulation units, and
-   `marlin_ratelimit()`: `make verifier-stats` reports 15,733 processed instructions (limit
-   1,000,000) and a 152-byte worst combined stack depth (limit 512) — comfortably inside both
-   budgets (`docs/design/05-budgets.md`). Re-measure once `balancer.c` lands, since its own frame
-   is not part of this reachable set yet.
+   accumulated stack cap drops to 256 bytes, and tail calls do not return. **Measured**, with
+   `make verifier-stats`, over a reachable set that includes `marlin_balancer_process()`, both
+   `marlin_nexthop_*` entry points and all three encapsulation units — against limits of
+   1,000,000 processed instructions and a 512-byte worst combined stack depth
+   (`docs/design/05-budgets.md`). The measurement is a build product, so this criterion is the
+   run, not a figure recorded here.
 
 ---
 
@@ -316,8 +327,8 @@ rate-limiter conversion.
   determination produced an interface (`docs/design/19-control-plane.md`).
 - **`config.max_frame`** refreshed from the attach interface's MTU on netlink link events,
   replacing the static value Phase 2b set.
-- **ACL**: four tries reconciled, `config.acl_lists` maintained, `CFG_ACL_ENABLE` usable
-  (`docs/design/27-source-filtering.md`).
+- **ACL**: four tries reconciled, `config.acl_lists` maintained, `CFG_ACL_ENABLE` and the
+  per-VIP `VIP_ACL` both usable (`docs/design/27-source-filtering.md`).
 - **Configuration validation** — every rule in `docs/design/20-configuration-validation.md`, rejected at configuration time.
 - **Configuration and status APIs**, including the per-VIP non-reversible digest of
   `hash_key` and `table_seed` that makes active/active divergence detectable
@@ -338,10 +349,12 @@ rate-limiter conversion.
    tests (`docs/design/24-testing.md`).
 4. `docs/design/24-testing.md`'s ACL coverage passes at both tiers — `make tests`'s
    `data-plane/tests/acl_test.c` and `make packet-tests`'s `xdp_test.c` — **including the
-   placement assertion**, packet-tier-only since it depends on step ordering: a blocked source
-   addressed to a destination that is not a VIP drops with `acl_blocked`, not `vip_miss`. That
-   assertion is the whole of `docs/design/11-pipeline.md`'s host-firewall property and it fails
-   silently if step 3 is ever moved after step 4.
+   placement assertions**, packet-tier-only since they depend on step ordering: a blocked source
+   addressed to a destination that is not a VIP drops with `acl_blocked`, not `vip_miss`; the same
+   source addressed to a `VIP_ACL` VIP drops `acl_blocked`; and addressed to a VIP with the bit
+   clear, forwards. The first is the whole of `docs/design/11-pipeline.md`'s host-firewall property
+   and fails silently if step 4's host-bound arm stops enforcing; the third is what tells a
+   per-VIP exemption apart from an ACL that has stopped working.
 5. `sizeof` asserted on both ACL key structs, 8 and 20 — a layout change alters what the trie
    compares (`docs/design/24-testing.md`), at both tiers.
 6. A control-plane restart reconciles a partially applied write to the same end state, twice
@@ -359,8 +372,8 @@ rate-limiter conversion.
 
 **Goal:** the rate limiter is safe to enable on a link carrying production traffic.
 
-The datapath token bucket already exists in `ratelimit.c`, called from an interim site in
-`src/main.c` pending `balancer.c` (open decision below), and is covered at both the native
+The datapath token bucket is `ratelimit.c`'s, gated at its `balancer.c` call site by
+`VIP_RATELIMIT` and instance-wide by `CFG_RL_ENABLE`, and covered at both the native
 (`data-plane/tests/ratelimit_test.c`) and packet (`data-plane/tests/packet/xdp_test.c`'s `rl_*`
 cases) tiers. What this phase adds is the measurement that decides whether it may be turned on,
 the control-plane conversion, and the concurrency evidence.
@@ -415,14 +428,13 @@ section it affects, not in a document of its own.
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
 | `BPF_FIB_LOOKUP_DIRECT` has no configuration surface, and neither does `fib.ipv4_src`/`tos`/`l4_protocol`/`sport`/`dport`, left unseeded for the same reason | `nexthop.c:75-80` | 2b |
-| Interim call site: `marlin_acl_check()` is called from `marlin.c` (`src/main.c`), not from `marlin_balance()` as `docs/design/11-pipeline.md` step 3 places it, because `balancer.c` does not exist yet | `docs/design/11-pipeline.md` step 3 | 2b |
-| Interim call site: `marlin_nexthop_l2dsr()`/`marlin_nexthop_encapsulate()` are called from `xdp_interim_nexthop()` in `src/main.c`, not from `marlin_balance()` as `docs/design/11-pipeline.md` step 9 places it, because `balancer.c` does not exist yet | `docs/design/11-pipeline.md` step 9 | 2b |
-| Interim call site: `marlin_ratelimit()` is called from `src/main.c` directly after the ACL block, not from `marlin_balance()` as `docs/design/11-pipeline.md` step 5 places it (after the VIP lookup), because `balancer.c` does not exist yet — host-bound traffic is metered rather than exempted at step 4 in the interim, acceptable only because `CFG_RL_ENABLE` defaults off | `docs/design/11-pipeline.md` step 5 | 2b |
-| `VIP_RATELIMIT` has no carrier: `marlin_ctx` holds no VIP flags, and the interim call site has no VIP lookup to read them from, so only the instance-wide `CFG_RL_ENABLE` gates enforcement until `balancer.c` holds `vip_meta.flags` at the call site | `marlin.h`, `docs/design/28-rate-limiting.md` "Off by default" | 2b |
+| Duplicate call site: `src/main.c` calls `marlin_acl_check()` as well as `balancer.c`, so the rule set is evaluated twice per packet against the two trie lookups `docs/design/11-pipeline.md` budgets | `src/main.c`, `docs/design/11-pipeline.md` step 3 | 2b |
+| Duplicate call site: `src/main.c` enforces the block verdict ahead of the VIP lookup, so a block drops instance-wide for every destination rather than only where `VIP_ACL` is set — over-enforcement that `CFG_ACL_ENABLE` defaulting off is what keeps safe. `balancer.c`'s gate is the one `docs/design/27-source-filtering.md` specifies | `src/main.c`, `docs/design/27-source-filtering.md` "Evaluation and enforcement" | 2b |
+| Duplicate call site: `src/main.c` calls `marlin_ratelimit()` ahead of the VIP lookup and discards its verdict, so a metered packet spends a token there as well as at `balancer.c`'s step-5 site and a refusal on that path neither drops nor counts. Acceptable only because `CFG_RL_ENABLE` defaults off | `src/main.c`, `docs/design/11-pipeline.md` step 5 | 2b |
+| Duplicate call site: `xdp_interim_nexthop()` in `src/main.c` reaches `marlin_nexthop_l2dsr()`/`marlin_nexthop_encapsulate()` on a path `balancer.c` already owns at `docs/design/11-pipeline.md` step 9 | `src/main.c`, `docs/design/11-pipeline.md` step 9 | 2b |
 | Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly | `docs/design/11-pipeline.md` step 3 | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
 | `nexthop.c` maps ten kernel `bpf_fib_lookup()` return codes onto seven named `drop_stats` reasons. `BPF_FIB_LKUP_RET_NOT_FWDED` (the ordinary no-route outcome), `UNSUPP_LWT` and `NO_SRC_ADDR` all fall to the `default:` arm, `MARLIN_DROP_FIB_UNSPEC` — so "no route" is indistinguishable from a helper contract violation in `drop_stats` | `docs/design/16-fib-lookup.md:56-66`, `nexthop.c:82-111` | 2b |
-| Whether a connection ID naming a `DOWN` backend falls through to hash or drops | `docs/design/30-quic.md` | 2b |
 | Whether `ipip.c`'s, `gue.c`'s and `vxlan.c`'s `tot_len`/`pkt_len` arithmetic needs a `__u32` guard against `__u16` wraparound when `cfg.max_frame == 0` disables `frame_fits()` — unreachable from the datapath today (`pkt_len` derives from `data_end - data`), covered by `ipip_test.c`, `gue_test.c` and `vxlan_test.c` only at the boundary that does not wrap; one guard for all three once decided, the same reasoning that makes them one boundary rather than three (`docs/PHASES.md:34-39`) | `ipip.c:77,85`, `gue.c:85,105`, `vxlan.c:120,143` | 2b |
 | Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |

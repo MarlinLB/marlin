@@ -25,10 +25,16 @@ clients, there is no reverse path and no classifier.
    step 6 to steer on. A long header is never flagged: RFC 9000 §9 forbids migrating before
    the handshake completes, so every long-header packet is safe on the hash path
    (`docs/design/30-quic.md`).
-3. **ACL** — `marlin_acl_check()`. An allow match admits and suppresses step 5; a block match drops
-   with reason `acl_blocked`. `docs/design/27-source-filtering.md`.
-4. **VIP lookup** — `vip_map` → `vip_num`, `flags`, `hash_key`. Miss → `XDP_PASS`.
-5. **Rate limit** — `marlin_ratelimit()`, if `VIP_RATELIMIT` is set and step 3 did not admit
+3. **ACL evaluate** — `marlin_acl_check()`. Produces allow, block or no-match on
+   `marlin_ctx.acl_verdict`. Nothing is dropped here. `docs/design/27-source-filtering.md`.
+4. **VIP lookup, then ACL enforcement** — `vip_map` → `vip_num`, `flags`, `hash_key`.
+   - Miss: a block verdict drops `acl_blocked`; otherwise `XDP_PASS`, counted `vip_miss`.
+     Enforcement is instance-scoped here, there being no VIP to read `VIP_ACL` from.
+   - Hit with `VIP_ACL` set: a block verdict drops `acl_blocked`; an allow verdict suppresses
+     step 5.
+   - Hit with `VIP_ACL` clear: the verdict is discarded — neither the block nor the allow
+     applies.
+5. **Rate limit** — `marlin_ratelimit()`, if `VIP_RATELIMIT` is set and step 4 did not admit
    explicitly. Over budget → drop `ratelimited`. `docs/design/28-rate-limiting.md`.
 6. **Resolve** — on a `VIP_QUIC` VIP, a `MARLIN_CTX_F_QUIC` packet decodes a `backend_id`
    from the connection ID and indexes `backends` directly, bypassing `fwd_table`
@@ -52,30 +58,43 @@ step 8 between the three encapsulation units and L2 DSR's empty case, step 9 bet
 whether the MAC-swap default applies, which it does for IPIP and GUE and does not for VXLAN
 (`docs/design/15-nexthop-l2dsr.md`).
 
-**Why the ACL precedes the VIP lookup.** A VIP miss is `XDP_PASS` to the local stack, so ahead
-of the lookup the ACL is a host firewall as well as a VIP firewall — a blocked source cannot
-reach the Marlin host itself. The consequence is that a blocklist entry can lock an operator
-out; the unconditional allow precedence in `docs/design/27-source-filtering.md` is what makes an
+**Why evaluation precedes the VIP lookup and enforcement follows it.** The per-VIP gate is
+`vip_meta.flags` bit 0, so nothing can be enforced per VIP ahead of the lookup that produces it.
+Splitting the step is what keeps the host-firewall property with it: a VIP miss is `XDP_PASS` to
+the local stack, and enforcing the block verdict on that path means a blocked source still cannot
+reach the Marlin host itself. The consequence is that a blocklist entry can lock an operator out;
+the unconditional allow precedence in `docs/design/27-source-filtering.md` is what makes an
 allowlist entry for the management prefixes an escape hatch that no block can override.
+
+**Clearing `VIP_ACL` does not restore host access.** The bit exempts one VIP's traffic; the
+host-bound path of step 4 is enforced whatever any VIP's bit says, because that path has no VIP
+to take a bit from. An operator locked out by their own blocklist cannot undo it by exempting
+VIPs.
 
 **Why the rate limiter follows it.** It needs `vip_meta.flags` to know whether it applies, and
 metering ahead of the lookup would charge host-bound traffic — SSH, BGP, the control plane's own
 probes — against a client's bucket and shed it under load. Host-bound traffic leaves at step 4
 as a VIP miss and is never metered.
 
-**The two filtering steps are therefore split across the lookup between them.** Step 3 is
-evaluated in `marlin_balance()` itself, before the stage function covering steps 4-8, so a
-blocked source is dropped having cost the entry point's single `config` lookup — which every
-packet pays regardless (`docs/design/04-calling-convention.md`) — and at most two trie lookups. No VIP lookup, no `vip_stats`
-write. Because an allow verdict suppresses step 5, it has to outlive
-step 4, and it does so on `marlin_ctx.acl_verdict` (`docs/design/04-calling-convention.md`) rather than as an argument threaded
-through a stage function that has no other use for it. An allow must remain distinguishable
-from "no rule matched" for exactly this reason (`docs/design/27-source-filtering.md`).
+**The evaluation is still paid ahead of the lookup; no drop is, any longer.** Step 3 is evaluated
+in `marlin_balance()` itself, before the stage function covering steps 4-8, so every packet pays
+the entry point's single `config` lookup — which it pays regardless
+(`docs/design/04-calling-convention.md`) — and at most two trie lookups, a packet bound for a
+`VIP_ACL`-clear VIP included. What no blocked packet avoids any more is the VIP lookup itself:
+host-bound traffic is only *identified* as host-bound by the step-4 miss, so even the drop that
+protects the host is taken after the lookup. That cost is the price of the per-VIP gate, and it
+falls on traffic an operator has chosen to block. The
+verdict has to outlive step 4 for both of its consumers — the enforcement gate and step 5 — and
+does so on `marlin_ctx.acl_verdict` (`docs/design/04-calling-convention.md`) rather than as an
+argument threaded through a stage function that has no other use for it. An allow must remain
+distinguishable from "no rule matched" for exactly this reason
+(`docs/design/27-source-filtering.md`).
 
-One consequence for `docs/design/22-observability.md`: `vip_stats` counts packets that matched a VIP including those the
-rate limiter then drops, but not those the ACL blocked, since those never reach step 4. Per-VIP
-attribution of blocked volume does not exist, which is consistent with `acl_blocked` being
-instance-scoped.
+One consequence for `docs/design/22-observability.md`: `vip_stats` counts packets that matched a
+VIP including those the rate limiter then drops, and now those the ACL blocks as well — the two
+filters are treated alike because enforcement and metering are the same point in the pipeline.
+`acl_blocked` is nonetheless still instance-scoped, because `drop_stats` carries no VIP dimension,
+and no longer because no `vip_num` exists where the drop happens.
 
 **Port-agnostic VIPs.** A VIP configured with `port == 0` matches any port. `vip_map` is
 consulted twice: first with the parsed destination port, then with port 0 on a miss. Both

@@ -71,13 +71,17 @@ address of a local, never a pointer that could be NULL.
   frame is a local, not context.
 
   `acl_verdict` is the one exception and does not cross a translation unit boundary either.
-  `docs/design/11-pipeline.md` splits the two filtering steps around the VIP lookup — the ACL at step 3, its verdict
-  consumed by the metering gate at step 5 — so the verdict must survive step 4. Carrying it
+  `docs/design/11-pipeline.md` splits ACL evaluation from its enforcement around the VIP lookup —
+  evaluated at step 3, consumed at step 4 by the per-VIP enforcement gate and at step 5 by the
+  metering gate — so the verdict must survive step 4 for two consumers rather than one. Carrying it
   here costs a byte of existing padding and keeps the step 4-8 stage function's signature about
   the packet pipeline rather than about a filtering result it never reads. It is `__u8` and not
   `enum marlin_acl_verdict` because `acl.h` includes `marlin.h` and not the reverse; a zeroed
-  `marlin_ctx` reads as `MARLIN_ACL_NONE`, which is the safe default — no allow, so no metering
-  exemption.
+  `marlin_ctx` reads as `MARLIN_ACL_NONE` — no allow, so no metering exemption. Now that the
+  enforcement gate reads the same field, zero is also no block, which is a fail-open: a
+  `marlin_ctx` that never reached step 3 forwards a source the blocklist covers. Step 3 writes the
+  field on every packet, so the state is unreachable in the datapath and belongs to the native
+  tier, where a test constructs the context itself (`docs/design/24-testing.md`).
 
   `enum marlin_acl_verdict` carries a fourth member, `MARLIN_ACL_ABORT`, for a NULL `mctx` —
   `marlin_acl_check()`'s signature returns the verdict enum directly rather than a `marlin_ret`

@@ -86,14 +86,13 @@ enum marlin_ret {
     MARLIN_COUNT_RL_INSERT_FAILED, /* counted in place, never returned */
 
     /*
-     * Reserved for VIP_QUIC's steering step (docs/design/30-quic.md);
-     * balancer.c is the producer. None of the four is a drop -- a decode
-     * failure falls through to the existing hash path uncounted as one.
+     * VIP_QUIC's steering step (docs/design/30-quic.md), produced by
+     * balancer.c. Neither is a drop: a connection ID that does not verify
+     * falls through to the hash path, as do the fall-throughs that carry no
+     * counter at all (docs/design/22-observability.md).
      */
     MARLIN_COUNT_QUIC_CID_ROUTED,
     MARLIN_COUNT_QUIC_CID_CHECK_FAILED,
-    MARLIN_COUNT_QUIC_CID_UNKNOWN_BACKEND,
-    MARLIN_COUNT_QUIC_CID_BACKEND_DOWN,
 
     MARLIN_RET_MAX
 };

@@ -109,7 +109,7 @@ is distinguishable from every other drop reason. The counter is not a claim that
 below): the verdict matrix runs at both — block and allow matched and missed in both families;
 longest-prefix selection, a `/32` block inside a `/8` and a `/24` inside a `/8`; allow beating
 block at every relative specificity including a `/8` allow over a `/32` block; empty-list
-skipping, since clearing an `acl_lists` bit must stop enforcement; and `sizeof` on both key
+skipping, since clearing an `acl_lists` bit must stop the lookup; and `sizeof` on both key
 structs, 8 and 20, since a layout change alters what the trie compares. Four assertions are
 native-tier-only, because the packet tier cannot observe them from the XDP verdict alone: that a
 cleared `acl_lists` bit *skips* the lookup rather than merely tolerating a miss; that an allow hit
@@ -118,7 +118,7 @@ limiter exists; that the lookup key is presented at full width (32/128 bits) wit
 copied verbatim out of `tuple.src`; and that a NULL `mctx` returns `MARLIN_ACL_ABORT` on the
 branch the verifier proves unreachable, which `main.c` maps to `MARLIN_ABORT_NULLREF`
 (`docs/design/04-calling-convention.md`). Packet-tier-only, because `marlin_acl_check()` reads nothing outside
-`tuple.src` and `tuple.family` and these are properties of `parser.c` and `main.c`'s step
+`tuple.src` and `tuple.family` and these are properties of `parser.c` and of the pipeline's step
 ordering instead: non-first fragments filtered identically to first fragments, which is the
 assertion that the fragment hole a port-granular design would have had does not exist; an ICMP
 error whose embedded client is blocked dropped while one whose transit router is blocked is not
@@ -127,10 +127,18 @@ error whose embedded client is blocked dropped while one whose transit router is
 **One of those assertions is about placement, not semantics, and is the one worth naming.** A
 blocked source addressed to a destination that is *not* a VIP must drop with `acl_blocked`, not
 pass with `vip_miss`. That is the whole of `docs/design/11-pipeline.md`'s host-firewall property and `docs/design/27-source-filtering.md`'s lockout
-argument, it is invisible to every test above — each of which uses a configured VIP — and it
-fails silently if step 3 is ever moved after step 4. The other half of the placement, that an
-allow verdict survives the VIP lookup, is already covered below by "an allowlisted source at any
-rate is never `ratelimited`".
+argument, it is invisible to every test above — none of which distinguishes *where* the drop was
+taken — and it fails silently if step 4's host-bound arm ever stops enforcing. Two further
+placement assertions belong with it, packet-tier for the same reason: a blocked source addressed
+to a VIP carrying `VIP_ACL` drops `acl_blocked`, and the same source addressed to a VIP with the
+bit clear **forwards** — which is what distinguishes a per-VIP exemption from an ACL that has
+silently stopped working. Those two need a `vip_map` fixture, which the packet tier does not have
+today: every ACL case there addresses a destination that is not a VIP, so the existing coverage
+exercises the host-bound arm alone.
+The remaining half of the placement, that an allow verdict survives the VIP lookup, is covered
+below by "an allowlisted source at any rate is never `ratelimited`" — which needs that same
+fixture, and a VIP carrying **both** bits, since `docs/design/20-configuration-validation.md`
+rejects `VIP_RATELIMIT` without `VIP_ACL`.
 
 **The rate limiter does not, and is off by default.** A token bucket is time-dependent and its
 result depends on preceding packets, which violates order-independence — one of the reasons a
@@ -245,12 +253,10 @@ by construction, not by choice.
 `data-plane/tests/packet/` (`docs/REPO-STRUCTURE.md` §7.2) is the packet-level harness above,
 made concrete: it loads the real `marlin.bpf.o` and drives `xdp_main` through
 `bpf_prog_test_run_opts`, asserting `data_out` for the exact-byte half of this document's opening
-sentence. Coverage there is bounded by what `xdp_main` can satisfy before Phase 2's VIP lookup
-and forwarding land — parse verdicts, `drop_stats` deltas, and that a passing frame is not
-mutated — plus, for `nexthop.c` specifically, the `bpf_fib_lookup()` matrix above under real FIB
-state (`data-plane/tests/packet/fib.h`), reached through `main.c`'s interim
-`xdp_interim_nexthop()` pending `balancer.c`. What still needs the VIP lookup, the rate limiter,
-or an encapsulation mode not yet written is registered as a `MARLIN_SKIP` placeholder
+sentence. Coverage there is bounded by what `xdp_main` can satisfy: parse verdicts, `drop_stats`
+deltas, that a passing frame is not mutated, and — for `nexthop.c` specifically — the
+`bpf_fib_lookup()` matrix above under real FIB state (`data-plane/tests/packet/fib.h`). An
+assertion whose path `xdp_main` cannot yet reach is registered as a `MARLIN_SKIP` placeholder
 (`docs/PHASES.md`) that reports as a named `skip` line rather than as a pass, so a green run is
 never mistaken for complete coverage.
 
