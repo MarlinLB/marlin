@@ -1,6 +1,6 @@
 # Marlin — ignore rules. Layout per docs/REPO-STRUCTURE.md §2.
 #
-# Three build trees, three toolchains: data-plane/ (clang -target bpf),
+# Four build trees: data-plane/ (clang -target bpf), loader/ (host clang),
 # control-plane/ (dotnet), tests/. The folder is opened in both VS Code
 # and Rider, so both IDEs' local state is covered here.
 
@@ -75,6 +75,9 @@ coverage*.xml
 # data-plane/tests' native test binary carries no suffix, so the *.o/*.bpf.o
 # globs above miss it; ignore the whole build tree rather than name it alone.
 data-plane/build/
+
+# Same reason: loader/main.c's compiled binary carries no suffix either.
+loader/build/
 
 # ---------------------------------------------------------------------------
 # VS Code — share the workspace config, ignore local state

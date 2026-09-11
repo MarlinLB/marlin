@@ -84,12 +84,13 @@ further.
 
 - Per-translation-unit `clang -target bpf -g`, linked with `bpftool gen object` into
   `marlin.bpf.o`. Every input carries BTF (`docs/design/03-translation-units.md`).
-- `marlin-load.sh` and its systemd oneshot, `RemainAfterExit`, ordered before the control
-  plane (`docs/design/02-architecture.md`).
+- `loader/main.c` (`marlin-dataplane`) and its systemd unit, `Type=notify`, ordered before the
+  control plane (`docs/design/02-architecture.md`).
 - `clang-format` and `clang-tidy` wired into CI, blocking per `.clang-tidy`'s
   `WarningsAsErrors`.
-- Load and attach verified in a network namespace: `bpftool prog loadall` then
-  `net attach xdpdrv`. The attach must fail rather than degrade to SKB mode (`docs/design/02-architecture.md`).
+- Load and attach verified in a network namespace: `marlin-dataplane attach` loading, pinning
+  and attaching with `bpf_link_create()`. The attach must fail rather than degrade to SKB mode
+  (`docs/design/02-architecture.md`).
 - `make tests` builds and runs the native unit tests, one binary per test file — `parser.c`,
   `acl.c`, `csum.h`, `mtu.h`, `entropy.h`, `nexthop.c`'s NULL-argument aborts, and `ipip.c` today
   (`docs/design/24-testing.md`, "Native unit tests"). Not part of `make all`; part of `make ci`.
@@ -283,7 +284,17 @@ configuration surface for either would resolve both.
    `egress_ifindex` (`nexthop.c:218`), and the counter is not a claim that the frame left.
 2. Integration tests in network namespaces confirm a real kernel FOU/GUE listener, real
    `ipip`/`sit` devices, and a real `vxlan` device accept what Marlin emits, including the zero
-   UDP checksum (`docs/design/24-testing.md`).
+   UDP checksum (`docs/design/24-testing.md`). `data-plane/scripts/gue_wsl.sh` and
+   `vxlan_wsl.sh` cover this: `test_http_get` is the acceptance evidence (a real FOU listener,
+   real `ipip`/`sit` receive devices, and a real `vxlan` device each complete a request), and
+   `verify` captures one run and asserts the emitted frame byte-for-byte against
+   `docs/design/24-testing.md`'s VXLAN assertion list — including the zero UDP checksum, the
+   VNI's 3-byte field with its trailing reserved byte, and the outer-Ethernet-carries-the-
+   arriving-source-MAC property the ordering hazard in §7.4 exists to prevent. Two items on
+   that list stay open under generic XDP: a 50-byte headroom shortfall cannot be produced
+   (`netif_receive_generic_xdp()` guarantees 256 bytes of headroom), and the inner-EtherType
+   v4/v6 distinction needs a v6 client leg neither rig has yet — both remain for the packet
+   tier or a native-driver rig.
 3. An extension-header chain at `MAX_EXT_HDRS` and one beyond it are distinguishable —
    `ext_hdr_limit`, not `parse_error`
    (`data-plane/tests/packet/xdp_test.c`,
@@ -424,6 +435,11 @@ section it affects, not in a document of its own.
 | C# map access: `libbpf` P/Invoke or direct `bpf(2)` | Phase 1, "Control plane" above | 1 |
 | Indentation: `.clang-format`/`.editorconfig` say spaces, every source uses tabs | `.clang-format`/`.editorconfig` | 1 |
 | Whether `data-plane/tests/` joins `make format`/`make tidy`, or takes its own `.clang-format`/`.clang-tidy` | `docs/REPO-STRUCTURE.md` §7.2 | 1 |
+| Whether the indentation row above covers shell as well as C: `.editorconfig` mandates 4 spaces for `*.sh`, every `data-plane/scripts/*.sh` is tab-indented, and nothing rewrites shell the way `clang-format` rewrites C | `.editorconfig` `[*.{sh,bash}]` | 1 |
+| Whether the control plane runs as a non-root user, and what mechanism grants it access to pins `bpf_obj_pin` creates `0600` | `docs/DEPLOYMENT.md` §1.6 | 1 |
+| The loader's real capability set: this table's "Build" section above and `data-plane/Makefile` both assert `CAP_PERFMON` is needed to load this object; `docs/DEPLOYMENT.md` §1.6 lists only `CAP_BPF`+`CAP_NET_ADMIN`. `loader/main.c` is now what calls `BPF_PROG_LOAD`, so this is where the real set gets measured, not merely asserted | `loader/main.c`, `docs/DEPLOYMENT.md` §1.6 | 1 |
+| Whether `/etc/sysctl.d/90-marlin.conf` (`docs/DEPLOYMENT.md` §1.8) is a shipped `deploy/` artefact or integrator host state | `docs/REPO-STRUCTURE.md` §2 | 1 |
+| Whether `deploy/marlin-dataplane.service` stays flat or becomes a `marlin-dataplane@.service` template keyed on `IFACE`, the only form that can express `BindsTo=sys-subsystem-net-devices-%i.device`. The loader's own `RTM_DELLINK` watch (`docs/design/02-architecture.md`) now covers the netdev-disappears case without it, so a template is no longer the only answer — but it remains the systemd-native one | `docs/REPO-STRUCTURE.md` §2 | 1 |
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
@@ -433,7 +449,8 @@ section it affects, not in a document of its own.
 | Duplicate call site: `src/main.c` calls `marlin_ratelimit()` ahead of the VIP lookup and discards its verdict, so a metered packet spends a token there as well as at `balancer.c`'s step-5 site and a refusal on that path neither drops nor counts. Acceptable only because `CFG_RL_ENABLE` defaults off | `src/main.c`, `docs/design/11-pipeline.md` step 5 | 2b |
 | Duplicate call site: `xdp_interim_nexthop()` in `src/main.c` reaches `marlin_nexthop_l2dsr()`/`marlin_nexthop_encapsulate()` on a path `balancer.c` already owns at `docs/design/11-pipeline.md` step 9 | `src/main.c`, `docs/design/11-pipeline.md` step 9 | 2b |
 | Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly | `docs/design/11-pipeline.md` step 3 | 2b |
-| VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself | `docs/design/01-scope.md` | 2b |
+| VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself. The `data-plane/scripts/vxlan_wsl.sh` and `netns-topo.sh` rigs assume `lo`/a dummy device, matching every other mode's rig — an operational default for development, not a resolution of the question | `docs/design/01-scope.md` | 2b |
+| Netns integration rigs: `tests/integration/` versus `data-plane/scripts/`, where all five currently live | `docs/REPO-STRUCTURE.md` §7.8 | 2b |
 | `nexthop.c` maps ten kernel `bpf_fib_lookup()` return codes onto seven named `drop_stats` reasons. `BPF_FIB_LKUP_RET_NOT_FWDED` (the ordinary no-route outcome), `UNSUPP_LWT` and `NO_SRC_ADDR` all fall to the `default:` arm, `MARLIN_DROP_FIB_UNSPEC` — so "no route" is indistinguishable from a helper contract violation in `drop_stats` | `docs/design/16-fib-lookup.md:56-66`, `nexthop.c:82-111` | 2b |
 | Whether `ipip.c`'s, `gue.c`'s and `vxlan.c`'s `tot_len`/`pkt_len` arithmetic needs a `__u32` guard against `__u16` wraparound when `cfg.max_frame == 0` disables `frame_fits()` — unreachable from the datapath today (`pkt_len` derives from `data_end - data`), covered by `ipip_test.c`, `gue_test.c` and `vxlan_test.c` only at the boundary that does not wrap; one guard for all three once decided, the same reasoning that makes them one boundary rather than three (`docs/PHASES.md:34-39`) | `ipip.c:77,85`, `gue.c:85,105`, `vxlan.c:120,143` | 2b |
 | Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |

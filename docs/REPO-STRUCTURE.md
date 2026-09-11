@@ -116,12 +116,14 @@ marlin/
 │           ├── maps.h               # map fd lookup, seeding, drop_stats reads
 │           └── fib.h                # veth + real routes/neighbours for nexthop.c's bpf_fib_lookup() cases
 │
+├── loader/
+│   ├── main.c                        # attach sequence of docs/design/02-architecture.md
+│   └── Makefile
+│
 ├── deploy/
-│   ├── marlin-load.sh                # the two commands of docs/design/02-architecture.md
-│   ├── marlin-load.service           # oneshot, RemainAfterExit, before marlin.service
-│   ├── marlin.service                # the control plane
-│   ├── marlin.env.example            # IFACE, pin path
-│   └── .shellcheckrc
+│   ├── marlin-dataplane.service       # Type=notify, before marlin.service
+│   ├── marlin.service                 # the control plane
+│   └── marlin.env.example             # IFACE, pin path
 │
 ├── control-plane/
 │   ├── Marlin.sln
@@ -148,6 +150,16 @@ marlin/
     ├── verifier.yml                   # load gate + complexity trend (docs/design/24-testing.md)
     └── style.yml                      # clang-format, clang-tidy, dotnet format, shellcheck
 ```
+
+**`loader/` is a directory of its own, not `tools/` and not `deploy/`.** `tools/` is scoped to
+dev-only tooling (`verifier_stats.c` is never installed); `loader/main.c` is a shipped artefact
+that runs on every forwarding host, so it belongs beside the other deployed pieces, not among
+diagnostics. It is not under `deploy/` either — that directory holds configuration and unit
+files, not source that a C toolchain compiles; giving the loader its own top-level directory
+keeps `deploy/`'s contents uniformly "things you copy" rather than a mix of copied and built
+artefacts. `loader/Makefile` follows `data-plane/Makefile`'s pattern of a plain, standalone
+build rather than joining the root `Makefile`'s recipes directly, for the same per-toolchain
+reason Principle 2 gives each deployed piece its own directory.
 
 ---
 
@@ -194,7 +206,7 @@ two that are boundaries for a reason beyond tidiness:
 - **`Marlin.Abi` carries no references at all.** That is what makes it safe as a universal
   dependency, and it is enforceable by reading one `.csproj`.
 - **`Marlin.Bpf` performs I/O and never creates a map or loads a program.**
-  `docs/design/02-architecture.md` confines map creation to `deploy/marlin-load.sh` so there is
+  `docs/design/02-architecture.md` confines map creation to `loader/main.c` so there is
   exactly one owner of map identity and sizing. The project boundary is where that rule is
   visible.
 - **`Marlin.Health` is separate** because `docs/design/18-health.md` gives it a socket-binding
@@ -219,14 +231,13 @@ arrays. That is design-mandated, so the analyzer exceptions are scoped to that o
 | Path | Owns |
 |---|---|
 | `/.editorconfig` | charset, EOL, final newline, trailing whitespace, indent for md/yml/json/sh. **Sets no indent for `*.c`/`*.h`** — see the conflict note below |
-| `/.gitattributes` | EOL normalisation; `deploy/*.sh` must stay LF on Windows checkouts |
+| `/.gitattributes` | EOL normalisation; `data-plane/scripts/*.sh` must stay LF on Windows checkouts |
 | `/data-plane/.clang-format` | the only definition of C formatting |
 | `/data-plane/.clang-tidy` | C checks |
 | `/control-plane/.editorconfig` | all C#: naming, file-scoped namespaces, `dotnet_diagnostic.*` severities |
 | `/control-plane/Marlin.Abi/.editorconfig` | narrow exceptions for `[InlineArray]`, `fixed`, `unsafe` |
 | `/tests/unit/.editorconfig` | test method naming, magic numbers permitted |
 | `/data-plane/tests/packet/.clang-format`, `.clang-tidy` | only if `data-plane/tests/` takes its own rather than joining the root's — open, `docs/PHASES.md` |
-| `/deploy/.shellcheckrc` | `marlin-load.sh` is a shipped artefact (`docs/design/02-architecture.md`) |
 
 Three practical points:
 
@@ -335,6 +346,21 @@ the C# `[FieldOffset]` set, in both directions — and is undecided (`docs/PHASE
 open-decision table, phase 2a). It is not the BTF-to-C# generation `docs/design/26-superseded.md`
 rejects: a two-column offset comparison models no C# syntax and emits no code, where
 generation would have to model both.
+
+**7.8 Netns integration rigs: `tests/integration/` versus `data-plane/scripts/`.** Principle 5
+places netns/veth integration tests at the repo root, outside `data-plane/`, on the same
+reasoning that carves out `data-plane/tests/` — neither exception applies to a shell script
+that drives `ip`/`bpftool` against a built `marlin.bpf.o`, so `tests/integration/` is what this
+document specifies. In practice, all five per-mode rigs (`l2dsr_wsl.sh`, `ipip_wsl.sh`,
+`gue_wsl.sh`, `vxlan_wsl.sh`, and the multi-backend `netns-topo.sh`) live at
+`data-plane/scripts/` instead, and each carries a header comment asserting the
+`tests/integration/` placement this section describes — a claim about their own location that
+has been wrong since the first of them landed. Left unresolved: whether to move the five
+scripts to `tests/integration/` (closing the gap this document describes) or to amend this
+document and Principle 5's exception list to admit `data-plane/scripts/` as a third exception,
+on the grounds that a rig which only means anything next to the `Makefile` that builds the
+object it attaches is closer to `data-plane/tests/`'s reasoning than to a standalone test tree
+(`docs/PHASES.md`'s open-decision table, phase 2b).
 
 ---
 

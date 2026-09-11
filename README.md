@@ -38,14 +38,16 @@ recorded in `docs/design/01-scope.md`.
 
 ## Architecture
 
-Four deployed pieces, three of which Marlin builds:
+Three deployed pieces, all built by Marlin:
 
 | Piece | Built | Role |
 |---|---|---|
 | `marlin.bpf.o` | yes | XDP datapath |
-| `marlin-load.sh` + systemd unit | yes | loads, pins, attaches |
+| `marlin-dataplane` + systemd unit | yes | loads, pins, attaches, holds the `bpf_link` |
 | Marlin control plane (C#) | yes | configuration, health, reconciliation |
-| `bpftool` | no | supplied by `linux-tools` |
+
+`bpftool` is a build-host requirement only (`bpftool gen object`); the forwarding host does not
+need it.
 
 ## Repository layout
 
@@ -67,17 +69,17 @@ See `REPO-STRUCTURE.md` for the full tree and the reasoning behind each placemen
 | Linux kernel | 6.0 |
 | clang, BPF target, BTF emission | 12 |
 | libbpf with `bpf_linker` | 0.4 |
-| `bpftool` | matching the running kernel |
+| `bpftool` (build host only — `gen object`) | matching the running kernel |
 | .NET | 10 |
 
-The load sequence is two commands:
+The forwarding host runs one binary:
 
 ```sh
-bpftool prog loadall marlin.bpf.o /sys/fs/bpf/marlin \
-    pinmaps /sys/fs/bpf/marlin
-
-bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_main dev "$IFACE"
+marlin-dataplane attach
 ```
+
+It loads `marlin.bpf.o`, pins it under `/sys/fs/bpf/marlin`, attaches natively to `$IFACE`, and
+holds the resulting `bpf_link` for as long as it runs — see `docs/design/02-architecture.md`.
 
 ## Deployment
 

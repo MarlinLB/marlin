@@ -46,13 +46,17 @@ per row is only useful with a fallthrough or second-chance mechanism, both rejec
 lookup per packet, to prevent tearing that the write ordering and sentinel rule already make
 harmless.
 
-**A C loader component.** Considered for load-time map sizing, CO-RE and preflight.
-Compile-time sizing removed the sizing need, and `bpftool` covers the rest. Not worth a third
-build artefact.
+**A C loader component — reopened.** Originally rejected for load-time map sizing, CO-RE and
+preflight: compile-time sizing removed the sizing need, and `bpftool` covered the rest. Those
+grounds still hold; what reopened the decision is unrelated to them. `bpftool link` has no
+`create` verb and `bpftool net attach` is netlink-only, so making a `bpf_link` attachment (which
+a resident process can hold, tying `systemctl status`'s truth to the kernel's) requires libbpf
+code to exist somewhere. `loader/main.c` is that code, kept to attach, pin and hold the link —
+it does not reintroduce load-time sizing or CO-RE. See `docs/design/02-architecture.md`.
 
 **Load-time map sizing.** 26 MB of `fwd_table` regardless of VIP count, in exchange for
 deleting map pre-creation, the `map name … pinned …` reuse mechanism and its pin-path collision
-risk. Two-command load script.
+risk. A short attach sequence with no sizing logic of its own.
 
 **IPv6 outer encapsulation.** Backends are on IPv4 networks. Fixing the outer family halves
 the encapsulation paths, keeps `backend.addr` at 4 bytes rather than 16, removes the `ip6tnl`

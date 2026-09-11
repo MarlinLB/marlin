@@ -15,6 +15,7 @@ All below Marlin's 6.0 minimum. Listed for the case where the floor is challenge
 | `DEVMAP_HASH` | 5.4 |
 | `bpf_map_get_next_key` on `LPM_TRIE` | 4.20 |
 | `BPF_ATOMIC \| BPF_CMPXCHG` — `ratelimit.c`'s compare-and-swap | 5.12 |
+| `bpf_link` for XDP (`BPF_LINK_CREATE` with `attach_type = BPF_XDP`) | 5.9 |
 
 `ARRAY_OF_MAPS`, `DEVMAP`, `LPM_TRIE`, `LRU_HASH`, `PERCPU_ARRAY`, `bpf_csum_diff()` and
 `bpf_xdp_adjust_head()` all predate 4.18.
@@ -34,4 +35,6 @@ bounds or lifetime.
 | clang with BPF target and BTF emission | 12 |
 | clang `-mcpu=v3`, for `BPF_ATOMIC \| BPF_CMPXCHG` | required, no version floor of its own |
 | libbpf with `bpf_linker` (BPF static linking) | 0.4 |
-| `bpftool` with `gen object`, `prog loadall`, `net attach` | from `linux-tools` matching the kernel |
+| `bpftool` with `gen object` | from `linux-tools` matching the kernel, build host only — `loader/main.c` replaces its `prog loadall`/`net attach` use on the forwarding host |
+
+`loader/main.c` links against the same libbpf and uses no API newer than the `bpf_linker` floor above.

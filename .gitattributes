@@ -13,10 +13,10 @@
 *.c text eol=lf
 *.h text eol=lf
 
-# Shipped, executed artefacts — deploy/marlin-load.sh runs on the target
-# host. A CRLF shebang line fails to exec there. docs/REPO-STRUCTURE.md §5
-# calls this out explicitly for deploy/*.sh; the same constraint applies to
-# the unit and env files beside it.
+# data-plane/scripts/*.sh are dev-rig helpers with a shebang line; a CRLF
+# shebang fails to exec. deploy/*.service and *.env.example aren't executed
+# directly but ship beside loader/main.c's compiled binary (itself covered
+# by the *.c rule above, for a different reason) and keep the same policy.
 *.sh text eol=lf
 *.service text eol=lf
 *.env.example text eol=lf

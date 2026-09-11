@@ -1,58 +1,67 @@
 # Marlin — Architecture Overview
 
 
-Four deployed pieces, three of which Marlin builds:
+Three deployed pieces, all built by Marlin:
 
 | Piece | Built | Role |
 |---|---|---|
 | `marlin.bpf.o` | yes | XDP datapath |
-| `marlin-load.sh` + systemd unit | yes | loads, pins, attaches |
+| `marlin-dataplane` + systemd unit | yes | loads, pins, attaches, holds the `bpf_link` |
 | Marlin control plane (C#) | yes | configuration, health, reconciliation |
-| `bpftool` | no | supplied by `linux-tools` |
 
-## Load sequence
+`bpftool` is a build-host requirement only — `bpftool gen object` links the per-unit `.o` files
+into `marlin.bpf.o` (`docs/design/29-versions.md`). The forwarding host does not need it.
 
-```sh
-bpftool prog loadall marlin.bpf.o /sys/fs/bpf/marlin \
-    pinmaps /sys/fs/bpf/marlin
+## Attach sequence
 
-bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_main dev "$IFACE"
-```
+`marlin-dataplane attach`, in order:
 
-Two commands. All maps are sized at compile time (`docs/design/09-sizing.md`), so no map is pre-created and no
-`map name … pinned …` reuse is needed. Run as a systemd oneshot with `RemainAfterExit`,
-ordered before the control plane service.
+1. Preflight: refuses rather than configures (§1.3 of `docs/DEPLOYMENT.md`).
+2. Opens `marlin.bpf.o`, sets a pin path on every map, and loads it. libbpf reuses whatever is
+   already pinned under `/sys/fs/bpf/marlin/` and creates the rest — the program always loads
+   fresh, but map contents and VIP configuration survive both a restart and a datapath upgrade,
+   provided no map's definition changed.
+3. Pins the program, replacing any stale pin from a previous run.
+4. Calls `bpf_link_create()` on the program against the interface's ifindex with
+   `XDP_FLAGS_DRV_MODE`, and holds the resulting link for as long as it runs.
+5. Reports readiness to systemd and blocks — woken only by `SIGTERM`/`SIGINT`, or by a netlink
+   `RTM_DELLINK` for the interface it is attached to.
 
 Rationale:
 
-- **`bpftool`, not `ip`.** iproute2 may or may not be linked against libbpf depending on
-  the distribution, and its legacy internal loader handles BTF-defined maps and CO-RE
-  poorly. `bpftool` ships with `linux-tools` and is libbpf-based.
-- **`xdpdrv`, not `xdpgeneric`.** Driver mode fails the attach outright if the NIC cannot
-  support native XDP. Silent degradation to SKB mode would satisfy the attach while costing
-  an order of magnitude in throughput, and would present as a software fault.
-- **Legacy netlink attach rather than `bpf_link`.** The attachment must persist with no
-  process holding a file descriptor. That is what the netlink attach does; a `bpf_link`
-  would require its own pin to survive.
-- **No C loader component.** Load-time map sizing was the only thing that would have
-  justified one, and compile-time sizing removes the need. See `docs/design/25-rejected.md`.
+- **`XDP_FLAGS_DRV_MODE`, not mode-unspecified.** `bpf_link_create()` with no mode flag lets the
+  kernel silently fall back to generic/SKB mode when the driver lacks native XDP support —
+  exactly the order-of-magnitude throughput regression this line exists to refuse. It must fail
+  the attach, not degrade it.
+- **A libbpf call, not a shelled-out tool.** Attaching directly through the syscalls avoids
+  parsing another program's output and lets this process hold the resulting file descriptor,
+  which the next point depends on.
+- **`bpf_link`, not a legacy netlink attach.** A link-owned attach cannot be replaced or removed
+  by `ip link set … xdp off` or `bpftool net detach` — both fail `EBUSY` against it — and it
+  dies with the process that created it. That is deliberate: it is what makes systemd's view of
+  the unit (`active (running)` or not) equal to the kernel's view of the attach, which a
+  `RemainAfterExit` oneshot holding no link cannot express (`docs/DEPLOYMENT.md` §1.2).
+- **A C loader component, after all.** Reopened from `docs/design/25-rejected.md` — not because
+  the original grounds (load-time map sizing, CO-RE) stopped applying, but because
+  `bpftool link` has no `create` verb and `bpftool net attach` is netlink-only, so a `bpf_link`
+  attachment requires libbpf code to exist somewhere.
 
 ## Object lifetime
 
-Maps and programs are pinned under `/sys/fs/bpf/marlin/`, so they persist independently of
-any process. The control plane opens pinned paths and performs map I/O only; it never
-creates maps.
+Maps are pinned under `/sys/fs/bpf/marlin/` and persist independently of any process — the
+loader's own map-pin reuse (above) is what makes that persistence useful across restarts. The
+program's attach does not persist the same way: it lives exactly as long as the loader process
+holding its `bpf_link`, which is what ties "the unit is running" to "the datapath is attached"
+with no gap for either to go stale.
 
-This is an ownership and ordering rule, not a technical necessity — a pinned map does
-outlive its creator. Confining creation to the load script means there is exactly one
-owner of map identity and sizing, and the control plane can be restarted or upgraded
-without any interaction with the datapath.
+The control plane opens pinned paths and performs map I/O only; it never creates a map, loads a
+program, or touches the link. Restarting or upgrading it does not disturb forwarding.
 
 ## Privileges
 
 | Component | Capabilities | Why |
 |---|---|---|
-| `marlin-load.sh` | `CAP_BPF`, `CAP_NET_ADMIN` | load, pin, attach XDP |
+| `marlin-dataplane` | `CAP_BPF`, `CAP_NET_ADMIN` | load, pin, attach XDP |
 | Control plane | `CAP_BPF`, `CAP_NET_ADMIN` | map I/O; plus neighbour entries (`docs/design/16-fib-lookup.md`) and probe tunnel interfaces (`docs/design/18-health.md`) |
 
 On kernels ≥ 5.11 BPF memory is charged to the memory cgroup rather than
