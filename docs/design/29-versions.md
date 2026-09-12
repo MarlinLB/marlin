@@ -35,6 +35,6 @@ bounds or lifetime.
 | clang with BPF target and BTF emission | 12 |
 | clang `-mcpu=v3`, for `BPF_ATOMIC \| BPF_CMPXCHG` | required, no version floor of its own |
 | libbpf with `bpf_linker` (BPF static linking) | 0.4 |
-| `bpftool` with `gen object` | from `linux-tools` matching the kernel, build host only — `loader/main.c` replaces its `prog loadall`/`net attach` use on the forwarding host |
+| `bpftool` with `gen object` | from `linux-tools` matching the kernel, build host only — `data-plane/marlind/main.c` replaces its `prog loadall`/`net attach` use on the forwarding host |
 
-`loader/main.c` links against the same libbpf and uses no API newer than the `bpf_linker` floor above.
+`data-plane/marlind/main.c` links against the same libbpf and uses no API newer than the `bpf_linker` floor above.

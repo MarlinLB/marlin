@@ -3,7 +3,6 @@
 #
 
 DATA_PLANE_DIR := data-plane
-LOADER_DIR := loader
 
 # Recursive $(MAKE) -C calls below would otherwise print "Entering/Leaving
 # directory" around every sub-make; propagates to the child via MAKEFLAGS.
@@ -11,17 +10,21 @@ MAKEFLAGS += --no-print-directory
 
 .DEFAULT_GOAL := all
 
-.PHONY: all data-plane loader check-toolchain ci format tidy clean tests packet-tests verifier-stats help
+.PHONY: all data-plane bpf marlind check-toolchain ci format tidy clean tests packet-tests verifier-stats help
 
-all: data-plane loader
+all: data-plane
 
-## Build the eBPF/XDP data plane (data-plane/Makefile's default target).
+## Build everything under data-plane/: marlin.bpf.o and marlind (data-plane/Makefile's `all`).
 data-plane:
 	@$(MAKE) -C $(DATA_PLANE_DIR) all
 
-## Build the data-plane loader (loader/Makefile's default target).
-loader:
-	@$(MAKE) -C $(LOADER_DIR) all
+## Build only the eBPF/XDP datapath object (data-plane/Makefile's `bpf`).
+bpf:
+	@$(MAKE) -C $(DATA_PLANE_DIR) bpf
+
+## Build only the data-plane loader (data-plane/Makefile's `marlind`).
+marlind:
+	@$(MAKE) -C $(DATA_PLANE_DIR) marlind
 
 ## Verify the data-plane toolchain (clang, bpftool, clang-format, clang-tidy versions).
 check-toolchain:
@@ -57,14 +60,14 @@ tidy:
 ## Remove data-plane build artefacts.
 clean:
 	@$(MAKE) -C $(DATA_PLANE_DIR) clean
-	@$(MAKE) -C $(LOADER_DIR) clean
 
 ## List available targets.
 help:
 	@echo "Marlin top-level targets:"
 	@echo "  all             Build everything"
-	@echo "  data-plane      Build the eBPF/XDP data plane"
-	@echo "  loader          Build the data-plane loader"
+	@echo "  data-plane      Build everything under data-plane/ (marlin.bpf.o and marlind)"
+	@echo "  bpf             Build only the eBPF/XDP datapath object"
+	@echo "  marlind         Build only the data-plane loader"
 	@echo "  check-toolchain Verify the data-plane toolchain is present and correct"
 	@echo "  ci              check-toolchain + a full build, the way CI runs it"
 	@echo "  format          Rewrite data-plane C sources/headers with clang-format"

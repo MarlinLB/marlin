@@ -1,4 +1,5 @@
-# Marlin data-plane build
+# Marlin data-plane build: the XDP datapath object and the marlind loader
+# that attaches it, one host toolchain shared by both.
 
 SRC_DIR   := src
 INC_DIR   := include
@@ -20,6 +21,10 @@ HOST_CC       ?= $(CLANG)
 # same); only UBSan's alignment check is disabled, ASan/UBSan stay on.
 TEST_SANITIZE ?= -fsanitize=address,undefined -fno-sanitize=alignment
 TEST_CFLAGS   ?= -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer
+
+# The shipped loader binary. Deliberately not derived from TEST_CFLAGS: tests
+# carry sanitizers, this artefact must not.
+MARLIND_CFLAGS ?= -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer
 
 include mk/toolchain.mk
 
@@ -50,9 +55,19 @@ HDRS := $(shell find $(INC_DIR) -name '*.h')
 # into one marlin.bpf.o.
 MARLIN_OBJ := $(BUILD_DIR)/marlin.bpf.o
 
+# marlind: the host-compiled loader that attaches marlin.bpf.o. Shares this
+# makefile because it shares the host toolchain (clang, clang-format,
+# clang-tidy) and the -lbpf link, not because it is BPF.
+MARLIND_DIR  := marlind
+MARLIND_SRCS := $(wildcard $(MARLIND_DIR)/*.c)
+MARLIND_OBJS := $(patsubst $(MARLIND_DIR)/%.c,$(BUILD_DIR)/marlind/%.o,$(MARLIND_SRCS))
+MARLIND_BIN  := $(BUILD_DIR)/marlind/marlind
+MARLIND_LIBS := -lbpf
+
 # clang-tidy is inert without a compile database, built by concatenating each
 # TU's -MJ fragment into a JSON array (trailing comma stripped from the last).
-CC_JSON := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o.json,$(SRCS))
+CC_JSON := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o.json,$(SRCS)) \
+	$(patsubst $(MARLIND_DIR)/%.c,$(BUILD_DIR)/marlind/%.o.json,$(MARLIND_SRCS))
 COMPILE_COMMANDS := $(BUILD_DIR)/compile_commands.json
 
 # Native unit tests over parser.c. Deliberately not part of $(SRCS): that
@@ -79,7 +94,10 @@ PACKET_TEST_BIN  := $(BUILD_DIR)/tests/packet/marlin_packet_tests
 PACKET_TEST_LIBS := -lbpf
 
 .PHONY: all
-all: $(MARLIN_OBJ)
+all: bpf marlind
+
+.PHONY: bpf
+bpf: $(MARLIN_OBJ)
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(BUILD_DIR)
@@ -87,12 +105,28 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	@$(CLANG) -target bpf -mcpu=v3 -g -O2 -Wall -Wextra $(INCLUDES) -MJ $(BUILD_DIR)/$*.o.json -c -o $@ $<
 
 $(MARLIN_OBJ): $(OBJS)
-	@echo "link $(notdir $@)"
+	@echo "linking $(notdir $@)"
 	@$(BPFTOOL) gen object $@ $(OBJS)
 
-$(COMPILE_COMMANDS): $(OBJS)
+$(COMPILE_COMMANDS): $(OBJS) $(MARLIND_OBJS)
 	@echo "generate $(notdir $@)"
 	@{ echo '['; cat $(CC_JSON) | sed '$$s/,$$//'; echo ']'; } > $@
+
+# Host compile, not -target bpf: main.c needs libbpf's syscall wrappers and
+# system headers, neither of which the bpf target's include search covers.
+$(BUILD_DIR)/marlind/%.o: $(MARLIND_DIR)/%.c
+	@mkdir -p $(BUILD_DIR)/marlind
+	@echo "compile $(notdir $<)"
+	@$(HOST_CC) $(MARLIND_CFLAGS) -I$(INC_DIR) -MJ $(BUILD_DIR)/marlind/$*.o.json -MMD -MP -c -o $@ $<
+
+$(MARLIND_BIN): $(MARLIND_OBJS)
+	@echo "linking $(notdir $@)"
+	@$(HOST_CC) $(MARLIND_CFLAGS) -o $@ $(MARLIND_OBJS) $(MARLIND_LIBS)
+
+-include $(MARLIND_OBJS:.o=.d)
+
+.PHONY: marlind
+marlind: $(MARLIND_BIN)
 
 # Depends on every header/source since a pattern rule can't name which one a
 # test #includes; -MMD narrows this from the second build onward.
@@ -180,12 +214,17 @@ ci:
 .PHONY: format
 format:
 	$(MAKE) check-toolchain
-	@$(CLANG_FORMAT) -i --style=file:$(MARLIN_REPO_ROOT)/.clang-format $(SRCS) $(HDRS)
+	@$(CLANG_FORMAT) -i --style=file:$(MARLIN_REPO_ROOT)/.clang-format $(SRCS) $(HDRS) $(MARLIND_SRCS)
 
+# Two invocations, not one over $(SRCS) $(MARLIND_SRCS): clang-tidy sharing one
+# process across a -target bpf TU and a host TU corrupts clang-analyzer-valist's
+# state, producing "uninitialized va_list" false positives in the host TU that
+# do not reproduce when either file set is checked alone.
 .PHONY: tidy
 tidy:
 	@$(MAKE) $(COMPILE_COMMANDS)
 	@$(CLANG_TIDY) --config-file=$(MARLIN_REPO_ROOT)/.clang-tidy -p $(BUILD_DIR) $(SRCS)
+	@$(CLANG_TIDY) --config-file=$(MARLIN_REPO_ROOT)/.clang-tidy -p $(BUILD_DIR) $(MARLIND_SRCS)
 
 .PHONY: clean
 clean:

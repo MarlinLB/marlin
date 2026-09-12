@@ -43,7 +43,7 @@ Three deployed pieces, all built by Marlin:
 | Piece | Built | Role |
 |---|---|---|
 | `marlin.bpf.o` | yes | XDP datapath |
-| `marlin-dataplane` + systemd unit | yes | loads, pins, attaches, holds the `bpf_link` |
+| `marlind` + systemd unit | yes | loads, pins, attaches, holds the `bpf_link` |
 | Marlin control plane (C#) | yes | configuration, health, reconciliation |
 
 `bpftool` is a build-host requirement only (`bpftool gen object`); the forwarding host does not
@@ -75,7 +75,7 @@ See `REPO-STRUCTURE.md` for the full tree and the reasoning behind each placemen
 The forwarding host runs one binary:
 
 ```sh
-marlin-dataplane attach
+marlind attach
 ```
 
 It loads `marlin.bpf.o`, pins it under `/sys/fs/bpf/marlin`, attaches natively to `$IFACE`, and

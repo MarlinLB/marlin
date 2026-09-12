@@ -84,11 +84,11 @@ further.
 
 - Per-translation-unit `clang -target bpf -g`, linked with `bpftool gen object` into
   `marlin.bpf.o`. Every input carries BTF (`docs/design/03-translation-units.md`).
-- `loader/main.c` (`marlin-dataplane`) and its systemd unit, `Type=notify`, ordered before the
+- `data-plane/marlind/main.c` (`marlind`) and its systemd unit, `Type=notify`, ordered before the
   control plane (`docs/design/02-architecture.md`).
 - `clang-format` and `clang-tidy` wired into CI, blocking per `.clang-tidy`'s
   `WarningsAsErrors`.
-- Load and attach verified in a network namespace: `marlin-dataplane attach` loading, pinning
+- Load and attach verified in a network namespace: `marlind attach` loading, pinning
   and attaching with `bpf_link_create()`. The attach must fail rather than degrade to SKB mode
   (`docs/design/02-architecture.md`).
 - `make tests` builds and runs the native unit tests, one binary per test file — `parser.c`,
@@ -437,9 +437,9 @@ section it affects, not in a document of its own.
 | Whether `data-plane/tests/` joins `make format`/`make tidy`, or takes its own `.clang-format`/`.clang-tidy` | `docs/REPO-STRUCTURE.md` §7.2 | 1 |
 | Whether the indentation row above covers shell as well as C: `.editorconfig` mandates 4 spaces for `*.sh`, every `data-plane/scripts/*.sh` is tab-indented, and nothing rewrites shell the way `clang-format` rewrites C | `.editorconfig` `[*.{sh,bash}]` | 1 |
 | Whether the control plane runs as a non-root user, and what mechanism grants it access to pins `bpf_obj_pin` creates `0600` | `docs/DEPLOYMENT.md` §1.6 | 1 |
-| The loader's real capability set: this table's "Build" section above and `data-plane/Makefile` both assert `CAP_PERFMON` is needed to load this object; `docs/DEPLOYMENT.md` §1.6 lists only `CAP_BPF`+`CAP_NET_ADMIN`. `loader/main.c` is now what calls `BPF_PROG_LOAD`, so this is where the real set gets measured, not merely asserted | `loader/main.c`, `docs/DEPLOYMENT.md` §1.6 | 1 |
+| The loader's real capability set: this table's "Build" section above and `data-plane/Makefile` both assert `CAP_PERFMON` is needed to load this object; `docs/DEPLOYMENT.md` §1.6 lists only `CAP_BPF`+`CAP_NET_ADMIN`. `data-plane/marlind/main.c` is now what calls `BPF_PROG_LOAD`, so this is where the real set gets measured, not merely asserted | `data-plane/marlind/main.c`, `docs/DEPLOYMENT.md` §1.6 | 1 |
 | Whether `/etc/sysctl.d/90-marlin.conf` (`docs/DEPLOYMENT.md` §1.8) is a shipped `deploy/` artefact or integrator host state | `docs/REPO-STRUCTURE.md` §2 | 1 |
-| Whether `deploy/marlin-dataplane.service` stays flat or becomes a `marlin-dataplane@.service` template keyed on `IFACE`, the only form that can express `BindsTo=sys-subsystem-net-devices-%i.device`. The loader's own `RTM_DELLINK` watch (`docs/design/02-architecture.md`) now covers the netdev-disappears case without it, so a template is no longer the only answer — but it remains the systemd-native one | `docs/REPO-STRUCTURE.md` §2 | 1 |
+| Whether `deploy/marlind.service` stays flat or becomes a `marlind@.service` template keyed on `IFACE`, the only form that can express `BindsTo=sys-subsystem-net-devices-%i.device`. The loader's own `RTM_DELLINK` watch (`docs/design/02-architecture.md`) now covers the netdev-disappears case without it, so a template is no longer the only answer — but it remains the systemd-native one | `docs/REPO-STRUCTURE.md` §2 | 1 |
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |

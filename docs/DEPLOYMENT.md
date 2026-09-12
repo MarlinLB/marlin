@@ -26,14 +26,14 @@ would have to be applied rather than omitting it. Those places are §1.9, §1.10
 | Requirement | Value |
 |---|---|
 | Linux kernel | 6.0 or later (`docs/design/01-scope.md`) |
-| `libbpf` shared library | matching the floor `docs/design/29-versions.md` sets, linked at runtime by `marlin-dataplane` |
+| `libbpf` shared library | matching the floor `docs/design/29-versions.md` sets, linked at runtime by `marlind` |
 
 `bpftool`, `bash`, `iproute2`, `ethtool` and `util-linux` are **not** forwarding-host requirements.
-`marlin-dataplane` (`loader/main.c`) is a binary linked against libbpf that calls the kernel
+`marlind` (`data-plane/marlind/main.c`) is a binary linked against libbpf that calls the kernel
 directly — no shell, no shelled-out tool — and asserts host state rather than trusting it
 (§1.2, §1.3). `clang`, `libbpf`, `bpftool gen object` and a C toolchain to build
-`loader/main.c` are build-host requirements that produce the two artefacts that ship:
-`marlin.bpf.o` and the `marlin-dataplane` binary; neither is needed to build the other.
+`data-plane/marlind/main.c` are build-host requirements that produce the two artefacts that ship:
+`marlin.bpf.o` and the `marlind` binary; neither is needed to build the other.
 
 `docs/design/29-versions.md` lists the individual kernel features Marlin depends on and the
 version each arrived in; all are below 6.0. That table exists for the case where the 6.0 floor is
@@ -49,25 +49,25 @@ loader's action:**
 mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
 ```
 
-`mount(2)` needs `CAP_SYS_ADMIN`, which no Marlin component holds (§1.6), so `marlin-dataplane`
+`mount(2)` needs `CAP_SYS_ADMIN`, which no Marlin component holds (§1.6), so `marlind`
 only asserts the mountpoint and refuses if it is absent. On a systemd host this is rarely something
 you have to act on: PID 1 mounts the API filesystems, bpffs included, on every host this document
 targets. Confirm with `mountpoint -q /sys/fs/bpf`.
 
-Install `marlin.bpf.o`, `marlin-dataplane` and the control-plane binary under `/usr/lib/marlin/`,
+Install `marlin.bpf.o`, `marlind` and the control-plane binary under `/usr/lib/marlin/`,
 and the environment file at `/etc/marlin/marlin.env` (from `deploy/marlin.env.example`). Nothing in
 the repository does this installation step yet — no packaging exists (`docs/REPO-STRUCTURE.md`) —
 so until it does, place the files there by hand or point `MARLIN_OBJ` at wherever `marlin.bpf.o`
 was built.
 
-**The loader is `marlin-dataplane` (`marlin-dataplane attach`), a binary linked against libbpf,
+**The loader is `marlind` (`marlind attach`), a binary linked against libbpf,
 not a shell script.** It preflights (§1.3's checks among them), loads `marlin.bpf.o`, pins every
 map and the program under `/sys/fs/bpf/marlin`, attaches with `bpf_link_create()` in native
 (`xdpdrv`-equivalent) mode, and then **holds the resulting link and blocks for as long as it
 runs** — see `docs/design/02-architecture.md` for the full sequence and the reasoning behind each
 step. Two consequences follow directly from holding the link rather than attaching and exiting:
 
-- **The attach lives exactly as long as the process.** `systemctl status marlin-dataplane` showing
+- **The attach lives exactly as long as the process.** `systemctl status marlind` showing
   `active (running)` *is* the datapath being attached — there is no separate state to go stale
   against it, unlike a `RemainAfterExit` oneshot that reports success forever regardless of what
   happens to the attach afterwards.
@@ -82,17 +82,17 @@ matches, creating only what is missing. The program itself is not reused this wa
 loads fresh from `marlin.bpf.o` — so replacing that file and restarting the service runs the new
 program without ever silently keeping the old one, while VIP configuration in the maps survives
 the restart intact. A map whose *definition* changed fails reuse with a libbpf error; recover with
-`marlin-dataplane unload`, which removes the pins deliberately (below) — the operator's decision to
+`marlind unload`, which removes the pins deliberately (below) — the operator's decision to
 accept that configuration loss, not something the loader does on your behalf.
 
 `IFACE` and the pin path come from `marlin.env.example`. `/sys/fs/bpf/marlin` is the default, not
 an invariant — if you change it, the control plane's configuration must agree.
 
 **Stopping the service detaches, but does not erase configuration.** `systemctl stop
-marlin-dataplane` sends `SIGTERM`; the loader closes its link, the kernel detaches the program, and
+marlind` sends `SIGTERM`; the loader closes its link, the kernel detaches the program, and
 forwarding stops — **every VIP on the host goes down**, immediately, exactly as before. What is
 different is that the map pins are untouched: a subsequent restart reattaches against the same
-forwarding table with no reconfiguration needed. `marlin.service`'s `Requires=marlin-dataplane.service`
+forwarding table with no reconfiguration needed. `marlin.service`'s `Requires=marlind.service`
 still means stopping the loader stops the control plane with it — that cascade is unchanged and
 still means restarting `marlin.service` directly, not the loader, is the way to restart the
 control plane alone.
@@ -100,11 +100,11 @@ control plane alone.
 **Checking attach state:**
 
 ```sh
-systemctl is-active marlin-dataplane   # the in-systemd check
-marlin-dataplane status                # equivalent, and usable without systemd
+systemctl is-active marlind   # the in-systemd check
+marlind status                # equivalent, and usable without systemd
 ```
 
-`marlin-dataplane status` exits `0` if the datapath is attached, `3` if it is not, `4` if a link
+`marlind status` exits `0` if the datapath is attached, `3` if it is not, `4` if a link
 exists but does not match the pinned program (foreign or inconsistent), and `1` on a usage or
 environment error — which is also what a caller without `CAP_BPF` gets, since enumerating BPF
 links needs it. It prints a one-line summary either way and touches nothing.
@@ -112,7 +112,7 @@ links needs it. It prints a one-line summary either way and touches nothing.
 **Removing the pins is a separate, deliberate step — never run automatically:**
 
 ```sh
-marlin-dataplane unload
+marlind unload
 ```
 
 Refuses while the datapath is attached. Frees the ~26 MB `fwd_table` and every other pinned map,
@@ -120,7 +120,7 @@ at the cost of the configuration a subsequent `attach` would otherwise have reus
 
 ### 1.3 The XDP interface
 
-**Native XDP is mandatory.** `marlin-dataplane` attaches with `XDP_FLAGS_DRV_MODE`, which fails
+**Native XDP is mandatory.** `marlind` attaches with `XDP_FLAGS_DRV_MODE`, which fails
 the attach outright rather than falling back to generic/SKB mode. This is deliberate: a silent
 fallback would succeed at attach time and then cost roughly an order of magnitude in throughput,
 presenting as a software fault rather than a hardware one. Rule out the recoverable causes first —
@@ -185,7 +185,7 @@ have to read the design documents.
 
 | Component | Capabilities | For |
 |---|---|---|
-| `marlin-dataplane` | `CAP_BPF`, `CAP_NET_ADMIN` | load, pin, attach |
+| `marlind` | `CAP_BPF`, `CAP_NET_ADMIN` | load, pin, attach |
 | Control plane | `CAP_BPF`, `CAP_NET_ADMIN` | map I/O; maintaining kernel neighbour entries; binding probe sockets into the probe VRF |
 
 No component needs `CAP_SYS_ADMIN`. The probe isolation in §1.9 uses a VRF rather than a network
@@ -197,7 +197,7 @@ control plane needs **`CAP_NET_RAW` as well** for §1.9 to work. The conclusion 
 still short of `CAP_SYS_ADMIN` — but the capability set above is the design's, not a verified one.
 
 The loader is a systemd **long-running service (`Type=notify`), ordered before the control
-plane** — `deploy/marlin-dataplane.service` before `deploy/marlin.service`. Unlike the pins it
+plane** — `deploy/marlind.service` before `deploy/marlin.service`. Unlike the pins it
 creates, the loader's own attach does not outlive it (§1.2) — the ordering exists both so that
 exactly one component owns map identity and sizing, and because the control plane has nothing to
 open until the loader has attached at least once. The control plane opens pinned paths and

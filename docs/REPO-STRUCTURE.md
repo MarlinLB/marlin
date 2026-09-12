@@ -92,36 +92,34 @@ marlin/
 │   │       ├── stats.h
 │   │       ├── acl.h
 │   │       └── ratelimit.h          # marlin_ratelimit() prototype
-│   └── tests/                       # native unit tests, `make tests` — Principle 5's exception
-│       ├── parser_test.c            # #includes src/parser.c to reach its static helpers
-│       ├── acl_test.c               # #includes src/acl.c; map lookups answered by stubs/ below
-│       ├── ipip_test.c              # #includes src/ipip.c; bpf_xdp_adjust_head() answered by stubs/ below
-│       ├── nexthop_test.c           # #includes src/nexthop.c; NULL-argument aborts only
-│       ├── ratelimit_test.c         # #includes src/ratelimit.c; hash map + clock answered by stubs/ below
-│       ├── csum_test.c              # <marlin/csum.h>, header-only
-│       ├── mtu_test.c               # <marlin/mtu.h>, header-only
-│       ├── entropy_test.c           # <marlin/entropy.h>, header-only
-│       ├── packet.h                 # packet builder, shared with tests/packet/ below
-│       ├── harness.h                # shared with tests/packet/ below
-│       ├── stubs/                   # shadows <bpf/bpf_helpers.h> for the native tier only
-│       │   ├── map_stub.h           # host LPM trie answering bpf_map_lookup_elem
-│       │   ├── hash_stub.h          # host hash map (exact key, no eviction) for the ratelimit map
-│       │   ├── xdp_stub.h           # headroom bounds + shadow diff answering bpf_xdp_adjust_head
-│       │   ├── time_stub.h          # settable clock answering bpf_ktime_get_ns
-│       │   └── bpf/
-│       │       └── bpf_helpers.h    # SEC/__uint/__type/__always_inline + the map/adjust_head/clock stubs
-│       └── packet/                  # bpf_prog_test_run, exact bytes — §7.2: landed here, not the repo root
-│           ├── xdp_test.c           # cases + main()
-│           ├── prog.h               # load/run wrapper over libbpf
-│           ├── maps.h               # map fd lookup, seeding, drop_stats reads
-│           └── fib.h                # veth + real routes/neighbours for nexthop.c's bpf_fib_lookup() cases
-│
-├── loader/
-│   ├── main.c                        # attach sequence of docs/design/02-architecture.md
-│   └── Makefile
+│   ├── tests/                       # native unit tests, `make tests` — Principle 5's exception
+│   │   ├── parser_test.c            # #includes src/parser.c to reach its static helpers
+│   │   ├── acl_test.c               # #includes src/acl.c; map lookups answered by stubs/ below
+│   │   ├── ipip_test.c              # #includes src/ipip.c; bpf_xdp_adjust_head() answered by stubs/ below
+│   │   ├── nexthop_test.c           # #includes src/nexthop.c; NULL-argument aborts only
+│   │   ├── ratelimit_test.c         # #includes src/ratelimit.c; hash map + clock answered by stubs/ below
+│   │   ├── csum_test.c              # <marlin/csum.h>, header-only
+│   │   ├── mtu_test.c               # <marlin/mtu.h>, header-only
+│   │   ├── entropy_test.c           # <marlin/entropy.h>, header-only
+│   │   ├── packet.h                 # packet builder, shared with tests/packet/ below
+│   │   ├── harness.h                # shared with tests/packet/ below
+│   │   ├── stubs/                   # shadows <bpf/bpf_helpers.h> for the native tier only
+│   │   │   ├── map_stub.h           # host LPM trie answering bpf_map_lookup_elem
+│   │   │   ├── hash_stub.h          # host hash map (exact key, no eviction) for the ratelimit map
+│   │   │   ├── xdp_stub.h           # headroom bounds + shadow diff answering bpf_xdp_adjust_head
+│   │   │   ├── time_stub.h          # settable clock answering bpf_ktime_get_ns
+│   │   │   └── bpf/
+│   │   │       └── bpf_helpers.h    # SEC/__uint/__type/__always_inline + the map/adjust_head/clock stubs
+│   │   └── packet/                  # bpf_prog_test_run, exact bytes — §7.2: landed here, not the repo root
+│   │       ├── xdp_test.c           # cases + main()
+│   │       ├── prog.h               # load/run wrapper over libbpf
+│   │       ├── maps.h               # map fd lookup, seeding, drop_stats reads
+│   │       └── fib.h                # veth + real routes/neighbours for nexthop.c's bpf_fib_lookup() cases
+│   └── marlind/                     # the loader; built by data-plane/Makefile's `marlind` target
+│       └── main.c                   # attach sequence of docs/design/02-architecture.md
 │
 ├── deploy/
-│   ├── marlin-dataplane.service       # Type=notify, before marlin.service
+│   ├── marlind.service                # Type=notify, before marlin.service
 │   ├── marlin.service                 # the control plane
 │   └── marlin.env.example             # IFACE, pin path
 │
@@ -151,15 +149,19 @@ marlin/
     └── style.yml                      # clang-format, clang-tidy, dotnet format, shellcheck
 ```
 
-**`loader/` is a directory of its own, not `tools/` and not `deploy/`.** `tools/` is scoped to
-dev-only tooling (`verifier_stats.c` is never installed); `loader/main.c` is a shipped artefact
-that runs on every forwarding host, so it belongs beside the other deployed pieces, not among
+**`data-plane/marlind/` is not `tools/` and not `deploy/`.** `tools/` is scoped to dev-only
+tooling (`verifier_stats.c` is never installed); `marlind/main.c` is a shipped artefact that
+runs on every forwarding host, so it belongs beside the other deployed pieces, not among
 diagnostics. It is not under `deploy/` either — that directory holds configuration and unit
-files, not source that a C toolchain compiles; giving the loader its own top-level directory
-keeps `deploy/`'s contents uniformly "things you copy" rather than a mix of copied and built
-artefacts. `loader/Makefile` follows `data-plane/Makefile`'s pattern of a plain, standalone
-build rather than joining the root `Makefile`'s recipes directly, for the same per-toolchain
-reason Principle 2 gives each deployed piece its own directory.
+files, not source that a C toolchain compiles.
+
+**`marlind/` sits inside `data-plane/`, not beside it, and has no makefile of its own.** The
+loader shares the datapath's host toolchain end to end — the same `clang`, the same
+`clang-format`/`clang-tidy` configuration, the same `-lbpf` link — and the two ship together, so
+one build per *toolchain* serves Principle 2 better than one per artefact. `data-plane/Makefile`
+builds both: `bpf` for `marlin.bpf.o` alone, `marlind` for the loader alone, `all` for both. This
+is the one directory in the tree holding two build targets, and that is deliberate: it is also
+the one place two deployed artefacts share every tool that produces them.
 
 ---
 
@@ -206,7 +208,7 @@ two that are boundaries for a reason beyond tidiness:
 - **`Marlin.Abi` carries no references at all.** That is what makes it safe as a universal
   dependency, and it is enforceable by reading one `.csproj`.
 - **`Marlin.Bpf` performs I/O and never creates a map or loads a program.**
-  `docs/design/02-architecture.md` confines map creation to `loader/main.c` so there is
+  `docs/design/02-architecture.md` confines map creation to `data-plane/marlind/main.c` so there is
   exactly one owner of map identity and sizing. The project boundary is where that rule is
   visible.
 - **`Marlin.Health` is separate** because `docs/design/18-health.md` gives it a socket-binding

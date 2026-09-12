@@ -46,13 +46,13 @@ per row is only useful with a fallthrough or second-chance mechanism, both rejec
 lookup per packet, to prevent tearing that the write ordering and sentinel rule already make
 harmless.
 
-**A C loader component — reopened.** Originally rejected for load-time map sizing, CO-RE and
-preflight: compile-time sizing removed the sizing need, and `bpftool` covered the rest. Those
-grounds still hold; what reopened the decision is unrelated to them. `bpftool link` has no
-`create` verb and `bpftool net attach` is netlink-only, so making a `bpf_link` attachment (which
-a resident process can hold, tying `systemctl status`'s truth to the kernel's) requires libbpf
-code to exist somewhere. `loader/main.c` is that code, kept to attach, pin and hold the link —
-it does not reintroduce load-time sizing or CO-RE. See `docs/design/02-architecture.md`.
+**A general-purpose C loader** was rejected for load-time map sizing, CO-RE and preflight:
+compile-time sizing removed the sizing need, and `bpftool` covered the rest. Those grounds still
+hold and do not apply to `data-plane/marlind/main.c`, which exists for an unrelated reason: `bpftool link`
+has no `create` verb and `bpftool net attach` is netlink-only, so making a `bpf_link` attachment
+(which a resident process can hold, tying `systemctl status`'s truth to the kernel's) requires
+libbpf code to exist somewhere. `data-plane/marlind/main.c` is that code — it attaches, pins and holds the
+link, and does not reintroduce load-time sizing or CO-RE. See `docs/design/02-architecture.md`.
 
 **Load-time map sizing.** 26 MB of `fwd_table` regardless of VIP count, in exchange for
 deleting map pre-creation, the `map name … pinned …` reuse mechanism and its pin-path collision

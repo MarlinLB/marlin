@@ -9,7 +9,7 @@
  * from outside this process; `ip link set ... xdp off` and `bpftool net
  * detach` both fail with EBUSY against it.
  *
- * Usage: marlin-dataplane attach | status | unload
+ * Usage: marlind attach | status | unload
  *
  *   attach  preflight, load (reusing pinned maps), pin, attach, then block
  *           until SIGTERM/SIGINT or the interface disappears
@@ -52,15 +52,15 @@
 #include <bpf/libbpf.h>
 
 /* bpftool pins each program under its C function name, not its section name. */
-#define MARLIN_PROG_NAME "xdp_main"
+#define MARLIN_PROG_NAME       "xdp_main"
 
 #define MARLIN_DEFAULT_OBJ     "/usr/lib/marlin/marlin.bpf.o"
 #define MARLIN_DEFAULT_PIN_DIR "/sys/fs/bpf/marlin"
 
-#define EXIT_ATTACHED      0
-#define EXIT_USAGE         1
-#define EXIT_NOT_ATTACHED  3
-#define EXIT_FOREIGN       4
+#define EXIT_ATTACHED          0
+#define EXIT_USAGE             1
+#define EXIT_NOT_ATTACHED      3
+#define EXIT_FOREIGN           4
 
 struct config {
     const char *iface;
@@ -78,18 +78,24 @@ static void logmsg(const char *fmt, ...)
 {
     va_list ap;
 
-    fprintf(stderr, "marlin-dataplane: ");
+    fprintf(stderr, "marlind: ");
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fprintf(stderr, "\n");
 }
 
-static void die(const char *fmt, ...)
+/*
+ * _Noreturn matters beyond documentation: without it, cmd_unload()'s callers
+ * of die() read as falling through to code that assumes a non-NULL dir/fd,
+ * which is what an undeclared-noreturn die() made the static analyzer flag
+ * at the opendir() failure path below.
+ */
+static _Noreturn void die(const char *fmt, ...)
 {
     va_list ap;
 
-    fprintf(stderr, "marlin-dataplane: ");
+    fprintf(stderr, "marlind: ");
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
@@ -303,7 +309,7 @@ static bool ethtool_feature_active(const char *iface, const char *feature, bool 
     }
 
     for(i = 0; i < nstrings; i++) {
-        const char *name = (const char *)&strings->data[i * ETH_GSTRING_LEN];
+        const char *name = (const char *)&strings->data[(size_t)i * ETH_GSTRING_LEN];
 
         if(strncmp(name, feature, ETH_GSTRING_LEN) == 0) {
             uint32_t block = i / 32;
@@ -363,7 +369,7 @@ static int print_diagnostics(enum libbpf_print_level level, const char *fmt, va_
  * loads fresh from obj_path, but map contents and VIP configuration survive
  * both a restart and a datapath upgrade, as long as no map's definition has
  * changed. A definition that did change fails reuse with a libbpf error;
- * `marlin-dataplane unload` clears the old pins deliberately.
+ * `marlind unload` clears the old pins deliberately.
  */
 static struct bpf_object *load_and_pin_maps(const char *obj_path, const char *pin_dir)
 {
@@ -578,8 +584,7 @@ static int cmd_attach(void)
     link_fd = attach_link(bpf_program__fd(prog), cfg.iface, cfg.ifindex);
 
     logmsg("attached %s to %s (xdpdrv), pinned under %s", MARLIN_PROG_NAME, cfg.iface, cfg.pin_dir);
-    notify("READY=1\nSTATUS=attached %s to %s (ifindex %d); pins under %s", MARLIN_PROG_NAME, cfg.iface, cfg.ifindex,
-           cfg.pin_dir);
+    notify("READY=1\nSTATUS=attached %s to %s (ifindex %d); pins under %s", MARLIN_PROG_NAME, cfg.iface, cfg.ifindex, cfg.pin_dir);
 
     for(;;) {
         int n = epoll_wait(epfd, events, 2, -1);
@@ -672,13 +677,13 @@ static int cmd_status(void)
         }
 
         if(!have_pinned_id || info.prog_id != pinned_prog_id) {
-            printf("foreign: link %u on %s runs prog id %u, pins under %s expect a different program\n", info.id,
-                   cfg.iface, info.prog_id, cfg.pin_dir);
+            printf("foreign: link %u on %s runs prog id %u, pins under %s expect a different program\n", info.id, cfg.iface,
+                   info.prog_id, cfg.pin_dir);
             return EXIT_FOREIGN;
         }
 
-        printf("attached: %s (id %u) on %s (ifindex %d) via link %u; pins under %s\n", MARLIN_PROG_NAME, info.prog_id,
-               cfg.iface, cfg.ifindex, info.id, cfg.pin_dir);
+        printf("attached: %s (id %u) on %s (ifindex %d) via link %u; pins under %s\n", MARLIN_PROG_NAME, info.prog_id, cfg.iface,
+               cfg.ifindex, info.id, cfg.pin_dir);
         return EXIT_ATTACHED;
     }
 
