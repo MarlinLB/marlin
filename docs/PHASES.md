@@ -308,9 +308,11 @@ configuration surface for either would resolve both.
    accumulated stack cap drops to 256 bytes, and tail calls do not return. **Measured**, with
    `make verifier-stats`, over a reachable set that includes `marlin_balancer_process()`, both
    `marlin_nexthop_*` entry points and all three encapsulation units — against limits of
-   1,000,000 processed instructions and a 512-byte worst combined stack depth
-   (`docs/design/05-budgets.md`). The measurement is a build product, so this criterion is the
-   run, not a figure recorded here.
+   1,000,000 processed instructions and a 512-byte **worst root-to-leaf call chain**, not a
+   per-function maximum (`docs/design/05-budgets.md`). CI records which rounding —
+   `bpf_jit_enable=1` (16 bytes) or `=0` (32 bytes) — the figure was measured under, since the
+   two can differ by whether the chain is still inside budget. The measurement is a build
+   product, so this criterion is the run, not a figure recorded here.
 
 ---
 
@@ -444,10 +446,6 @@ section it affects, not in a document of its own.
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
 | `BPF_FIB_LOOKUP_DIRECT` has no configuration surface, and neither does `fib.ipv4_src`/`tos`/`l4_protocol`/`sport`/`dport`, left unseeded for the same reason | `nexthop.c:75-80` | 2b |
-| Duplicate call site: `src/main.c` calls `marlin_acl_check()` as well as `balancer.c`, so the rule set is evaluated twice per packet against the two trie lookups `docs/design/11-pipeline.md` budgets | `src/main.c`, `docs/design/11-pipeline.md` step 3 | 2b |
-| Duplicate call site: `src/main.c` enforces the block verdict ahead of the VIP lookup, so a block drops instance-wide for every destination rather than only where `VIP_ACL` is set — over-enforcement that `CFG_ACL_ENABLE` defaulting off is what keeps safe. `balancer.c`'s gate is the one `docs/design/27-source-filtering.md` specifies | `src/main.c`, `docs/design/27-source-filtering.md` "Evaluation and enforcement" | 2b |
-| Duplicate call site: `src/main.c` calls `marlin_ratelimit()` ahead of the VIP lookup and discards its verdict, so a metered packet spends a token there as well as at `balancer.c`'s step-5 site and a refusal on that path neither drops nor counts. Acceptable only because `CFG_RL_ENABLE` defaults off | `src/main.c`, `docs/design/11-pipeline.md` step 5 | 2b |
-| Duplicate call site: `xdp_interim_nexthop()` in `src/main.c` reaches `marlin_nexthop_l2dsr()`/`marlin_nexthop_encapsulate()` on a path `balancer.c` already owns at `docs/design/11-pipeline.md` step 9 | `src/main.c`, `docs/design/11-pipeline.md` step 9 | 2b |
 | Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly | `docs/design/11-pipeline.md` step 3 | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself. The `data-plane/scripts/vxlan_wsl.sh` and `netns-topo.sh` rigs assume `lo`/a dummy device, matching every other mode's rig — an operational default for development, not a resolution of the question | `docs/design/01-scope.md` | 2b |
 | Netns integration rigs: `tests/integration/` versus `data-plane/scripts/`, where all five currently live | `docs/REPO-STRUCTURE.md` §7.8 | 2b |

@@ -40,7 +40,8 @@ struct marlin_ctx {            /* 104 bytes */
     __u8 pad;                  /*  1 */
 };
 
-_Static_assert(sizeof(struct marlin_ctx) <= 108, "marlin_ctx exceeds its share of MAX_BPF_STACK");
+_Static_assert(sizeof(struct marlin_ctx) <= 108,
+               "marlin_ctx exceeds its mctx_scratch per-CPU map-value budget"); /* maps.h; docs/design/05-budgets.md */
 
 enum marlin_ret {
     /* terminal outcomes, not counted here */

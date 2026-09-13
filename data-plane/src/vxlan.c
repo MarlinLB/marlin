@@ -43,6 +43,7 @@ int marlin_vxlan_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
     struct udphdr udp;
     struct marlin_vxlan_hdr vxlan;
     __u16 inner_len;
+    __be16 sport;
     int rc;
 
     if(ctx == NULL || mctx == NULL) {
@@ -122,9 +123,13 @@ int marlin_vxlan_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
     iph.daddr = mctx->backend.addr;
     iph.check = marlin_ipv4_csum(&iph);
 
+    /* Pinned: left inline, clang spills mctx's tuple fields by scheduling this past the header stores below. */
+    sport = marlin_entropy_sport(&mctx->tuple);
+    barrier_var(sport);
+
     /* check=0: unconditionally permitted with an IPv4 outer (docs/design/14-forwarding-modes.md SS7.6). */
     __builtin_memset(&udp, 0, sizeof(udp));
-    udp.source = marlin_entropy_sport(&mctx->tuple);
+    udp.source = sport;
     udp.dest = (mctx->backend.encap_dport != 0) ? mctx->backend.encap_dport : bpf_htons(MARLIN_VXLAN_DPORT_DEFAULT);
     udp.len = bpf_htons((__u16)(MARLIN_UDP_HLEN + sizeof(vxlan) + ETH_HLEN + inner_len));
     udp.check = 0;

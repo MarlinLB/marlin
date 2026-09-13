@@ -47,6 +47,23 @@ modified in place; changing any of them is a removal followed by an addition und
 ID. `id` introduces no new rule here — changing a backend's ID is already a removal followed by
 an addition, so this makes an existing one apply to one more field.
 
+## `vip_map` held live in `balancer.c`
+
+`marlin_balancer_process()` keeps the `bpf_map_lookup_elem()` result from `vip_map` as a
+`const struct vip_meta *` for the rest of the packet's processing, rather than copying it onto
+the stack — the copy cost a 24-byte struct plus the register pressure it added around the
+SipHash unrolls that follow, on a 512-byte combined budget (`docs/design/05-budgets.md`).
+
+`hash_key` is established once at VIP creation and never rewritten at reconcile time
+(`docs/design/10-map-invariants.md`), so holding a pointer to it changes nothing. `flags` is
+mutable at runtime and is read at several points across one packet's processing (ACL
+enforcement, rate-limit gating, the fragment check, 5-tuple selection); a control-plane write to
+that VIP concurrent with those reads may be observed at some of them and not others. This is the
+same class of exposure the `backends` section above already accepts for `flags` and
+`egress_ifindex` — a live field may be read mid-update — extended from `backends` (`ARRAY`) to
+`vip_map` (`HASH`). The previous stack-copy was not a point-in-time snapshot either: `*out =
+*meta` is itself a non-atomic multi-word copy racing the same concurrent write.
+
 ## Rows pointing at a down backend drop
 
 They do not fall through to the next candidate in the rendezvous order. Falling through would

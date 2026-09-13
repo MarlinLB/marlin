@@ -48,6 +48,11 @@
 #define __hidden __attribute__((visibility("hidden")))
 #endif
 
+/* Same definition as the real header's: an opaque compiler barrier, not a helper. */
+#ifndef barrier_var
+#define barrier_var(var) asm volatile("" : "+r"(var))
+#endif
+
 #ifndef NULL
 #define NULL ((void *)0)
 #endif

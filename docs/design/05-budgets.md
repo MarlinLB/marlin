@@ -32,12 +32,20 @@ regression signal (`docs/design/24-testing.md`).
 The kernel's own verifier log states this as one figure per BPF-to-BPF-callable function, joined
 with `+` — "stack depth 144+72+24+32+..." — and that display reads exactly like a sum to add up,
 which it is not: each figure is already that function's own worst case if execution starts
-there, and the **maximum**, not the total, is what `MAX_BPF_STACK` is checked against. Marlin's
-units are only ever called as sequential siblings from `xdp_main` — none calls another — so at
-most one of them plus `xdp_main`'s own frame is on the stack at once; a verifier that instead
-required all of them simultaneously would have rejected the load outright rather than accept it
-and later pass `packet-tests`. `verifier_stats.c` prints each figure and their max explicitly
-for exactly this reason, rather than relaying the kernel's line as-is.
+there, with no call-graph information attached, in an order that carries no names. Neither the
+sum nor the maximum of that flat list is what `MAX_BPF_STACK` is checked against — what is
+checked is the deepest **root-to-leaf sum along the real call graph**, each frame rounded up to
+16 bytes (`round_up_stack_depth()`, kernel-JIT builds — the default, `bpf_jit_enable=1`) or 32
+bytes (interpreted builds).
+
+This is not one of Marlin's units calling another as a byte-for-byte coincidence: `balancer.c`
+calls seven of the other nine global subprograms directly, so `xdp_main → marlin_balancer_process
+→ marlin_vxlan_encap_packet` is a real three-frame chain, not three siblings. `verifier_stats.c`
+reconstructs that call graph from the linked object's own `R_BPF_64_32` relocations — the
+BPF-to-BPF call sites `bpftool gen object` leaves for libbpf to resolve — pairs it with each
+function's own decoded stack depth, and walks it depth-first from `xdp_main` to report the worst
+chain by name, under both roundings. The kernel's anonymous per-function list is still printed
+alongside for cross-checking, but it is no longer what the tool's answer is derived from.
 
 `balancer.c` does not appear as a figure of its own: its stage functions are `static
 __always_inline` (see Verifier budget, below), so their cost lands in the frame of whichever

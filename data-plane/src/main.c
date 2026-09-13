@@ -103,19 +103,37 @@ static __always_inline int xdp_interim_nexthop(struct xdp_md *ctx, struct marlin
 SEC("xdp")
 int xdp_main(struct xdp_md *ctx)
 {
-    struct marlin_ctx mctx;
+    struct marlin_ctx *mctx;
     __u8 *origin_ip;
+    __u32 zero = 0;
     int rc;
 
-    __builtin_memset(&mctx, 0, sizeof(mctx));
-    rc = xdp_load_config(&mctx);
+    /*
+     * max_entries is 1 and the key is always this same constant, so the
+     * lookup can only return NULL if the map failed to allocate its one
+     * per-CPU slot at load time -- checked because the verifier requires
+     * it of every PTR_TO_MAP_VALUE_OR_NULL, not because this is reachable.
+     */
+    mctx = bpf_map_lookup_elem(&mctx_scratch, &zero);
+
+    if(!mctx) {
+        bpf_printk("Failed to look up per-CPU scratch state\n");
+        return XDP_ABORTED;
+    }
+
+    /*
+     * Required for correctness here, not for the verifier: this slot carries
+     * whatever the last packet processed on this CPU left behind.
+     */
+    __builtin_memset(mctx, 0, sizeof(*mctx));
+    rc = xdp_load_config(mctx);
 
     if(rc != MARLIN_OK) {
         bpf_printk("Failed to load config: rc=%d\n", rc);
         return XDP_ABORTED;
     }
 
-    rc = marlin_parse(ctx, &mctx);
+    rc = marlin_parse(ctx, mctx);
     marlin_stats_reason(rc);
 
     if(rc != MARLIN_OK) {
@@ -123,7 +141,7 @@ int xdp_main(struct xdp_md *ctx)
         return marlin_action(rc);
     }
 
-    rc = marlin_acl_check(&mctx);
+    rc = marlin_acl_check(mctx);
 
     if(rc == MARLIN_ACL_ABORT) {
         rc = MARLIN_ABORT_NULLREF;
@@ -131,9 +149,9 @@ int xdp_main(struct xdp_md *ctx)
         return marlin_action(rc);
     }
 
-    mctx.acl_verdict = (__u8)rc;
+    mctx->acl_verdict = (__u8)rc;
 
-    if(mctx.acl_verdict == MARLIN_ACL_BLOCK) {
+    if(mctx->acl_verdict == MARLIN_ACL_BLOCK) {
         rc = MARLIN_DROP_ACL_BLOCKED;
         marlin_stats_reason(rc);
         return marlin_action(rc);
@@ -147,20 +165,20 @@ int xdp_main(struct xdp_md *ctx)
      * VIP_RATELIMIT, which is the caller's gate. CFG_RL_ENABLE defaulting off is what
      * keeps that safe.
      */
-    rc = marlin_ratelimit(&mctx);
+    rc = marlin_ratelimit(mctx);
 
     if(rc != MARLIN_OK) {
         marlin_stats_reason(rc);
         return marlin_action(rc);
     }
 
-    origin_ip = (__u8 *)&mctx.tuple.src[0];
+    origin_ip = (__u8 *)&mctx->tuple.src[0];
 
-    bpf_printk("Processing packet, size=%u origin ip=%u.%u.%u.%u\n", mctx.pkt_len, origin_ip[0], origin_ip[1], origin_ip[2],
+    bpf_printk("Processing packet, size=%u origin ip=%u.%u.%u.%u\n", mctx->pkt_len, origin_ip[0], origin_ip[1], origin_ip[2],
                origin_ip[3]);
 
     /* Interim, see xdp_interim_nexthop above. MARLIN_OK means it declined. */
-    rc = xdp_interim_nexthop(ctx, &mctx);
+    rc = xdp_interim_nexthop(ctx, mctx);
 
     if(rc != MARLIN_OK) {
         marlin_stats_reason(rc);

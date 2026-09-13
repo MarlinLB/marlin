@@ -191,7 +191,7 @@ VERIFIER_STATS_BIN := $(BUILD_DIR)/tools/verifier_stats
 $(VERIFIER_STATS_BIN): $(TOOLS_DIR)/verifier_stats.c
 	@mkdir -p $(BUILD_DIR)/tools
 	@echo "compile $(notdir $<)"
-	@$(HOST_CC) $(TEST_CFLAGS) -o $@ $< -lbpf
+	@$(HOST_CC) $(TEST_CFLAGS) -o $@ $< -lbpf -lelf
 
 .PHONY: verifier-stats
 verifier-stats: $(MARLIN_OBJ) $(VERIFIER_STATS_BIN)
