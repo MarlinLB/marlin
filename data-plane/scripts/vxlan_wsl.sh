@@ -431,7 +431,7 @@ seed() {
 	# backend.mac stays zero -- see summary() for why. inner_mac must match
 	# what the backend's vxlan device presents, or the decapsulated frame
 	# arrives addressed to a MAC the device does not answer to.
-	value=$(pack_backend "${BE_IP}" "" "${flags}" "${port}" "${VNI}" "${INNER_MAC}")
+	value=$(pack_backend "${BE_IP}" "" "${flags}" 0 "${port}" "${VNI}" "${INNER_MAC}")
 	# Unquoted on purpose: bpftool takes the value as separate byte arguments.
 	# shellcheck disable=SC2086
 	"${BPFTOOL}" map update pinned "${PINDIR}/backends" key 0 0 0 0 value ${value}

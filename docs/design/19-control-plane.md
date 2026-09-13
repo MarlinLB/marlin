@@ -5,6 +5,10 @@
 
 - Own the configuration of record and reconcile the maps to it.
 - Generate `fwd_table` per VIP from the stored `table_seed` and member set, and write it.
+- **Write `backend.id` equal to the slot it is writing to, on every add.** The array slot is
+  already the backend's identity (`docs/design/07-maps.md`); this makes the value carry it too, and
+  a mismatch is a control-plane bug the reconciler asserts against at the write site
+  (`docs/design/20-configuration-validation.md`), not something the datapath can catch.
 - Health-check backends and maintain the `MARLIN_BE_F_STATE` bit of `backend.flags`.
 - Populate and refresh `backend.mac` from the kernel neighbour table.
 - **Populate `backend.vni` and `backend.inner_mac` for every VXLAN backend, from configuration.**

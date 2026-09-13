@@ -443,7 +443,7 @@ seed() {
 	# backend.mac stays zero: the encapsulating path swaps the frame's own
 	# addresses and never reads it (src/nexthop.c). vni and inner_mac are
 	# omitted -- they belong to VXLAN alone.
-	value=$(pack_backend "${BE_IP}" "" "${flags}" "${port}")
+	value=$(pack_backend "${BE_IP}" "" "${flags}" 0 "${port}")
 	# Unquoted on purpose: bpftool takes the value as separate byte arguments.
 	# shellcheck disable=SC2086
 	"${BPFTOOL}" map update pinned "${PINDIR}/backends" key 0 0 0 0 value ${value}

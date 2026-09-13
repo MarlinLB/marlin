@@ -42,8 +42,10 @@ read-modify-write of the complete struct. Constructing a partial `struct backend
 would corrupt `addr`, `mac`, `encap_dport`, `vni` or `inner_mac` in a way that a torn read could
 expose.
 
-`addr`, `mac`, `encap_dport`, `vni`, `inner_mac` and the mode bits of `flags` are never modified
-in place; changing any of them is a removal followed by an addition under a new backend ID.
+`addr`, `mac`, `encap_dport`, `vni`, `inner_mac`, `id` and the mode bits of `flags` are never
+modified in place; changing any of them is a removal followed by an addition under a new backend
+ID. `id` introduces no new rule here — changing a backend's ID is already a removal followed by
+an addition, so this makes an existing one apply to one more field.
 
 ## Rows pointing at a down backend drop
 

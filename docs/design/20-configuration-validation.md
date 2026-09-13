@@ -41,6 +41,10 @@ Rejected at configuration time rather than allowed to fail per packet:
   "reachable", not "redirectable". An ifindex in neither set names an interface the datapath
   could never legitimately select.
 - A backend ID of 0 (`docs/design/10-map-invariants.md`).
+- A `struct backend` written to slot `i` whose `id` is not `i`. This is the only place the
+  redundancy between the array slot and the value's own `id` field can be caught, and it is a
+  control-plane bug rather than an operator input error: the reconciler asserts it at the write
+  site, it is not a validation of operator-supplied configuration.
 - More than `MAX_BACKENDS - 1` backends, or more than `MAX_VIPS` VIPs.
 - An ACL allow rule for `0.0.0.0/0` or `::/0`. Under `docs/design/27-source-filtering.md`'s precedence it nullifies the
   blocklist and the rate limiter entirely, and no operator means it.

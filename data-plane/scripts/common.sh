@@ -261,9 +261,12 @@ abi_define() {
 # takes. python3 rather than shell arithmetic: both mix network-order
 # addresses with host-order words, and struct.pack states which is which.
 #
-# encap_dport/vni/inner_mac are an optional tail: a mode that does not use a
-# field omits it, rather than writing a value and relying on the datapath to
-# ignore it. l2dsr_wsl.sh and ipip_wsl.sh call this with three arguments only.
+# id is a fourth, always-available argument (default 0, matching the
+# never-allocated-slot-0 sentinel: every rig seeds slot 0). encap_dport/vni/
+# inner_mac stay an optional tail after it: a mode that does not use one of
+# those fields omits it, rather than writing a value and relying on the
+# datapath to ignore it. l2dsr_wsl.sh and ipip_wsl.sh call this with three
+# arguments only.
 pack_backend() {
 	python3 - "$@" <<'PY'
 import socket, struct, sys
@@ -272,10 +275,13 @@ def mac_bytes(s):
     return bytes(int(x, 16) for x in s.split(":")) if s else b"\0" * 6
 
 addr, mac, flags = sys.argv[1], sys.argv[2], int(sys.argv[3])
-encap_dport = int(sys.argv[4]) if len(sys.argv) > 4 else 0
-vni         = int(sys.argv[5]) if len(sys.argv) > 5 else 0
-inner_mac   = sys.argv[6] if len(sys.argv) > 6 else ""
+be_id       = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+encap_dport = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+vni         = int(sys.argv[6]) if len(sys.argv) > 6 else 0
+inner_mac   = sys.argv[7] if len(sys.argv) > 7 else ""
 
+if not 0 <= be_id <= 0xffff:
+    sys.exit("id out of range: %d" % be_id)
 if not 0 <= encap_dport <= 0xffff:
     sys.exit("encap_dport out of range: %d" % encap_dport)
 # MARLIN_VNI_MASK (include/marlin/abi/defines.h): the VXLAN header carries 24
@@ -291,7 +297,7 @@ raw = (socket.inet_aton(addr)              # __be32 addr             0-3
        + struct.pack("=I", 0)              # __u32  egress_ifindex  16-19, 0 disables the check
        + struct.pack("=I", vni)            # __u32  vni             20-23, host order (src/vxlan.c)
        + mac_bytes(inner_mac)              # __u8   inner_mac[6]    24-29
-       + b"\0" * 2)                        # __u8   pad_end[2]      30-31
+       + struct.pack("=H", be_id))         # __u16  id              30-31, host order
 
 if len(raw) != 32:
     sys.exit("struct backend must pack to 32 bytes, got %d" % len(raw))
@@ -347,13 +353,15 @@ addr, mac, flags = raw[0:4], raw[4:10], raw[12]
 dport = struct.unpack("!H", raw[10:12])[0]
 vni = struct.unpack("=I", raw[20:24])[0]
 inner_mac = raw[24:30]
+be_id = struct.unpack("=H", raw[30:32])[0]
 
 btf = entry.get("formatted", {}).get("value")
 if btf is not None:
     if (struct.pack("=I", btf["addr"] & 0xffffffff) != addr
             or int(btf["flags"]) != flags
             or struct.pack("=H", btf["encap_dport"] & 0xffff) != raw[10:12]
-            or int(btf["vni"]) != vni):
+            or int(btf["vni"]) != vni
+            or int(btf["id"]) != be_id):
         print("  BTF disagrees with the offsets this script packs: struct backend moved",
               file=sys.stderr)
         sys.exit(2)
@@ -364,6 +372,7 @@ print("  mac    %s" % ":".join("%02x" % b for b in mac))
 print("  dport  %u%s" % (dport, "" if dport else "  (0 = the mode default the datapath fills in)"))
 print("  vni    %u" % vni)
 print("  inner  %s" % ":".join("%02x" % b for b in inner_mac))
+print("  id     %u" % be_id)
 print("  flags  0x%02x  mode %u, state %s" % (flags, flags & 0x0f, "UP" if up else "DOWN"))
 sys.exit(0 if up else 1)
 ' "${bit}"

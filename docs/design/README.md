@@ -1,8 +1,14 @@
 # Marlin — Design
 
 **Status:** design settled, pre-implementation
-**Last updated:** 2026-09-09
-**Revision:** 10 — ACL enforcement made per-VIP (`27-source-filtering.md`): `vip_meta.flags` bit 0
+**Last updated:** 2026-09-13
+**Revision:** 11 — `struct backend` gained `id` at bytes 30-31 (`08-types.md`), replacing
+`pad_end[2]`; `sizeof` stays 32 and `marlin_ctx` stays 104. It records the backend's own index in
+`backends`, removing the output-parameter chain selection would otherwise thread the index
+through alongside the pointer that already identifies it. `07-maps.md`, `04-calling-convention.md`,
+`17-reconfiguration.md`, `10-map-invariants.md`, `20-configuration-validation.md`,
+`19-control-plane.md`, `DEPLOYMENT.md` and `12-selection.md` follow the consequence.
+Revision 10 — ACL enforcement made per-VIP (`27-source-filtering.md`): `vip_meta.flags` bit 0
 becomes `VIP_ACL` (`08-types.md`), an opt-in gate mirroring `VIP_RATELIMIT`. Evaluation stays
 ahead of the VIP lookup and enforcement moves after it (`11-pipeline.md` step 4), with the
 host-bound arm enforcing instance-wide so the host-firewall property survives the split;

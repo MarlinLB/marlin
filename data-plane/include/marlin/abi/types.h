@@ -36,7 +36,7 @@ struct backend { /* 32 bytes */
     __u32 egress_ifindex;
     __u32 vni;
     __u8 inner_mac[6];
-    __u8 pad_end[2];
+    __u16 id;
 };
 
 struct stats {
@@ -81,6 +81,8 @@ _Static_assert(__builtin_offsetof(struct backend, egress_ifindex) == 16, "backen
 _Static_assert(__builtin_offsetof(struct backend, flags) == 12, "backend.flags must stay where the C# side reads the mode byte");
 _Static_assert(__builtin_offsetof(struct backend, vni) == 20, "backend.vni must follow egress_ifindex with no hole");
 _Static_assert(__builtin_offsetof(struct backend, inner_mac) == 24, "backend.inner_mac must follow vni with no hole");
+_Static_assert(__builtin_offsetof(struct backend, id) == 30, "backend.id must follow inner_mac with no hole");
+_Static_assert(MAX_BACKENDS <= 0x10000, "MAX_BACKENDS must fit backend.id and the QUIC connection ID's two-byte field");
 
 _Static_assert(sizeof(struct stats) == 16, "stats must stay 16 bytes");
 _Static_assert(sizeof(struct marlin_config) == 20, "marlin_config must stay 20 bytes");

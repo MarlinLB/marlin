@@ -454,6 +454,8 @@ section it affects, not in a document of its own.
 | `nexthop.c` maps ten kernel `bpf_fib_lookup()` return codes onto seven named `drop_stats` reasons. `BPF_FIB_LKUP_RET_NOT_FWDED` (the ordinary no-route outcome), `UNSUPP_LWT` and `NO_SRC_ADDR` all fall to the `default:` arm, `MARLIN_DROP_FIB_UNSPEC` — so "no route" is indistinguishable from a helper contract violation in `drop_stats` | `docs/design/16-fib-lookup.md:56-66`, `nexthop.c:82-111` | 2b |
 | Whether `ipip.c`'s, `gue.c`'s and `vxlan.c`'s `tot_len`/`pkt_len` arithmetic needs a `__u32` guard against `__u16` wraparound when `cfg.max_frame == 0` disables `frame_fits()` — unreachable from the datapath today (`pkt_len` derives from `data_end - data`), covered by `ipip_test.c`, `gue_test.c` and `vxlan_test.c` only at the boundary that does not wrap; one guard for all three once decided, the same reasoning that makes them one boundary rather than three (`docs/PHASES.md:34-39`) | `ipip.c:77,85`, `gue.c:85,105`, `vxlan.c:120,143` | 2b |
 | Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |
+| Backend ID allocation authority: the shared configuration store, or each instance's own control plane. `docs/design/21-active-active.md:5-7` lists five values that must be identical across instances and `backend_id` is not among them, yet `:26` presumes agreement on it and `DEPLOYMENT.md:288` tells the integrator to encode "the `backend_id` this instance assigns". The hash path tolerates divergence — two instances may hold the same backend at different indices and still route identically — but `VIP_QUIC` does not, because the ID is on the wire | `docs/design/21-active-active.md:5-7`, `docs/DEPLOYMENT.md:288` | 3 |
+| Whether the reconciler asserts `backends[i].id == i` on every write, or only on a full resync | `docs/design/20-configuration-validation.md` | 3 |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |
 
 ---
@@ -471,8 +473,11 @@ Recorded so their absence is not read as an omission.
   GUE-specific probe blind spot (`docs/design/18-health.md`; `DEPLOYMENT.md` §1.9), silent
   `hash_key`/`table_seed` divergence (`docs/design/10-map-invariants.md`,
   `docs/design/21-active-active.md`), distributed sub-threshold attacks
-  (`docs/design/25-rejected.md`, `docs/design/28-rate-limiting.md`), and the unchecked map ABI
-  (`docs/design/06-map-abi.md`).
+  (`docs/design/25-rejected.md`, `docs/design/28-rate-limiting.md`), the unchecked map ABI
+  (`docs/design/06-map-abi.md`), and a `backends[i].id` that drifts from `i` because of a
+  control-plane bug, which misattributes `backend_stats` to the wrong backend and is caught by
+  nothing outside the reconciler's own write-site assertion
+  (`docs/design/10-map-invariants.md`, `docs/design/20-configuration-validation.md`).
 - **Extending the firewall beyond `docs/design/27-source-filtering.md` and
   `docs/design/28-rate-limiting.md`.** L4-granular rules, stateful matching and userspace attack
   classification are non-goals (`docs/design/01-scope.md`), and nothing beyond what those two

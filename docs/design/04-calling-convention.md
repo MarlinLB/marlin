@@ -66,9 +66,11 @@ called directly on the host with no verifier to make the argument's non-nullness
 address of a local, never a pointer that could be NULL.
 
 - **`marlin_ctx` carries what crosses a translation unit boundary, plus one stage boundary.**
-  `vip_num` and `backend_id` are not members: nothing outside `balancer.c` reads them, and the
-  statistics they key are bumped in the frame that derives them. State that never leaves a
-  frame is a local, not context.
+  `vip_num` is not a member: nothing outside `balancer.c` reads it, and the statistic it keys is
+  bumped in the frame that derives it. State that never leaves a frame is a local, not context.
+  `backend_id` is carried instead — at no stack cost — inside the embedded `backend` itself
+  (`struct backend.id`, `docs/design/08-types.md`), so selection's caller can read
+  `mctx->backend.id` without either function threading the index out as a separate return.
 
   `acl_verdict` is the one exception and does not cross a translation unit boundary either.
   `docs/design/11-pipeline.md` splits ACL evaluation from its enforcement around the VIP lookup —

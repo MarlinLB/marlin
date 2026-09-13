@@ -36,7 +36,9 @@ packet, and the tearing it prevents is harmless under `docs/design/12-selection.
 ordering and `docs/design/10-map-invariants.md`'s sentinel rule.
 
 **`backends` = ARRAY.** `backend_id` is a dense integer namespace allocated by the control
-plane, and the array slot *is* the backend's identity.
+plane, and the array slot *is* the backend's identity — the value now records it too
+(`struct backend.id`, `docs/design/08-types.md`), so a resolved `struct backend` carries its own
+name rather than only being reachable through it.
 
 **None of the three are per-CPU.** All are read-only in the datapath. Per-CPU variants would
 multiply memory and complicate control-plane writes for no benefit.

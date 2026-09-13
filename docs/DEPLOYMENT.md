@@ -532,7 +532,7 @@ Two operational consequences worth knowing before you provision rather than afte
 - **A backend is up or down.** There is no drain. Rows pointing at a backend marked down drop
   (`backend_down`); they are not migrated. Marking a backend down or back up changes no forwarding
   table rows and disrupts nothing else.
-- **The mode bits of `flags`, and `addr`, `encap_dport`, `vni` and `inner_mac`, cannot be edited in place.** Changing any
+- **The mode bits of `flags`, and `addr`, `encap_dport`, `vni`, `inner_mac` and `id`, cannot be edited in place.** Changing any
   of them means removing the backend and adding it under a new identifier. Removal costs only that backend's own
   connections, but the addition half resets approximately `1/(N+1)` of established connections **on
   healthy backends** — about 1.3% at 75 backends. Adding a backend to a live VIP costs the same.
@@ -751,7 +751,7 @@ itself, since that is where the frame is actually delivered, is not settled by t
 documents (`docs/design/01-scope.md`; `PHASES.md`'s open-decision table, Phase 2b). Provision
 conservatively — as for L2 DSR, with ARP/NDP suppressed — until that closes.
 
-Changing a backend's `vni` or `inner_mac` is a remove-and-re-add, not an edit (§2.1).
+Changing a backend's `vni`, `inner_mac` or `id` is a remove-and-re-add, not an edit (§2.1).
 
 See §2.6 for packet size.
 
