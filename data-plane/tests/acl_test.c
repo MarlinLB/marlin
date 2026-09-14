@@ -14,7 +14,7 @@
 
 #include "harness.h"
 
-#include "../src/acl.c"
+#include "../bpf/acl.c"
 
 #define ACL_ADDR4(a, b, c, d) bpf_htonl(((__u32)(a) << 24) | ((__u32)(b) << 16) | ((__u32)(c) << 8) | (__u32)(d))
 

@@ -74,10 +74,16 @@ VIP's short-header volume is the aggregate signal that steering is not landing.
 `bytes` in both maps counts the ingress frame length, not the emitted one, so a VIP's four
 forwarding modes stay comparable against each other and the figure matches what the client
 sent; per-mode encapsulation overhead is a known constant and is not this map's job to carry.
-Both maps are written at selection — after the validity and state checks
-(`docs/design/11-pipeline.md` step 7), before dispatch — so `backend_stats` reflects the
-backend hashing chose even when a later stage (an MTU or FIB drop) discards the packet, which
-is what keeps it usable as the hash-skew signal below.
+`backend_stats` is written at selection — **before** the validity and state checks
+(`docs/design/11-pipeline.md` step 7), not after — so it reflects every backend hashing or QUIC
+steering chose, including one currently down or one a later stage drops for any other reason,
+which is what keeps it usable as the hash-skew signal below. `backend.id` is read back from the
+resolved struct, not from the `fwd_table`/`backends[]` lookup key, so a slot that is stale or
+was never populated reads back `id 0` (`docs/design/10-map-invariants.md`) and its packets and
+bytes are counted there instead of being discarded unmeasured: `backend_stats[0]` is the signal
+that a row is pointing somewhere it should not — the class of control-plane drift
+`docs/PHASES.md`'s "Not phased" section names as caught by nothing else — not a real backend's
+traffic.
 
 Backend distribution is derivable from `backend_stats` alone, which makes hash skew behind
 CGNAT observable without additional instrumentation. It is also the measurement that decides

@@ -13,7 +13,7 @@
 #include "packet.h"
 #include "harness.h"
 
-#include "../src/vxlan.c"
+#include "../bpf/vxlan.c"
 
 /*
  * Grant the same headroom BPF_PROG_TEST_RUN would (tests/packet/prog.h),

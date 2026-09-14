@@ -22,7 +22,7 @@ wants to thread. Both aggregate members earn their place by being read in a unit
 that writes them — `backend` by the encapsulation units and `nexthop.c`, `cfg` by
 `balancer.c` and the encapsulation units — and that is the test any addition has to pass.
 
-**Measured, not estimated.** `make verifier-stats` (`tools/verifier_stats.c`, which loads
+**Measured, not estimated.** `make verifier-stats` (`data-plane/tools/verifier_stats.c`, which loads
 `marlin.bpf.o` through libbpf directly — no `bpftool`, no bpffs pin, since some hosts' LSM
 policy blocks bpffs writes even under root) reports the worst combined stack depth across
 everything `xdp_main` reaches, against the 512-byte limit. The figure moves whenever a unit's

@@ -12,7 +12,7 @@
 #include "packet.h"
 #include "harness.h"
 
-#include "../src/gue.c"
+#include "../bpf/gue.c"
 
 /*
  * Grant the same headroom BPF_PROG_TEST_RUN would (tests/packet/prog.h),

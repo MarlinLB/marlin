@@ -22,7 +22,7 @@
 
 #include "harness.h"
 
-#include "../src/ratelimit.c"
+#include "../bpf/ratelimit.c"
 
 #define RL_ADDR4(a, b, c, d) bpf_htonl(((__u32)(a) << 24) | ((__u32)(b) << 16) | ((__u32)(c) << 8) | (__u32)(d))
 

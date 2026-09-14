@@ -10,7 +10,7 @@ MAKEFLAGS += --no-print-directory
 
 .DEFAULT_GOAL := all
 
-.PHONY: all data-plane bpf marlind check-toolchain ci format tidy clean tests packet-tests verifier-stats help
+.PHONY: all data-plane bpf marlind check-toolchain ci format tidy clean tests packet-tests verifier-stats tools help
 
 all: data-plane
 
@@ -49,6 +49,10 @@ packet-tests:
 verifier-stats:
 	@$(MAKE) -C $(DATA_PLANE_DIR) verifier-stats
 
+## Build every dev tool under data-plane/tools/ (data-plane/Makefile's `tools`).
+tools:
+	@$(MAKE) -C $(DATA_PLANE_DIR) tools
+
 ## Rewrite the data plane's .c/.h in place with clang-format (repo-root .clang-format).
 format:
 	@$(MAKE) -C $(DATA_PLANE_DIR) format
@@ -76,6 +80,7 @@ help:
 	@echo "  tests           Run the native unit tests over the data plane"
 	@echo "  packet-tests    Run bpf_prog_test_run tests over marlin.bpf.o (needs root)"
 	@echo "  verifier-stats  Report verifier insn/stack budgets for marlin.bpf.o (needs root)"
+	@echo "  tools           Build every dev tool under data-plane/tools/"
 	@echo "  help            Show this message"
 	@echo ""
 	@echo "control-plane is not yet wired in here."

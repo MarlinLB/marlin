@@ -22,10 +22,10 @@
 # Identical for every rig: SCRIPT_DIR is set by the caller (its own
 # BASH_SOURCE[0], before this file is sourced), so OBJ resolves the same way
 # regardless of which rig sourced this file.
-OBJ="${MARLIN_OBJ:-${SCRIPT_DIR}/../build/marlin.bpf.o}"
+OBJ="${MARLIN_OBJ:-${SCRIPT_DIR}/../build/bpf/marlin.bpf.o}"
 
 # bpftool pins each program under its C function name, not its section name --
-# SEC("xdp") int xdp_main() pins as xdp_main (data-plane/src/main.c).
+# SEC("xdp") int xdp_main() pins as xdp_main (data-plane/bpf/main.c).
 PROG=xdp_main
 
 # xdpgeneric per every rig's header; overridable to point at a native attach,
@@ -35,7 +35,7 @@ BPFFS=/sys/fs/bpf
 BPFTOOL="${BPFTOOL:-bpftool}"
 
 HTTP_PORT="${HTTP_PORT:-80}" # listen and test_http_get; no VIP lookup exists yet,
-                             # so the port is the listener's alone (src/main.c)
+                             # so the port is the listener's alone (bpf/main.c)
 
 ABI_HDR="${SCRIPT_DIR}/../include/marlin/abi/defines.h"
 RET_HDR="${SCRIPT_DIR}/../include/marlin/marlin.h"
@@ -244,7 +244,7 @@ reload() {
 # and without them an attached program passes every packet.
 #
 # vip_map and fwd_table are not written by any rig, because nothing reads them
-# yet -- xdp_interim_nexthop() takes backends[0] directly (src/main.c). They
+# yet -- xdp_interim_nexthop() takes backends[0] directly (bpf/main.c). They
 # become required when selection lands (docs/PHASES.md, Phase 2b).
 
 # One #define, read out of the ABI header at run time. Copying the values here
@@ -295,7 +295,7 @@ raw = (socket.inet_aton(addr)              # __be32 addr             0-3
        + struct.pack("B", flags)           # __u8   flags            12
        + b"\0" * 3                         # __u8   pad[3]          13-15
        + struct.pack("=I", 0)              # __u32  egress_ifindex  16-19, 0 disables the check
-       + struct.pack("=I", vni)            # __u32  vni             20-23, host order (src/vxlan.c)
+       + struct.pack("=I", vni)            # __u32  vni             20-23, host order (bpf/vxlan.c)
        + mac_bytes(inner_mac)              # __u8   inner_mac[6]    24-29
        + struct.pack("=H", be_id))         # __u16  id              30-31, host order
 
@@ -434,7 +434,7 @@ unseed() {
 # trace
 # ---------------------------------------------------------------------------
 #
-# xdp_main writes a bpf_printk line per packet (src/main.c), which lands in the
+# xdp_main writes a bpf_printk line per packet (bpf/main.c), which lands in the
 # kernel trace pipe and nowhere else.
 trace() {
 	need_root
@@ -576,7 +576,7 @@ listen() {
 		echo "      or the client cannot reach ${VIP} at all." >&2
 	elif ! backend_seeded; then
 		echo "note: backends[0] is not seeded -- ${PROG} passes every packet" >&2
-		echo "      (src/main.c). Run '$0 seed' in another terminal." >&2
+		echo "      (bpf/main.c). Run '$0 seed' in another terminal." >&2
 	fi
 
 	if be_port_busy "${port}"; then

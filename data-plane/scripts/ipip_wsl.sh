@@ -72,12 +72,12 @@
 #
 # The working order is up, attach, seed, listen. Seeding is not optional: BPF
 # array maps come up zero-filled, and an all-zero backends[0] has
-# MARLIN_BE_F_STATE clear, which xdp_interim_nexthop() (src/main.c) reads as
+# MARLIN_BE_F_STATE clear, which xdp_interim_nexthop() (bpf/main.c) reads as
 # "not mine" and passes. An attached program with unseeded maps forwards
 # nothing and looks exactly like a broken datapath.
 #
-# marlin_nexthop_encapsulate() (src/nexthop.c) MAC-swaps the frame that
-# marlin_ipip_encap_packet() (src/ipip.c) already wrapped in an outer IPv4
+# marlin_nexthop_encapsulate() (bpf/nexthop.c) MAC-swaps the frame that
+# marlin_ipip_encap_packet() (bpf/ipip.c) already wrapped in an outer IPv4
 # header, so a completed GET is evidence here: the frame leaving miprt-a is 20
 # bytes larger than the one that arrived, and ${BE_IP}:80 (unbound) refuses
 # anything that arrived by ordinary routing rather than through ipip0.
@@ -355,7 +355,7 @@ seed() {
 	flags=$(( mode | (1 << bit) ))
 
 	# backend.mac stays zero: the encapsulating path swaps the frame's own
-	# addresses and never reads it (src/nexthop.c).
+	# addresses and never reads it (bpf/nexthop.c).
 	value=$(pack_backend "${BE_IP}" "" "${flags}")
 	# Unquoted on purpose: bpftool takes the value as separate byte arguments.
 	# shellcheck disable=SC2086

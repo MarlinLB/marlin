@@ -55,7 +55,7 @@
 #
 # On the wire, Marlin -> backend: outer IPv4 (protocol 17) + UDP + a 4-byte GUE
 # v0 header — 0x00, then the inner protocol (4 or 41), then two zero bytes.
-# 32 bytes, MARLIN_OVERHEAD_GUE (src/gue.c). The outer UDP checksum is always
+# 32 bytes, MARLIN_OVERHEAD_GUE (bpf/gue.c). The outer UDP checksum is always
 # zero, which an IPv4 outer permits unconditionally
 # (docs/design/14-forwarding-modes.md §7.6).
 #
@@ -91,7 +91,7 @@
 #
 # The working order is up, attach, seed, listen. Seeding is not optional: BPF
 # array maps come up zero-filled, and an all-zero backends[0] has
-# MARLIN_BE_F_STATE clear, which xdp_interim_nexthop() (src/main.c) reads as
+# MARLIN_BE_F_STATE clear, which xdp_interim_nexthop() (bpf/main.c) reads as
 # "not mine" and passes. An attached program with unseeded maps forwards
 # nothing and looks exactly like a broken datapath.
 #
@@ -278,7 +278,7 @@ up() {
 
 	# The listener is not the whole receive path: the kernel resubmits the
 	# decapsulated packet into the protocol-4 or protocol-41 handler on the GUE
-	# header's proto byte (src/gue.c), and that handler still needs a tunnel
+	# header's proto byte (bpf/gue.c), and that handler still needs a tunnel
 	# device to match -- GUE removes the second listener, not the second device
 	# (docs/design/14-forwarding-modes.md §7.3).
 	#
@@ -441,7 +441,7 @@ seed() {
 	}
 
 	# backend.mac stays zero: the encapsulating path swaps the frame's own
-	# addresses and never reads it (src/nexthop.c). vni and inner_mac are
+	# addresses and never reads it (bpf/nexthop.c). vni and inner_mac are
 	# omitted -- they belong to VXLAN alone.
 	value=$(pack_backend "${BE_IP}" "" "${flags}" 0 "${port}")
 	# Unquoted on purpose: bpftool takes the value as separate byte arguments.
@@ -481,7 +481,7 @@ EOF
 # ---------------------------------------------------------------------------
 #
 # Decodes the pcap verify_capture() (common.sh) collected and checks the
-# emitted frame against src/gue.c and docs/design/14-forwarding-modes.md §7.3.
+# emitted frame against bpf/gue.c and docs/design/14-forwarding-modes.md §7.3.
 verify() {
 	need_root
 	need_cmd tcpdump python3

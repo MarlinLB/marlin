@@ -60,7 +60,7 @@
 #
 # The working order is up, attach, seed, listen. Seeding is not optional: BPF
 # array maps come up zero-filled, and an all-zero backends[0] has
-# MARLIN_BE_F_STATE clear, which xdp_interim_nexthop() (src/main.c) reads as
+# MARLIN_BE_F_STATE clear, which xdp_interim_nexthop() (bpf/main.c) reads as
 # "not mine" and passes. An attached program with unseeded maps forwards
 # nothing and looks exactly like a broken datapath.
 #

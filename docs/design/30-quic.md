@@ -86,6 +86,23 @@ backend_id = be16(cid[1..2]) ^ (mask & 0xffff)
 check      = (mask >> 16) & 0x3f
 ```
 
+**Byte layout of the SipHash input.** `marlin_siphash()` requires a compile-time-constant length
+in whole 8-byte blocks (`data-plane/include/marlin/siphash.h:108-114`), and the entropy field's
+length varies with the configured connection-ID length (4-17 bytes, `VIP_QUIC_CID_LEN`). The
+formula above is computed over a fixed 24-byte buffer, not the entropy bytes at their actual
+length:
+
+```
+buffer offset 0        domain tag, MARLIN_QUIC_SIPHASH_DOMAIN (0x51)
+buffer offsets 1-17     entropy, left-aligned, zero-padded past the configured length
+buffer offsets 18-23    zero
+```
+
+hashed whole with `hash_key` regardless of the configured length — the trailing zeroes are part
+of the digest. A backend generating connection IDs must reproduce this padding exactly, or the
+check field never verifies against it. `data-plane/bpf/balancer.c`'s `struct marlin_quic_input`
+is this layout.
+
 Minimum connection-ID length **7**. A short header does not carry its DCID length on the wire
 (RFC 8999 §4.2 — "not encoded in packets with a short header and is not constrained by this
 specification"), so the length is per-VIP configuration (`VIP_QUIC_CID_LEN`,
