@@ -1,0 +1,15 @@
+{
+    "configurations": [
+        {
+            "name": "marlin",
+            "compileCommands": "${workspaceFolder}/data-plane/build/compile_commands.json",
+            "compilerPath": "/usr/lib/llvm-18/bin/clang",
+            "cStandard": "gnu11",
+            "includePath": [
+                "${workspaceFolder}/data-plane/include",
+                "${workspaceFolder}/data-plane/tests/stubs"
+            ]
+        }
+    ],
+    "version": 4
+}
