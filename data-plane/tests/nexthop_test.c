@@ -13,7 +13,7 @@
 
 #include "harness.h"
 
-#include "../src/nexthop.c"
+#include "../bpf/nexthop.c"
 
 MARLIN_TEST(nexthop_l2dsr_null_ctx_aborts)
 {

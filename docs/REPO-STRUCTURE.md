@@ -33,7 +33,7 @@ The rules the layout follows, stated so a new file can be placed without re-deri
    packet-level tests a phase-0 artefact; nesting them under `data-plane/` invites treating
    them as build scaffolding.
    **Exception: native C unit tests of a single translation unit, and the packet-level harness
-   that reuses them.** `data-plane/tests/` holds tests that `#include` a `data-plane/src/*.c`
+   that reuses them.** `data-plane/tests/` holds tests that `#include` a `data-plane/bpf/*.c`
    file directly to reach its `static` helpers — they cannot be moved out of that tree without
    losing that access. `data-plane/tests/stubs/` is a third thing living there for a related but
    distinct reason: it is neither a test file nor shared with `tests/packet/`, which must keep
@@ -68,7 +68,7 @@ marlin/
 │   ├── Makefile                      # clang -target bpf; bpftool gen object; compile_commands.json
 │   ├── .clang-format
 │   ├── .clang-tidy
-│   ├── src/
+│   ├── bpf/
 │   │   ├── main.c                  # XDP entry point
 │   │   ├── balancer.c                # marlin_balance()
 │   │   ├── parser.c
@@ -93,11 +93,11 @@ marlin/
 │   │       ├── acl.h
 │   │       └── ratelimit.h          # marlin_ratelimit() prototype
 │   ├── tests/                       # native unit tests, `make tests` — Principle 5's exception
-│   │   ├── parser_test.c            # #includes src/parser.c to reach its static helpers
-│   │   ├── acl_test.c               # #includes src/acl.c; map lookups answered by stubs/ below
-│   │   ├── ipip_test.c              # #includes src/ipip.c; bpf_xdp_adjust_head() answered by stubs/ below
-│   │   ├── nexthop_test.c           # #includes src/nexthop.c; NULL-argument aborts only
-│   │   ├── ratelimit_test.c         # #includes src/ratelimit.c; hash map + clock answered by stubs/ below
+│   │   ├── parser_test.c            # #includes bpf/parser.c to reach its static helpers
+│   │   ├── acl_test.c               # #includes bpf/acl.c; map lookups answered by stubs/ below
+│   │   ├── ipip_test.c              # #includes bpf/ipip.c; bpf_xdp_adjust_head() answered by stubs/ below
+│   │   ├── nexthop_test.c           # #includes bpf/nexthop.c; NULL-argument aborts only
+│   │   ├── ratelimit_test.c         # #includes bpf/ratelimit.c; hash map + clock answered by stubs/ below
 │   │   ├── csum_test.c              # <marlin/csum.h>, header-only
 │   │   ├── mtu_test.c               # <marlin/mtu.h>, header-only
 │   │   ├── entropy_test.c           # <marlin/entropy.h>, header-only
@@ -115,6 +115,8 @@ marlin/
 │   │       ├── prog.h               # load/run wrapper over libbpf
 │   │       ├── maps.h               # map fd lookup, seeding, drop_stats reads
 │   │       └── fib.h                # veth + real routes/neighbours for nexthop.c's bpf_fib_lookup() cases
+│   ├── tools/                       # dev-only, `make tools` — never installed
+│   │   └── verifier_stats.c        # loads marlin.bpf.o via libbpf; verifier insn/stack report
 │   └── marlind/                     # the loader; built by data-plane/Makefile's `marlind` target
 │       └── main.c                   # attach sequence of docs/design/02-architecture.md
 │
@@ -149,8 +151,8 @@ marlin/
     └── style.yml                      # clang-format, clang-tidy, dotnet format, shellcheck
 ```
 
-**`data-plane/marlind/` is not `tools/` and not `deploy/`.** `tools/` is scoped to dev-only
-tooling (`verifier_stats.c` is never installed); `marlind/main.c` is a shipped artefact that
+**`data-plane/marlind/` is not `data-plane/tools/` and not `deploy/`.** `data-plane/tools/` is
+scoped to dev-only tooling (`verifier_stats.c` is never installed); `marlind/main.c` is a shipped artefact that
 runs on every forwarding host, so it belongs beside the other deployed pieces, not among
 diagnostics. It is not under `deploy/` either — that directory holds configuration and unit
 files, not source that a C toolchain compiles.
@@ -167,7 +169,7 @@ the one place two deployed artefacts share every tool that produces them.
 
 ## 3. Datapath placement
 
-- **`src/` and `include/` split.** `docs/design/03-translation-units.md` compiles each `.c`
+- **`bpf/` and `include/` split.** `docs/design/03-translation-units.md` compiles each `.c`
   separately and links with `bpftool gen object`, so the source set is a flat list of peers with
   no hierarchy to express. The split exists to keep the compiled inputs visually distinct from
   the headers, many of which are inlined code rather than declarations

@@ -183,7 +183,7 @@ veth topology with real routes and neighbours inside the same unshared network n
 
 ### 5.3 Using the native unit tests
 
-Narrower than 5.2 and already in the tree: `data-plane/tests/` compiles a `src/*.c` file with the
+Narrower than 5.2 and already in the tree: `data-plane/tests/` compiles a `bpf/*.c` file with the
 host toolchain and calls its helpers directly, with no BPF object and no interface. `parser.c`
 reads no map at all; `acl.c` reads four through `data-plane/tests/stubs/`, which shadows libbpf's
 `<bpf/bpf_helpers.h>` with a host longest-prefix scan; `ipip.c` calls the one helper it needs,
@@ -426,6 +426,6 @@ For now, development testing uses `bpf_prog_test_run` (§5.2) or manual map writ
 ## 12. Next Steps
 
 1. **Run the packet tests:** `cd data-plane && sudo make packet-tests`
-2. **Inspect the datapath code:** `data-plane/src/marlin.c` and callees
+2. **Inspect the datapath code:** `data-plane/bpf/marlin.c` and callees
 3. **Read the design:** `docs/design/README.md` for the forwarding pipeline
 4. **Set up continuous monitoring:** Background a `trace_pipe` tail and watch real-time trace output while forwarding

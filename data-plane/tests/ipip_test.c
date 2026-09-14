@@ -12,7 +12,7 @@
 #include "packet.h"
 #include "harness.h"
 
-#include "../src/ipip.c"
+#include "../bpf/ipip.c"
 
 /*
  * Grant the same headroom BPF_PROG_TEST_RUN would (tests/packet/prog.h),

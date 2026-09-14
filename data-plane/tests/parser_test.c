@@ -14,7 +14,7 @@
 #include "packet.h"
 #include "harness.h"
 
-#include "../src/parser.c"
+#include "../bpf/parser.c"
 
 /*
  * ---- fixed addresses, reused across cases -------------------------------
@@ -49,7 +49,7 @@ static const unsigned char EMB6_DST[16] = {0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0
 static void mctx_init(struct marlin_ctx *mctx)
 {
     /*
-     * Poisoned rather than zeroed (unlike src/main.c:57) so a field the
+     * Poisoned rather than zeroed (unlike bpf/main.c:57) so a field the
      * parser is not supposed to touch on some path reads back as garbage,
      * not as a coincidentally-correct zero.
      */
@@ -987,7 +987,7 @@ MARLIN_TEST(parse_ipv4_non_first_fragment_esp_is_ok_not_unsupported)
  * parser.c:332 branches on mctx->flags, not the l3.flags this call computed
  * -- a caller-supplied stale F_FRAG bit makes an ordinary packet take the
  * fragment early-return and skip port parsing entirely. Safe today only
- * because src/main.c:57 memsets the whole struct first. Observation 1.
+ * because bpf/main.c:57 memsets the whole struct first. Observation 1.
  */
 MARLIN_TEST(parse_stale_frag_flag_skips_port_parsing)
 {

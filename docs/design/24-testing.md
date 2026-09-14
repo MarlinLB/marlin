@@ -157,7 +157,7 @@ environment below with concurrent senders across multiple receive queues.
 ## Native unit tests
 
 A second mechanism, alongside `bpf_prog_test_run` above: `data-plane/tests/` compiles a
-`src/*.c` file with the host toolchain — no `-target bpf` — and `#include`s it directly to call
+`bpf/*.c` file with the host toolchain — no `-target bpf` — and `#include`s it directly to call
 its `static` helpers with real pointers. `parser.c` qualifies trivially: it makes no `bpf_*`
 helper call and reads no map, so its behaviour cannot depend on which target compiled it. `acl.c`
 qualifies through `data-plane/tests/stubs/`, which shadows libbpf's `<bpf/bpf_helpers.h>` — whose

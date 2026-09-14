@@ -34,7 +34,7 @@
 # Point-to-point veths, no bridge, and a real router namespace. VXLAN writes
 # its own outer Ethernet header rather than going through the step-9 MAC swap
 # (marlin_nexthop_encapsulate() returns immediately for MARLIN_MODE_VXLAN,
-# src/nexthop.c), but it writes the *same* addresses the swap would have --
+# bpf/nexthop.c), but it writes the *same* addresses the swap would have --
 # outer dst = the arriving frame's source (the router), outer src = Marlin's
 # own -- so the topology need is identical to IPIP/GUE's: a router the
 # backend sits behind, on a second segment Marlin does not reach directly.
@@ -51,7 +51,7 @@
 # (protocol 17) + UDP + an 8-byte VXLAN header, then the arriving frame's OWN
 # Ethernet header (relocated, with its destination rewritten to
 # backend.inner_mac and its source to Marlin's own MAC), then the arriving IP
-# packet unchanged. 50 bytes of new header, MARLIN_OVERHEAD_VXLAN (src/vxlan.c).
+# packet unchanged. 50 bytes of new header, MARLIN_OVERHEAD_VXLAN (bpf/vxlan.c).
 # The outer UDP checksum is always zero, permitted unconditionally with an
 # IPv4 outer (docs/design/14-forwarding-modes.md §7.6).
 #
@@ -101,7 +101,7 @@
 #
 # The working order is up, attach, seed, listen. Seeding is not optional: BPF
 # array maps come up zero-filled, and an all-zero backends[0] has
-# MARLIN_BE_F_STATE clear, which xdp_interim_nexthop() (src/main.c) reads as
+# MARLIN_BE_F_STATE clear, which xdp_interim_nexthop() (bpf/main.c) reads as
 # "not mine" and passes. An attached program with unseeded maps forwards
 # nothing and looks exactly like a broken datapath.
 #
@@ -323,7 +323,7 @@ Values this rig implies for the maps:
   config.max_frame             ${MAX_FRAME}   (MTU ${MTU_UNDERLAY} + ETH_HLEN)
   backend.addr                 ${BE_IP}
   backend.mac                  unused — vxlan.c writes the outer header itself
-                               (src/nexthop.c returns MARLIN_OK_TX immediately
+                               (bpf/nexthop.c returns MARLIN_OK_TX immediately
                                for MARLIN_MODE_VXLAN)
   backend.encap_dport          ${port}
   backend.vni                  ${VNI}
@@ -417,7 +417,7 @@ seed() {
 	mode=$(abi_define MARLIN_MODE_VXLAN)
 	bit=$(abi_define MARLIN_BE_F_STATE_BIT)
 	# MARLIN_BE_F_FIB stays clear: vxlan.c writes the outer header itself, so
-	# neither the MAC swap nor the FIB lookup runs (src/nexthop.c).
+	# neither the MAC swap nor the FIB lookup runs (bpf/nexthop.c).
 	flags=$(( mode | (1 << bit) ))
 	port=$(vxlan_port)
 
@@ -469,7 +469,7 @@ EOF
 # ---------------------------------------------------------------------------
 #
 # Decodes the pcap verify_capture() (common.sh) collected and checks the
-# emitted frame against src/vxlan.c and the assertion list at
+# emitted frame against bpf/vxlan.c and the assertion list at
 # docs/design/24-testing.md ("VXLAN-specific assertions").
 #
 # Two assertions from that list are not reachable here and are not faked:

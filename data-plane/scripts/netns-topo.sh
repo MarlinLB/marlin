@@ -18,7 +18,7 @@
 #   - IPIP,   MAC-swap (IPIP/GUE) or write the same addresses directly (VXLAN)
 #     GUE,    and XDP_TX back to the upstream *router*, which then routes the
 #     VXLAN   outer packet onward (docs/design/15-nexthop-l2dsr.md, "MAC swap —
-#             default for IPIP and GUE"; src/nexthop.c returns immediately for
+#             default for IPIP and GUE"; bpf/nexthop.c returns immediately for
 #             VXLAN because vxlan.c already wrote the outer header). All three
 #             need the same thing: a real router namespace and a backend the
 #             router reaches over a second segment, so all three backends sit
@@ -282,7 +282,7 @@ up() {
 	sc mrt net.ipv4.conf.rt-b.rp_filter=0
 	# docs/design/15-nexthop-l2dsr.md: redirect generation should be suppressed
 	# on the segment Marlin MAC-swaps back onto (or, for VXLAN, writes the same
-	# addresses directly onto -- src/nexthop.c returns immediately for VXLAN
+	# addresses directly onto -- bpf/nexthop.c returns immediately for VXLAN
 	# because vxlan.c already built the outer header).
 	sc mrt net.ipv4.conf.all.send_redirects=0
 	sc mrt net.ipv4.conf.rt-a.send_redirects=0

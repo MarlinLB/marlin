@@ -229,7 +229,7 @@ datapath is feature-complete and further work is control-plane work.
   verdict enforced instance-wide on the `vip_map` miss, and gated on `VIP_ACL` on the hit
   (`docs/design/27-source-filtering.md`). It lands here because it is datapath code reading
   `vip_meta.flags`, and it is inert until Phase 3 makes `CFG_ACL_ENABLE` usable. Moving
-  Retiring the duplicate site in `src/main.c` is what closes the enforcement-placement decision
+  Retiring the duplicate site in `bpf/main.c` is what closes the enforcement-placement decision
   below. The assertions that cover it are Phase 3's exit criterion 4 and not this phase's
   criterion 1, because two of the three need a VIP configured with the bit and an enabled ACL,
   which Phase 3 is where the control plane can supply.
