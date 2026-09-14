@@ -22,28 +22,36 @@ wants to thread. Both aggregate members earn their place by being read in a unit
 that writes them — `backend` by the encapsulation units and `nexthop.c`, `cfg` by
 `balancer.c` and the encapsulation units — and that is the test any addition has to pass.
 
-**Measured, not estimated, as of `parser.c`/`acl.c`/`nexthop.c`/all three encapsulation units
-being reachable from `xdp_main` via `main.c`'s interim call site:** `make verifier-stats`
-(`tools/verifier_stats.c`, which loads `marlin.bpf.o` through libbpf directly — no
-`bpftool`, no bpffs pin, since some hosts' LSM policy blocks bpffs writes even under root)
-reports **152 bytes** as the worst combined stack depth, comfortably inside the 512-byte limit
-with ~360 bytes to spare.
+**Measured, not estimated.** `make verifier-stats` (`tools/verifier_stats.c`, which loads
+`marlin.bpf.o` through libbpf directly — no `bpftool`, no bpffs pin, since some hosts' LSM
+policy blocks bpffs writes even under root) reports the worst combined stack depth across
+everything `xdp_main` reaches, against the 512-byte limit. The figure moves whenever a unit's
+frame does, so it is read from the build rather than quoted here; CI records it as the
+regression signal (`docs/design/24-testing.md`).
 
-The kernel's own verifier log states this as one figure per BPF-to-BPF-callable function —
-"stack depth 144+72+24+32+152+72+120+72" for the seven units above plus `xdp_main` itself — and
-the `+`-joined display reads exactly like a sum to add up, which it is not: each figure is
-already that function's own worst case if execution starts there, and 152 (not 688, their
-literal sum) is the one `MAX_BPF_STACK` is checked against. Marlin's units are only ever called
-as sequential siblings from `xdp_main` — none calls another — so at most one of them plus
-`xdp_main`'s own frame is ever on the stack at once; a verifier that instead required all eight
-simultaneously would have rejected the load outright rather than accept it and later pass
-`packet-tests`. `verifier_stats.c` prints each figure and their max explicitly for exactly this
-reason, rather than relaying the kernel's line as-is.
+The kernel's own verifier log states this as one figure per BPF-to-BPF-callable function, joined
+with `+` — "stack depth 144+72+24+32+..." — and that display reads exactly like a sum to add up,
+which it is not: each figure is already that function's own worst case if execution starts
+there, with no call-graph information attached, in an order that carries no names. Neither the
+sum nor the maximum of that flat list is what `MAX_BPF_STACK` is checked against — what is
+checked is the deepest **root-to-leaf sum along the real call graph**, each frame rounded up to
+16 bytes (`round_up_stack_depth()`, kernel-JIT builds — the default, `bpf_jit_enable=1`) or 32
+bytes (interpreted builds).
 
-`balancer.c` does not exist yet and is out of this measurement's reach — its stage functions are
-`static __always_inline` (see Verifier budget, below), so once it lands its cost adds to
-`xdp_main`'s own frame at whichever call site reaches it, not to a callee's, and this number must
-be re-measured then.
+This is not one of Marlin's units calling another as a byte-for-byte coincidence: `balancer.c`
+calls seven of the other nine global subprograms directly, so `xdp_main → marlin_balancer_process
+→ marlin_vxlan_encap_packet` is a real three-frame chain, not three siblings. `verifier_stats.c`
+reconstructs that call graph from the linked object's own `R_BPF_64_32` relocations — the
+BPF-to-BPF call sites `bpftool gen object` leaves for libbpf to resolve — pairs it with each
+function's own decoded stack depth, and walks it depth-first from `xdp_main` to report the worst
+chain by name, under both roundings. The kernel's anonymous per-function list is still printed
+alongside for cross-checking, but it is no longer what the tool's answer is derived from.
+
+`balancer.c` does not appear as a figure of its own: its stage functions are `static
+__always_inline` (see Verifier budget, below), so their cost lands in the frame of whichever
+caller reaches them rather than in a callee's. Editing them moves a number that is not labelled
+with their name, which is the second reason the depth is read from the build rather than
+recorded here.
 
 **This budget, not map memory, is what bounds `struct backend`.** `backends` holds 4096 entries
 and costs 128 KB against `fwd_table`'s 26 MB (`docs/design/09-sizing.md`, "Memory"), so a field added there is invisible

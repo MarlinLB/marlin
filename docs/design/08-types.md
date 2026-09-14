@@ -29,7 +29,7 @@ struct backend {              /* 32 bytes */
     __u32  egress_ifindex;    /* 16-19 expected FIB egress interface, validation only (docs/design/16-fib-lookup.md) */
     __u32  vni;               /* 20-23 VXLAN only; host order, 0..0xFFFFFF; the value's high byte must be zero. vxlan.c writes bpf_htonl(vni << 8) (docs/design/14-forwarding-modes.md) */
     __u8   inner_mac[6];      /* 24-29 VXLAN only; overlay destination MAC */
-    __u8   pad2[2];           /* 30-31 */
+    __u16  id;                /* 30-31 host order; this backend's own index in `backends` (docs/design/07-maps.md) */
 };
 
 struct packet_tuple {         /* 40 bytes */
@@ -111,6 +111,18 @@ memory does not (`docs/design/09-sizing.md`, "Memory": 128 KB against `fwd_table
 budget target itself was raised to accommodate this struct, by decision rather than by
 measurement (`docs/design/05-budgets.md`).
 
+The last two bytes are `id`, and they cost nothing: they take bytes the struct already held as
+padding, so `sizeof` stays 32 and `marlin_ctx` stays 104 — the stack budget above is untouched,
+which no other addition to this struct has managed. It exists because selection returns two
+values. `fwd_table` yields an index and `backends` yields the row; a `VIP_QUIC` connection ID
+yields the same pair by another route (`docs/design/30-quic.md`). Without the field every
+selection function carries the index out as an output parameter beside the pointer that already
+identifies it. The invariant is `backends[i].id == i` for every populated slot, and a zeroed slot
+reads `id` 0, the same value a removed backend already reads as (`docs/design/10-map-invariants.md`).
+The datapath may read `id` only as a statistics key: it must never use it to index `backends`,
+since selection already has the index it was derived from, and reading the slot back out of its
+own value would be circular.
+
 `packet_tuple` is IPv6-capable because inner traffic
 may be either family. It is the single normalised description of the connection being load
 balanced, with three consumers: the `vip_key` construction of `docs/design/11-pipeline.md`, the selection hash of `docs/design/12-selection.md` —
@@ -137,7 +149,7 @@ packet: for an ICMP error it is reconstructed from the embedded header.
 
 | Bit | Meaning |
 |---|---|
-| 0 | reserved, must be zero |
+| 0 | `VIP_ACL` — enforce the ACL verdict on this VIP (docs/design/27-source-filtering.md) |
 | 1 | `VIP_RATELIMIT` — meter sources addressing this VIP (docs/design/28-rate-limiting.md) |
 | 2 | `VIP_HASH_5TUPLE` — hash the whole tuple for row selection, not the source address alone; drops every fragment on this VIP (docs/design/12-selection.md) |
 | 3 | `VIP_QUIC` — steer short-header UDP packets by connection ID instead of the hash path (docs/design/30-quic.md) |

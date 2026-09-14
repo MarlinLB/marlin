@@ -21,9 +21,10 @@ A single drop counter is insufficient. `drop_stats` is indexed by reason:
 `fib_prohibit`, `fib_gatewayed` (L2 DSR only; `docs/design/16-fib-lookup.md`), `frag_needed`,
 `frame_too_big` (`docs/design/23-mtu.md`), `mac_fallback` (not a drop, counted), `adjust_head_failed`,
 `acl_blocked` (`docs/design/27-source-filtering.md`), `ratelimited` (`docs/design/28-rate-limiting.md`), `rl_cas_exhausted` (an admit, counted; `docs/design/28-rate-limiting.md`),
+`rl_insert_failed` (an admit, counted; `docs/design/28-rate-limiting.md`),
 `egress_mismatch` (not a drop, counted; `docs/design/16-fib-lookup.md`), `neigh_fallback` (not a drop, counted; `docs/design/16-fib-lookup.md`).
 
-Twenty-three of `DROP_REASON_MAX`. `enum marlin_ret` carries several more that this list does not
+Twenty-four of `DROP_REASON_MAX`. `enum marlin_ret` carries several more that this list does not
 name; reconciling the two is `marlin.h`'s open decision D6. One of those unnamed values gets its
 meaning fixed here regardless, since it is otherwise a footgun for whoever implements the
 encapsulation units: **`encap_length`** means the measured inner length will not fit the outer
@@ -35,12 +36,19 @@ that produces an impossible length has a named reason instead of falling to a `d
 Reasons that are passes or fallbacks rather than drops are marked as such, so the sum of
 `drop_stats` is not mistaken for total drops.
 
-**Four counters are reserved for `VIP_QUIC` and land with `balancer.c`, not before**
-(`docs/design/30-quic.md`): `quic_cid_routed` (steered by connection ID), and
-`quic_cid_check_failed`, `quic_cid_unknown_backend`, `quic_cid_backend_down` — three distinct
-ways a steered packet instead falls through to the hash path. None of the four is a drop, so
-none changes the count above, and none exists in `enum marlin_ret` yet; named here so they are
-not invented twice.
+**Two counters belong to `VIP_QUIC`, and `balancer.c` is their producer**
+(`docs/design/30-quic.md`): `quic_cid_routed`, a packet steered by connection ID, and
+`quic_cid_check_failed`, a connection ID whose check field or generation field did not verify.
+Neither is a drop, so neither changes the count above; both are `MARLIN_COUNT_*` enumerators
+(`marlin.h`), kept out of the enumerated reason list above for the same reason as the other
+`MARLIN_COUNT_*` values.
+
+**The other ways a steered packet falls through are deliberately uncounted.** A connection ID
+decoding to an out-of-range `backend_id`, or to a row that is down or was never written, takes
+the hash path with no counter of its own. `drop_stats` would need two more reasons to separate
+them, and the fall-through is already visible where it matters: `backend_stats` shows the
+traffic arriving at the hash-selected backend instead. `quic_cid_routed` failing to track a
+VIP's short-header volume is the aggregate signal that steering is not landing.
 
 ## Counters
 
@@ -57,10 +65,19 @@ not invented twice.
 | `frame_too_big` | instance | encapsulated frame exceeds the egress MTU, under any of the three encapsulating modes (`docs/design/23-mtu.md`) |
 | `icmp_unparseable` | instance | PMTUD errors being dropped |
 | `no_backend` | instance | table rows pointing at 0 — a control-plane reconciliation fault |
-| `acl_blocked` | instance | the blocklist is matching; volume shows whether it is load-bearing |
+| `acl_blocked` | instance | the blocklist is matching; volume shows whether it is load-bearing, but mixes VIP-matched blocks with host-bound ones (`docs/design/11-pipeline.md` step 4) |
 | `ratelimited` | instance | a source is over budget |
 | `frag_unsupported` | instance | a fragment arrived for a `VIP_HASH_5TUPLE` VIP; non-zero means the flag is set on a VIP whose traffic fragments (`docs/design/12-selection.md`) |
 | `rl_cas_exhausted` | instance | `RL_CAS_RETRIES` too low under contention (`docs/design/28-rate-limiting.md`) |
+| `rl_insert_failed` | instance | the `ratelimit` map is rejecting inserts — the insert-cost signal `docs/design/28-rate-limiting.md`'s Phase 4 measurement needs |
+
+`bytes` in both maps counts the ingress frame length, not the emitted one, so a VIP's four
+forwarding modes stay comparable against each other and the figure matches what the client
+sent; per-mode encapsulation overhead is a known constant and is not this map's job to carry.
+Both maps are written at selection — after the validity and state checks
+(`docs/design/11-pipeline.md` step 7), before dispatch — so `backend_stats` reflects the
+backend hashing chose even when a later stage (an MTU or FIB drop) discards the packet, which
+is what keeps it usable as the hash-skew signal below.
 
 Backend distribution is derivable from `backend_stats` alone, which makes hash skew behind
 CGNAT observable without additional instrumentation. It is also the measurement that decides
@@ -71,8 +88,10 @@ the flag cost anything.
 
 `drop_stats` is keyed by reason with no VIP dimension, so every reason above is instance-scoped.
 Three consequences are worth stating rather than rediscovering: `no_backend` cannot be attributed
-to the VIP whose table is faulty; the ACL runs before the VIP lookup (`docs/design/11-pipeline.md`) so `acl_blocked` has no
-`vip_num` available even in principle; and identifying *which* source was rate limited means the
+to the VIP whose table is faulty; `acl_blocked` covers two unlike drops under one counter — a
+VIP-matched packet, where a `vip_num` does exist at the enforcement point but `drop_stats` has no
+dimension to hold it, and a host-bound one, where there is none even in principle
+(`docs/design/11-pipeline.md` step 4); and identifying *which* source was rate limited means the
 control plane reading `ratelimit` and observing drained buckets, which is a diagnostic action
 rather than a continuous signal.
 

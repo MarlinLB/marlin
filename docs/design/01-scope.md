@@ -26,6 +26,10 @@ relative to the `vxlan` device — on a loopback or dummy interface as under L2 
 `vxlan` device itself, since that is where the decapsulated frame is delivered. This is left open
 rather than guessed; see `PHASES.md`'s open-decision table, closed by Phase 2b.
 
+`data-plane/scripts/vxlan_wsl.sh` and `netns-topo.sh` assume the loopback/dummy placement, for
+consistency with the other three rigs' backends — an operational default chosen so the rig
+could be written at all, not evidence toward closing the decision above.
+
 ## Targets
 
 - Up to 100 VIPs, compile-time maximum.

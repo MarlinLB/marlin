@@ -40,7 +40,8 @@ struct marlin_ctx {            /* 104 bytes */
     __u8 pad;                  /*  1 */
 };
 
-_Static_assert(sizeof(struct marlin_ctx) <= 108, "marlin_ctx exceeds its share of MAX_BPF_STACK");
+_Static_assert(sizeof(struct marlin_ctx) <= 108,
+               "marlin_ctx exceeds its mctx_scratch per-CPU map-value budget"); /* maps.h; docs/design/05-budgets.md */
 
 enum marlin_ret {
     /* terminal outcomes, not counted here */
@@ -83,6 +84,16 @@ enum marlin_ret {
     MARLIN_DROP_FRAG_UNSUPPORTED,
     MARLIN_PASS_NOT_FORWARDED,
     MARLIN_ABORT_NULLREF,
+    MARLIN_COUNT_RL_INSERT_FAILED, /* counted in place, never returned */
+
+    /*
+     * VIP_QUIC's steering step (docs/design/30-quic.md), produced by
+     * balancer.c. Neither is a drop: a connection ID that does not verify
+     * falls through to the hash path, as do the fall-throughs that carry no
+     * counter at all (docs/design/22-observability.md).
+     */
+    MARLIN_COUNT_QUIC_CID_ROUTED,
+    MARLIN_COUNT_QUIC_CID_CHECK_FAILED,
 
     MARLIN_RET_MAX
 };

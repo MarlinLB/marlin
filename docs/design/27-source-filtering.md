@@ -60,19 +60,50 @@ match — the most specific. A single trie per family with the verdict in the va
 longest-prefix-wins, contradicting the above. Two maps per family is a consequence of the
 precedence rule, not an independent choice.
 
-## Evaluation
+## Evaluation and enforcement
 
-A packet is one family, so at most two lookups: allow, then block. An allow hit admits and
-suppresses the rate limiter; a block hit drops with `acl_blocked`; neither continues.
+A packet is one family, so at most two lookups: allow, then block. Evaluation yields a verdict and
+nothing else. Where the verdict is acted on is `docs/design/11-pipeline.md` step 4, after the VIP
+lookup, and what happens there depends on what the packet was addressed to:
 
-**When the ACL is disabled, nothing is allowlisted.** `CFG_ACL_ENABLE` clear means neither lookup
-runs, so no packet carries an allow verdict and the rate limiter — if enabled — would meter
-management prefixes with no escape hatch. `docs/design/20-configuration-validation.md` rejects that combination.
+- a VIP carrying `VIP_ACL` — an allow admits, skipping step 5 but continuing through the rest of
+  the pipeline; a block drops with `acl_blocked`; neither consults the other list;
+- a VIP without it — the verdict is discarded, and the packet is treated as though no rule
+  matched;
+- no VIP at all — a block drops instance-wide, there being no VIP to take the bit from.
 
-`CFG_ACL_ENABLE` and `acl_lists` are not the same mechanism. `acl_lists` is control-plane-derived
-and exists to avoid a lookup against an empty map; `CFG_ACL_ENABLE` is operator intent, and lets
-enforcement be suspended without deleting the rule set. The same split applies to
-`CFG_RL_ENABLE` against `VIP_RATELIMIT`.
+**Three gates, and no two of them are the same mechanism.**
+
+- `CFG_ACL_ENABLE` is instance-wide operator intent, and lets the rule set stop being evaluated
+  without being deleted. Clear, neither lookup runs and no packet carries a verdict at all.
+- `VIP_ACL` is operator intent per VIP, acting one step later: the verdict is computed either way
+  and discarded at step 4 when the bit is clear. It exempts one VIP's traffic and nothing else.
+- `acl_lists` is control-plane-derived and exists to avoid a lookup against an empty map.
+
+`CFG_ACL_ENABLE` dominates: `VIP_ACL` set while it is clear is inert. The instance-against-per-VIP
+split is `CFG_RL_ENABLE` against `VIP_RATELIMIT`, one step further down the pipeline. `VIP_ACL` is
+set-means-enforced like every other bit in `docs/design/08-types.md`'s tables, which is also what
+lets it take over a bit that was reserved-must-be-zero: a `flags` word written before the bit
+existed reads as not opted in. **A clear bit is not an ACL that is off**, though — step 4's
+host-bound arm takes no bit from any VIP, so the rule set is still enforced against traffic
+addressed to the host.
+
+`VIP_ACL` is enforcement policy rather than hash input, so `docs/design/21-active-active.md`'s
+cross-instance agreement requirement does not bind it as it binds `VIP_HASH_5TUPLE`. Divergence is
+still observable: instances serving one VIP that disagree on the bit block a source on some ECMP
+paths and admit it on others.
+
+**Wherever the verdict does not reach, nothing is allowlisted.** That has two levels, and the
+rate limiter is what is exposed by both:
+
+- `CFG_ACL_ENABLE` clear. No lookup runs, so no packet carries an allow verdict, and the rate
+  limiter — if enabled — would meter management prefixes with no escape hatch.
+- `VIP_ACL` clear on a VIP carrying `VIP_RATELIMIT`. The verdict exists but is discarded, so that
+  metered VIP has the same missing escape hatch.
+
+`docs/design/20-configuration-validation.md` rejects both combinations. The second is what lets
+the metering gate read `acl_verdict` without a `VIP_ACL` test of its own: any VIP that reaches
+`marlin_ratelimit()` carries `VIP_ACL` by construction.
 
 ## Fragments are fully enforced
 
@@ -97,9 +128,11 @@ against a list that does.
 
 ## Operator lockout
 
-The ACL precedes the VIP lookup, so it filters host-bound traffic too (`docs/design/11-pipeline.md`). A blocklist entry can
-therefore lock an operator out of the host, and unconditional allow precedence is what contains
-it: management and routing-peer prefixes must be allowlisted before the first blocklist rule.
+The host-bound path of `docs/design/11-pipeline.md` step 4 enforces a block instance-wide, so the
+ACL filters host-bound traffic too. A blocklist entry can therefore lock an operator out of the
+host; **clearing `VIP_ACL` is not a way back in**, since the path that locked them out takes its
+verdict from no VIP. Unconditional allow precedence is what contains it: management and
+routing-peer prefixes must be allowlisted before the first blocklist rule.
 The control plane cannot validate this — it does not know which prefixes are management — so it is
 an integrator prerequisite in `DEPLOYMENT.md`.
 

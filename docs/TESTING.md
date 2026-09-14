@@ -176,12 +176,10 @@ sudo make packet-tests
 ```
 
 See `docs/design/24-testing.md` for coverage details. This is the primary test path and is
-phase-gated: coverage today is bounded by what `xdp_main` can satisfy before Phase 2's VIP
-lookup and forwarding land (`data-plane/tests/packet/xdp_test.c`). `nexthop.c`'s
-`bpf_fib_lookup()` matrix is the exception -- `data-plane/tests/packet/fib.h` builds a veth
-topology with real routes and neighbours inside the same unshared network namespace, needing no
-VIP lookup, since `main.c`'s interim `xdp_interim_nexthop()` already reaches both `nexthop.c`
-entry points.
+phase-gated: coverage is bounded by what `xdp_main` can satisfy, and an assertion whose path it
+cannot reach reports as a named `skip` (`data-plane/tests/packet/xdp_test.c`). `nexthop.c`'s
+`bpf_fib_lookup()` matrix needs no VIP lookup at all -- `data-plane/tests/packet/fib.h` builds a
+veth topology with real routes and neighbours inside the same unshared network namespace.
 
 ### 5.3 Using the native unit tests
 

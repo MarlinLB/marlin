@@ -20,10 +20,13 @@ datagrams with DPLPMTUD sit below 1500 even with VXLAN's 50 bytes of overhead, n
 case among the three — 1250 is still comfortably under 1500. Large non-QUIC UDP
 is covered only by jumbo frames.
 
-`RET_FRAG_NEEDED` and `mtu_result` from `bpf_fib_lookup()` are counted rather than merely
-dropped, which is what makes the misconfiguration diagnosable (`docs/design/22-observability.md`).
+`RET_FRAG_NEEDED` is counted rather than merely dropped, which is what makes the
+misconfiguration diagnosable (`docs/design/22-observability.md`). `mtu_result` — the MTU value
+`bpf_fib_lookup()` writes back over the same field on this return code — is not recorded:
+`drop_stats` holds counts, not values, and the MTU is already visible in the route that
+produced it.
 
-**They do not cover the default path.** The zero-lookup next-hop default — MAC swap under IPIP
+**`RET_FRAG_NEEDED` does not cover the default path.** The zero-lookup next-hop default — MAC swap under IPIP
 and GUE, `vxlan.c`'s own outer header under VXLAN (`docs/design/15-nexthop-l2dsr.md`) —
 performs no FIB lookup, so `RET_FRAG_NEEDED` never fires there. The datapath
 therefore checks the emitted frame against `config.max_frame` before transmitting, and drops
@@ -39,7 +42,7 @@ ETH_HLEN" (`docs/design/08-types.md`) — so neither side needs adjusting before
 Each encapsulation unit calls it once, with its own `MARLIN_OVERHEAD_*` constant, **before**
 `bpf_xdp_adjust_head()` and before anything updates `pkt_len`: the check is meaningless against
 a `pkt_len` that already reflects the growth it exists to catch. `mtu.h` is a header rather
-than a translation unit for the same reason `ratelimit.h` and `entropy.h` are
+than a translation unit for the same reason `stats.h` and `entropy.h` are
 (`docs/design/03-translation-units.md:50-55`) — it takes only `mctx`, a BTF struct pointer
 already resolved by the caller, and reads no packet bytes.
 

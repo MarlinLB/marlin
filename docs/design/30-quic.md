@@ -124,31 +124,30 @@ and `docs/design/05-budgets.md`'s stated admission test for a shared field — r
 other than the one that writes it — is satisfied: the flag is written by `parser.c` and read by
 `balancer.c`.
 
-## What exists today, and what does not
+## How the two halves divide
 
-**Implemented:** classification only, in `parser.c`. `marlin_parse_quic()` reads the first
-UDP-payload byte after a UDP header is present and sets `MARLIN_CTX_F_QUIC` when the QUIC
-header-form bit (RFC 8999 §4.1) is clear. It never fails on its own; a packet too short to
-classify, or on a protocol other than UDP, simply carries no flag. `parser.c` reads no map and
-calls no `bpf_*` helper either way, so the property `data-plane/tests/parser_test.c`'s native
-tier depends on (`docs/design/24-testing.md`) is unaffected.
+**Classification is `parser.c`'s.** `marlin_parse_quic()` reads the first UDP-payload byte once
+a UDP header is present and sets `MARLIN_CTX_F_QUIC` when the QUIC header-form bit
+(RFC 8999 §4.1) is clear. It never fails on its own; a packet too short to classify, or on a
+protocol other than UDP, simply carries no flag. `parser.c` reads no map and calls no `bpf_*`
+helper either way, so the property `data-plane/tests/parser_test.c`'s native tier depends on
+(`docs/design/24-testing.md`) is unaffected.
 
-**Not yet implemented:** the steering step itself. It requires `balancer.c`, which does not
-exist yet (`docs/PHASES.md`). Once it does:
+**Steering is `balancer.c`'s**, because it reads `vip_map`, which `parser.c` has no access to:
 
-- Gate on `VIP_QUIC` (read from `vip_map`, so this step follows the VIP lookup — `parser.c` has
-  no access to `vip_map`, `docs/design/11-pipeline.md`).
+- Gate on `VIP_QUIC`, so the step follows the VIP lookup (`docs/design/11-pipeline.md`).
 - Bounds-check the connection ID against the configured length, decode per the formula above,
   and index `backends[]` directly — bypassing `fwd_table` for the packets it steers
   (`docs/design/12-selection.md`).
-- Fall through to the existing hash path on every failure: check mismatch, `backend_id == 0` or
-  `>= MAX_BACKENDS`, or the backend not `MARLIN_UP`. **No new drop reason** — a QUIC packet
-  Marlin cannot steer is handled exactly as it is today.
-- Four `MARLIN_COUNT_*` counters, reserved but not yet in `enum marlin_ret`
-  (`docs/design/22-observability.md`): `quic_cid_routed`, `quic_cid_check_failed`,
-  `quic_cid_unknown_backend`, `quic_cid_backend_down`.
-- Control-plane distribution of `backend_id`, `hash_key` and the connection-ID length to each
-  backend's QUIC server, and the rotation story (`DEPLOYMENT.md` §1.7.2).
+- Fall through to the hash path on every failure: check mismatch, `backend_id == 0` or
+  `>= MAX_BACKENDS`, or a row that is down or unpopulated. **No new drop reason** — a QUIC
+  packet Marlin cannot steer is handled as any other packet is.
+- Two `MARLIN_COUNT_*` counters, `quic_cid_routed` and `quic_cid_check_failed`
+  (`docs/design/22-observability.md`). The remaining fall-through paths are uncounted, for the
+  reason that document gives.
+
+**Distribution is the control plane's:** `backend_id`, `hash_key` and the connection-ID length
+to each backend's QUIC server, and the rotation story (`DEPLOYMENT.md` §1.7.2).
 
 ## Decided rather than left open
 
@@ -157,6 +156,19 @@ The check field width (6 bits) and the reuse of `vip_meta.hash_key` rather than 
 already made (`docs/design/08-types.md`), not deferred choices — `CLAUDE.md`'s rule against
 re-litigating a closed decision applies to both.
 
+**A connection ID naming a backend that is not `MARLIN_UP` falls through to hash**, as does one
+naming a row the control plane has not populated — an ARRAY row reads as a zeroed `struct
+backend`, so the `MARLIN_BE_F_STATE` test covers a retired `backend_id` as well as a drained
+one. Dropping instead would turn a drain into connection resets, where falling through costs
+only the migration affinity that the drain was already ending. The check is in
+`balancer.c`'s `marlin_balancer_select_backend()`, before the `MARLIN_COUNT_QUIC_CID_ROUTED`
+counter, so the counter records packets actually steered rather than connection IDs
+successfully decoded.
+
+The fall-through is uncounted. `enum marlin_ret` carries `MARLIN_COUNT_QUIC_CID_ROUTED` and
+`MARLIN_COUNT_QUIC_CID_CHECK_FAILED` and no others, so a decoded connection ID losing to a down
+or unpopulated row is visible only as `backend_stats` moving to the hash-selected backend.
+
 ## Open decisions
 
 Each belongs in `docs/PHASES.md`'s open-decision table, carried at the line it affects.
@@ -164,7 +176,6 @@ Each belongs in `docs/PHASES.md`'s open-decision table, carried at the line it a
 | Decision | Options | Phase |
 |---|---|---|
 | Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | Independent by construction (the routing rule above), but a VIP whose QUIC survives migration and whose other UDP does not is hard to reason about operationally | 3 (`docs/design/20-configuration-validation.md`) |
-| Whether a connection ID naming a `DOWN` backend falls through to hash or drops | Falling through re-establishes on a live backend but silently breaks migration affinity; dropping is honest but turns a drain into resets | 2b |
 
 **Config-generation rotation is not an open decision requiring a phase.** The two reserved bits
 exist so a future mechanism has somewhere to live, but nothing today generates or checks a

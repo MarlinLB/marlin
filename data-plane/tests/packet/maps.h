@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
  * Map access for the bpf_prog_test_run tier: fd lookup by name, config
- * seeding, and drop_stats reads. Uses the real ABI structs from
+ * seeding, and drop_stats/vip_stats/backend_stats reads. Uses the real ABI structs from
  * include/marlin/abi/types.h -- never a local re-declaration, so a
  * types.h layout change fails a test instead of corrupting a map write
  * silently.
@@ -96,6 +96,79 @@ static __u64 xdp_drop_stats_total(int rc)
 
     for(i = 0; i < ncpus; i++) {
         total += percpu[i];
+    }
+
+    free(percpu);
+    return total;
+}
+
+/*
+ * vip_stats/backend_stats are BPF_MAP_TYPE_PERCPU_ARRAY of struct stats --
+ * same per-CPU summing as xdp_drop_stats_total above, but the value is
+ * packets+bytes rather than one __u64, so the sum is taken per field.
+ * Unreferenced until balancer.c writes these maps (docs/PHASES.md); the
+ * cases that will call them are MARLIN_SKIP placeholders below.
+ */
+static __attribute__((unused)) struct stats xdp_vip_stats_total(__u32 vip_num)
+{
+    int fd = xdp_map_fd("vip_stats");
+    int ncpus = libbpf_num_possible_cpus();
+    struct stats *percpu;
+    struct stats total = {0};
+    int i;
+
+    if(ncpus <= 0) {
+        fprintf(stderr, "packet-tests: libbpf_num_possible_cpus failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    percpu = calloc((size_t)ncpus, sizeof(*percpu));
+    if(percpu == NULL) {
+        fprintf(stderr, "packet-tests: out of memory reading vip_stats\n");
+        exit(1);
+    }
+
+    if(bpf_map_lookup_elem(fd, &vip_num, percpu) != 0) {
+        fprintf(stderr, "packet-tests: vip_stats lookup for index %u failed: %s\n", vip_num, strerror(errno));
+        exit(1);
+    }
+
+    for(i = 0; i < ncpus; i++) {
+        total.packets += percpu[i].packets;
+        total.bytes += percpu[i].bytes;
+    }
+
+    free(percpu);
+    return total;
+}
+
+static __attribute__((unused)) struct stats xdp_backend_stats_total(__u32 backend_id)
+{
+    int fd = xdp_map_fd("backend_stats");
+    int ncpus = libbpf_num_possible_cpus();
+    struct stats *percpu;
+    struct stats total = {0};
+    int i;
+
+    if(ncpus <= 0) {
+        fprintf(stderr, "packet-tests: libbpf_num_possible_cpus failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    percpu = calloc((size_t)ncpus, sizeof(*percpu));
+    if(percpu == NULL) {
+        fprintf(stderr, "packet-tests: out of memory reading backend_stats\n");
+        exit(1);
+    }
+
+    if(bpf_map_lookup_elem(fd, &backend_id, percpu) != 0) {
+        fprintf(stderr, "packet-tests: backend_stats lookup for index %u failed: %s\n", backend_id, strerror(errno));
+        exit(1);
+    }
+
+    for(i = 0; i < ncpus; i++) {
+        total.packets += percpu[i].packets;
+        total.bytes += percpu[i].bytes;
     }
 
     free(percpu);
@@ -212,6 +285,68 @@ static __attribute__((unused)) void xdp_tx_ports_clear(void)
     while(bpf_map_get_next_key(fd, NULL, &next) == 0) {
         if(bpf_map_delete_elem(fd, &next) != 0) {
             fprintf(stderr, "packet-tests: failed to clear an entry from tx_ports: %s\n", strerror(errno));
+            exit(1);
+        }
+    }
+}
+
+/*
+ * ratelimit (LRU_HASH, struct rl_key -> struct rl_bucket): built from the
+ * real ABI structs, same discipline as the ACL helpers above. `addr16` is
+ * the full 16-byte rl_key.addr -- a caller keying an IPv4 case zero-extends
+ * it, mirroring the zeroed key ratelimit.c itself builds.
+ */
+static __attribute__((unused)) void xdp_rl_seed(__u8 family, const unsigned char addr16[16], __u64 state)
+{
+    struct rl_key key;
+    struct rl_bucket bucket;
+    int fd = xdp_map_fd("ratelimit");
+
+    memset(&key, 0, sizeof(key));
+    key.family = family;
+    memcpy(key.addr, addr16, sizeof(key.addr));
+
+    bucket.state = state;
+
+    if(bpf_map_update_elem(fd, &key, &bucket, BPF_ANY) != 0) {
+        fprintf(stderr, "packet-tests: failed to seed ratelimit: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+/* Returns 0 on a miss rather than exiting: a case asserting the miss path
+ * inserted a bucket needs to distinguish "not present" from "present".
+ */
+static __attribute__((unused)) int xdp_rl_get(__u8 family, const unsigned char addr16[16], __u64 *state)
+{
+    struct rl_key key;
+    struct rl_bucket bucket;
+    int fd = xdp_map_fd("ratelimit");
+
+    memset(&key, 0, sizeof(key));
+    key.family = family;
+    memcpy(key.addr, addr16, sizeof(key.addr));
+
+    if(bpf_map_lookup_elem(fd, &key, &bucket) != 0) {
+        return 0;
+    }
+
+    *state = bucket.state;
+    return 1;
+}
+
+/*
+ * Drains every entry -- the same drain-first-key loop as xdp_acl_clear and
+ * xdp_tx_ports_clear, for an LRU_HASH with no fixed baseline to reset to.
+ */
+static __attribute__((unused)) void xdp_rl_clear(void)
+{
+    int fd = xdp_map_fd("ratelimit");
+    struct rl_key next;
+
+    while(bpf_map_get_next_key(fd, NULL, &next) == 0) {
+        if(bpf_map_delete_elem(fd, &next) != 0) {
+            fprintf(stderr, "packet-tests: failed to clear an entry from ratelimit: %s\n", strerror(errno));
             exit(1);
         }
     }

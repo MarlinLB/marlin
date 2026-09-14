@@ -184,3 +184,9 @@ copy — see `docs/design/17-reconfiguration.md`.
 backend. IDs are retired, not promptly reused: the control plane
 allocates from unused slots and does not recycle a retired slot within the same
 reconfiguration cycle. Index 0 is never allocated (`docs/design/10-map-invariants.md`).
+
+The ID is now recorded in the value as well as being the key (`struct backend.id`,
+`docs/design/08-types.md`), and it is the retire-don't-recycle rule above that keeps the two
+consistent across a reconfiguration cycle: reusing a retired slot's index for a different backend
+before it is safe to do so would leave stale `fwd_table` rows pointing at a `backends[id]` whose
+own `id` still matches, masking exactly the staleness this lifecycle rule exists to prevent.

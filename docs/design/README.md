@@ -1,12 +1,26 @@
 # Marlin — Design
 
 **Status:** design settled, pre-implementation
-**Last updated:** 2026-09-06
-**Revision:** 9 — QUIC connection-ID steering added (`30-quic.md`): `VIP_QUIC` decodes a
+**Last updated:** 2026-09-13
+**Revision:** 11 — `struct backend` gained `id` at bytes 30-31 (`08-types.md`), replacing
+`pad_end[2]`; `sizeof` stays 32 and `marlin_ctx` stays 104. It records the backend's own index in
+`backends`, removing the output-parameter chain selection would otherwise thread the index
+through alongside the pointer that already identifies it. `07-maps.md`, `04-calling-convention.md`,
+`17-reconfiguration.md`, `10-map-invariants.md`, `20-configuration-validation.md`,
+`19-control-plane.md`, `DEPLOYMENT.md` and `12-selection.md` follow the consequence.
+Revision 10 — ACL enforcement made per-VIP (`27-source-filtering.md`): `vip_meta.flags` bit 0
+becomes `VIP_ACL` (`08-types.md`), an opt-in gate mirroring `VIP_RATELIMIT`. Evaluation stays
+ahead of the VIP lookup and enforcement moves after it (`11-pipeline.md` step 4), with the
+host-bound arm enforcing instance-wide so the host-firewall property survives the split;
+`20-configuration-validation.md` gains the per-VIP twin of the rate limiter's escape-hatch
+rejection, and `04-calling-convention.md`, `22-observability.md`, `24-testing.md` and
+`28-rate-limiting.md` follow the consequences. `VIP_ACL` takes `vip_meta.flags` bit 0 out of
+`VIP_FLAGS_RESERVED` on both sides of the ABI, and the enforcement gate is `balancer.c`'s
+(`PHASES.md`, Phases 2a and 2b). Revision 9 — QUIC connection-ID steering added (`30-quic.md`): `VIP_QUIC` decodes a
 `backend_id` a cooperating backend embeds in its connection IDs, steering short-header packets
-around client address migration without a hash. Reserved in the ABI (`vip_meta.flags` bits 3
-and 8–12, `08-types.md`) and implemented in `parser.c` (classification only; the steering step
-in `balancer.c` is not yet written). Revision 8 — VXLAN's outer Ethernet header specified
+around client address migration without a hash. It takes `vip_meta.flags` bits 3 and 8–12
+(`08-types.md`), classification is `parser.c`'s and steering is `balancer.c`'s.
+Revision 8 — VXLAN's outer Ethernet header specified
 (`14-forwarding-modes.md` §7.4): `vxlan.c` writes it, because the MAC-swap default
 (`15-nexthop-l2dsr.md`) cannot once the arriving header has been consumed as the inner one;
 `backend.vni`'s host byte order and conversion site are stated. Revision 7 added VXLAN as a

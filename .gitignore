@@ -1,8 +1,8 @@
 # Marlin — ignore rules. Layout per docs/REPO-STRUCTURE.md §2.
 #
-# Three build trees, three toolchains: data-plane/ (clang -target bpf),
-# control-plane/ (dotnet), tests/. The folder is opened in both VS Code
-# and Rider, so both IDEs' local state is covered here.
+# Three build trees: data-plane/ (clang -target bpf for marlin.bpf.o, host
+# clang for marlind/), control-plane/ (dotnet), tests/. The folder is opened
+# in both VS Code and Rider, so both IDEs' local state is covered here.
 
 # ---------------------------------------------------------------------------
 # Datapath — clang/bpftool output (docs/REPO-STRUCTURE.md §6)
@@ -72,8 +72,9 @@ coverage*.xml
 *.pcap
 *.pcapng
 
-# data-plane/tests' native test binary carries no suffix, so the *.o/*.bpf.o
-# globs above miss it; ignore the whole build tree rather than name it alone.
+# data-plane/tests' native test binary and marlind/main.c's compiled binary
+# both carry no suffix, so the *.o/*.bpf.o globs above miss them; ignore the
+# whole build tree rather than name each one alone.
 data-plane/build/
 
 # ---------------------------------------------------------------------------

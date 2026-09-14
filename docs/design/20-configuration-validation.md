@@ -41,6 +41,10 @@ Rejected at configuration time rather than allowed to fail per packet:
   "reachable", not "redirectable". An ifindex in neither set names an interface the datapath
   could never legitimately select.
 - A backend ID of 0 (`docs/design/10-map-invariants.md`).
+- A `struct backend` written to slot `i` whose `id` is not `i`. This is the only place the
+  redundancy between the array slot and the value's own `id` field can be caught, and it is a
+  control-plane bug rather than an operator input error: the reconciler asserts it at the write
+  site, it is not a validation of operator-supplied configuration.
 - More than `MAX_BACKENDS - 1` backends, or more than `MAX_VIPS` VIPs.
 - An ACL allow rule for `0.0.0.0/0` or `::/0`. Under `docs/design/27-source-filtering.md`'s precedence it nullifies the
   blocklist and the rate limiter entirely, and no operator means it.
@@ -53,6 +57,10 @@ Rejected at configuration time rather than allowed to fail per packet:
   field (`docs/design/28-rate-limiting.md`).
 - `CFG_RL_ENABLE` set while `CFG_ACL_ENABLE` is clear. Without the ACL no packet carries an
   allow verdict, so the rate limiter would meter management prefixes with no escape hatch (`docs/design/27-source-filtering.md`).
+- `VIP_RATELIMIT` set on a VIP whose `VIP_ACL` is clear — the per-VIP twin of the rule above. The
+  verdict is computed but discarded at that VIP's enforcement gate, so the VIP is metered with no
+  allow escape hatch. The rule is also load-bearing in the datapath: it is what lets the metering
+  gate read `acl_verdict` without testing `VIP_ACL` itself (`docs/design/27-source-filtering.md`).
 - Any reserved flag bit set (`docs/design/08-types.md`).
 
 Explicitly **not** validated:
@@ -64,11 +72,19 @@ Explicitly **not** validated:
   an oversight (`docs/design/12-selection.md`).
 - Agreement of `VIP_HASH_5TUPLE` between instances serving one VIP. Marlin does not verify
   `hash_key` or `table_seed` agreement either, and the flag is the same class of value
-  (`docs/design/21-active-active.md`).
+  (`docs/design/21-active-active.md`). `VIP_ACL` is not verified between instances either, for the
+  weaker reason that it is not hash input at all (`docs/design/27-source-filtering.md`).
+- `CFG_ACL_ENABLE` set with no VIP carrying `VIP_ACL`. Unlike its `CFG_RL_ENABLE` counterpart
+  below this is not an inert configuration: the host-bound path of `docs/design/11-pipeline.md`
+  step 4 enforces regardless, so such an instance is still a host firewall. Recorded here so the
+  asymmetry with the rate limiter's warning is not read as an oversight.
 
 Accepted with a warning:
 
 - An ACL block rule wholly covered by an allow rule, and therefore dead. Legitimate while a
   broad allow is temporary, usually a mistake.
 - `CFG_RL_ENABLE` with no VIP carrying `VIP_RATELIMIT`.
+- `VIP_ACL` set on a VIP while `CFG_ACL_ENABLE` is clear. The instance switch dominates, so the
+  bit is inert until the ACL is enabled (`docs/design/27-source-filtering.md`) — a staged rollout
+  looks exactly like this, which is why it is a warning and not a rejection.
 - An ACL allow rule broader than `/8` for IPv4 or `/32` for IPv6.

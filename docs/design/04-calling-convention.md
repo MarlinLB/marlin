@@ -50,7 +50,8 @@ whether the arriving Ethernet header must be copied first (`docs/design/14-forwa
 §7.2-7.4) — there is no common shape left to factor out once the disagreement is accounted for.
 
 Every global subprogram that takes a pointer parameter — the three encapsulation units,
-`marlin_parse()`, `marlin_nexthop_l2dsr()`, `marlin_nexthop_encapsulate()`, and `marlin_acl_check()`
+`marlin_parse()`, `marlin_nexthop_l2dsr()`, `marlin_nexthop_encapsulate()`, `marlin_acl_check()`,
+and `marlin_ratelimit()`
 — null-checks every pointer it receives and returns `MARLIN_ABORT_NULLREF` (`marlin_acl_check()`
 returns `MARLIN_ACL_ABORT`, its own verdict type's spelling of the same outcome; see below). A NULL
 argument to one of these is a caller bug, not a property of the packet, so it is distinct from
@@ -65,18 +66,24 @@ called directly on the host with no verifier to make the argument's non-nullness
 address of a local, never a pointer that could be NULL.
 
 - **`marlin_ctx` carries what crosses a translation unit boundary, plus one stage boundary.**
-  `vip_num` and `backend_id` are not members: nothing outside `balancer.c` reads them, and the
-  statistics they key are bumped in the frame that derives them. State that never leaves a
-  frame is a local, not context.
+  `vip_num` is not a member: nothing outside `balancer.c` reads it, and the statistic it keys is
+  bumped in the frame that derives it. State that never leaves a frame is a local, not context.
+  `backend_id` is carried instead — at no stack cost — inside the embedded `backend` itself
+  (`struct backend.id`, `docs/design/08-types.md`), so selection's caller can read
+  `mctx->backend.id` without either function threading the index out as a separate return.
 
   `acl_verdict` is the one exception and does not cross a translation unit boundary either.
-  `docs/design/11-pipeline.md` splits the two filtering steps around the VIP lookup — the ACL at step 3, its verdict
-  consumed by the metering gate at step 5 — so the verdict must survive step 4. Carrying it
+  `docs/design/11-pipeline.md` splits ACL evaluation from its enforcement around the VIP lookup —
+  evaluated at step 3, consumed at step 4 by the per-VIP enforcement gate and at step 5 by the
+  metering gate — so the verdict must survive step 4 for two consumers rather than one. Carrying it
   here costs a byte of existing padding and keeps the step 4-8 stage function's signature about
   the packet pipeline rather than about a filtering result it never reads. It is `__u8` and not
   `enum marlin_acl_verdict` because `acl.h` includes `marlin.h` and not the reverse; a zeroed
-  `marlin_ctx` reads as `MARLIN_ACL_NONE`, which is the safe default — no allow, so no metering
-  exemption.
+  `marlin_ctx` reads as `MARLIN_ACL_NONE` — no allow, so no metering exemption. Now that the
+  enforcement gate reads the same field, zero is also no block, which is a fail-open: a
+  `marlin_ctx` that never reached step 3 forwards a source the blocklist covers. Step 3 writes the
+  field on every packet, so the state is unreachable in the datapath and belongs to the native
+  tier, where a test constructs the context itself (`docs/design/24-testing.md`).
 
   `enum marlin_acl_verdict` carries a fourth member, `MARLIN_ACL_ABORT`, for a NULL `mctx` —
   `marlin_acl_check()`'s signature returns the verdict enum directly rather than a `marlin_ret`

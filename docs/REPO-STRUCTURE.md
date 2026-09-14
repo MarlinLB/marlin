@@ -76,7 +76,8 @@ marlin/
 │   │   ├── gue.c
 │   │   ├── vxlan.c
 │   │   ├── nexthop.c
-│   │   └── acl.c                    # marlin_acl_check()
+│   │   ├── acl.c                    # marlin_acl_check()
+│   │   └── ratelimit.c              # marlin_ratelimit()
 │   ├── include/
 │   │   ├── marlin.h                  # marlin_ctx, enum marlin_ret, marlin_* prototypes
 │   │   └── marlin/
@@ -90,34 +91,37 @@ marlin/
 │   │       ├── siphash.h
 │   │       ├── stats.h
 │   │       ├── acl.h
-│   │       └── ratelimit.h
-│   └── tests/                       # native unit tests, `make tests` — Principle 5's exception
-│       ├── parser_test.c            # #includes src/parser.c to reach its static helpers
-│       ├── acl_test.c               # #includes src/acl.c; map lookups answered by stubs/ below
-│       ├── ipip_test.c              # #includes src/ipip.c; bpf_xdp_adjust_head() answered by stubs/ below
-│       ├── nexthop_test.c           # #includes src/nexthop.c; NULL-argument aborts only
-│       ├── csum_test.c              # <marlin/csum.h>, header-only
-│       ├── mtu_test.c               # <marlin/mtu.h>, header-only
-│       ├── entropy_test.c           # <marlin/entropy.h>, header-only
-│       ├── packet.h                 # packet builder, shared with tests/packet/ below
-│       ├── harness.h                # shared with tests/packet/ below
-│       ├── stubs/                   # shadows <bpf/bpf_helpers.h> for the native tier only
-│       │   ├── map_stub.h           # host LPM trie answering bpf_map_lookup_elem
-│       │   ├── xdp_stub.h           # headroom bounds + shadow diff answering bpf_xdp_adjust_head
-│       │   └── bpf/
-│       │       └── bpf_helpers.h    # SEC/__uint/__type/__always_inline + the map and adjust_head stubs
-│       └── packet/                  # bpf_prog_test_run, exact bytes — §7.2: landed here, not the repo root
-│           ├── xdp_test.c           # cases + main()
-│           ├── prog.h               # load/run wrapper over libbpf
-│           ├── maps.h               # map fd lookup, seeding, drop_stats reads
-│           └── fib.h                # veth + real routes/neighbours for nexthop.c's bpf_fib_lookup() cases
+│   │       └── ratelimit.h          # marlin_ratelimit() prototype
+│   ├── tests/                       # native unit tests, `make tests` — Principle 5's exception
+│   │   ├── parser_test.c            # #includes src/parser.c to reach its static helpers
+│   │   ├── acl_test.c               # #includes src/acl.c; map lookups answered by stubs/ below
+│   │   ├── ipip_test.c              # #includes src/ipip.c; bpf_xdp_adjust_head() answered by stubs/ below
+│   │   ├── nexthop_test.c           # #includes src/nexthop.c; NULL-argument aborts only
+│   │   ├── ratelimit_test.c         # #includes src/ratelimit.c; hash map + clock answered by stubs/ below
+│   │   ├── csum_test.c              # <marlin/csum.h>, header-only
+│   │   ├── mtu_test.c               # <marlin/mtu.h>, header-only
+│   │   ├── entropy_test.c           # <marlin/entropy.h>, header-only
+│   │   ├── packet.h                 # packet builder, shared with tests/packet/ below
+│   │   ├── harness.h                # shared with tests/packet/ below
+│   │   ├── stubs/                   # shadows <bpf/bpf_helpers.h> for the native tier only
+│   │   │   ├── map_stub.h           # host LPM trie answering bpf_map_lookup_elem
+│   │   │   ├── hash_stub.h          # host hash map (exact key, no eviction) for the ratelimit map
+│   │   │   ├── xdp_stub.h           # headroom bounds + shadow diff answering bpf_xdp_adjust_head
+│   │   │   ├── time_stub.h          # settable clock answering bpf_ktime_get_ns
+│   │   │   └── bpf/
+│   │   │       └── bpf_helpers.h    # SEC/__uint/__type/__always_inline + the map/adjust_head/clock stubs
+│   │   └── packet/                  # bpf_prog_test_run, exact bytes — §7.2: landed here, not the repo root
+│   │       ├── xdp_test.c           # cases + main()
+│   │       ├── prog.h               # load/run wrapper over libbpf
+│   │       ├── maps.h               # map fd lookup, seeding, drop_stats reads
+│   │       └── fib.h                # veth + real routes/neighbours for nexthop.c's bpf_fib_lookup() cases
+│   └── marlind/                     # the loader; built by data-plane/Makefile's `marlind` target
+│       └── main.c                   # attach sequence of docs/design/02-architecture.md
 │
 ├── deploy/
-│   ├── marlin-load.sh                # the two commands of docs/design/02-architecture.md
-│   ├── marlin-load.service           # oneshot, RemainAfterExit, before marlin.service
-│   ├── marlin.service                # the control plane
-│   ├── marlin.env.example            # IFACE, pin path
-│   └── .shellcheckrc
+│   ├── marlind.service                # Type=notify, before marlin.service
+│   ├── marlin.service                 # the control plane
+│   └── marlin.env.example             # IFACE, pin path
 │
 ├── control-plane/
 │   ├── Marlin.sln
@@ -144,6 +148,20 @@ marlin/
     ├── verifier.yml                   # load gate + complexity trend (docs/design/24-testing.md)
     └── style.yml                      # clang-format, clang-tidy, dotnet format, shellcheck
 ```
+
+**`data-plane/marlind/` is not `tools/` and not `deploy/`.** `tools/` is scoped to dev-only
+tooling (`verifier_stats.c` is never installed); `marlind/main.c` is a shipped artefact that
+runs on every forwarding host, so it belongs beside the other deployed pieces, not among
+diagnostics. It is not under `deploy/` either — that directory holds configuration and unit
+files, not source that a C toolchain compiles.
+
+**`marlind/` sits inside `data-plane/`, not beside it, and has no makefile of its own.** The
+loader shares the datapath's host toolchain end to end — the same `clang`, the same
+`clang-format`/`clang-tidy` configuration, the same `-lbpf` link — and the two ship together, so
+one build per *toolchain* serves Principle 2 better than one per artefact. `data-plane/Makefile`
+builds both: `bpf` for `marlin.bpf.o` alone, `marlind` for the loader alone, `all` for both. This
+is the one directory in the tree holding two build targets, and that is deliberate: it is also
+the one place two deployed artefacts share every tool that produces them.
 
 ---
 
@@ -190,7 +208,7 @@ two that are boundaries for a reason beyond tidiness:
 - **`Marlin.Abi` carries no references at all.** That is what makes it safe as a universal
   dependency, and it is enforceable by reading one `.csproj`.
 - **`Marlin.Bpf` performs I/O and never creates a map or loads a program.**
-  `docs/design/02-architecture.md` confines map creation to `deploy/marlin-load.sh` so there is
+  `docs/design/02-architecture.md` confines map creation to `data-plane/marlind/main.c` so there is
   exactly one owner of map identity and sizing. The project boundary is where that rule is
   visible.
 - **`Marlin.Health` is separate** because `docs/design/18-health.md` gives it a socket-binding
@@ -215,14 +233,13 @@ arrays. That is design-mandated, so the analyzer exceptions are scoped to that o
 | Path | Owns |
 |---|---|
 | `/.editorconfig` | charset, EOL, final newline, trailing whitespace, indent for md/yml/json/sh. **Sets no indent for `*.c`/`*.h`** — see the conflict note below |
-| `/.gitattributes` | EOL normalisation; `deploy/*.sh` must stay LF on Windows checkouts |
+| `/.gitattributes` | EOL normalisation; `data-plane/scripts/*.sh` must stay LF on Windows checkouts |
 | `/data-plane/.clang-format` | the only definition of C formatting |
 | `/data-plane/.clang-tidy` | C checks |
 | `/control-plane/.editorconfig` | all C#: naming, file-scoped namespaces, `dotnet_diagnostic.*` severities |
 | `/control-plane/Marlin.Abi/.editorconfig` | narrow exceptions for `[InlineArray]`, `fixed`, `unsafe` |
 | `/tests/unit/.editorconfig` | test method naming, magic numbers permitted |
 | `/data-plane/tests/packet/.clang-format`, `.clang-tidy` | only if `data-plane/tests/` takes its own rather than joining the root's — open, `docs/PHASES.md` |
-| `/deploy/.shellcheckrc` | `marlin-load.sh` is a shipped artefact (`docs/design/02-architecture.md`) |
 
 Three practical points:
 
@@ -331,6 +348,21 @@ the C# `[FieldOffset]` set, in both directions — and is undecided (`docs/PHASE
 open-decision table, phase 2a). It is not the BTF-to-C# generation `docs/design/26-superseded.md`
 rejects: a two-column offset comparison models no C# syntax and emits no code, where
 generation would have to model both.
+
+**7.8 Netns integration rigs: `tests/integration/` versus `data-plane/scripts/`.** Principle 5
+places netns/veth integration tests at the repo root, outside `data-plane/`, on the same
+reasoning that carves out `data-plane/tests/` — neither exception applies to a shell script
+that drives `ip`/`bpftool` against a built `marlin.bpf.o`, so `tests/integration/` is what this
+document specifies. In practice, all five per-mode rigs (`l2dsr_wsl.sh`, `ipip_wsl.sh`,
+`gue_wsl.sh`, `vxlan_wsl.sh`, and the multi-backend `netns-topo.sh`) live at
+`data-plane/scripts/` instead, and each carries a header comment asserting the
+`tests/integration/` placement this section describes — a claim about their own location that
+has been wrong since the first of them landed. Left unresolved: whether to move the five
+scripts to `tests/integration/` (closing the gap this document describes) or to amend this
+document and Principle 5's exception list to admit `data-plane/scripts/` as a third exception,
+on the grounds that a rig which only means anything next to the `Makefile` that builds the
+object it attaches is closer to `data-plane/tests/`'s reasoning than to a standalone test tree
+(`docs/PHASES.md`'s open-decision table, phase 2b).
 
 ---
 

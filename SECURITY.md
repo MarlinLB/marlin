@@ -18,13 +18,13 @@ Please report suspected vulnerabilities privately, not via a public issue.
 Use GitHub's private vulnerability reporting on this repository: **Security** tab →
 **Report a vulnerability**. Reports are routed to the repository's `security` team.
 
-Include the affected component (datapath / control plane / deploy scripts), a commit or
+Include the affected component (datapath / marlind / control plane / deploy config), a commit or
 version, reproduction steps, and impact.
 
 ## Scope
 
-In scope: `data-plane/` (XDP datapath), `control-plane/` (C#), `deploy/` (load and unit
-files).
+In scope: `data-plane/` (XDP datapath, including `marlind/`, the data-plane loader),
+`control-plane/` (C#), `deploy/` (unit and config files).
 
 Out of scope: `bpftool` and other third-party dependencies not modified by Marlin.
 

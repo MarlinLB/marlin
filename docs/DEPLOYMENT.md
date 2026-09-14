@@ -26,11 +26,14 @@ would have to be applied rather than omitting it. Those places are §1.9, §1.10
 | Requirement | Value |
 |---|---|
 | Linux kernel | 6.0 or later (`docs/design/01-scope.md`) |
-| `bpftool` | from the `linux-tools` package matching the running kernel, with `prog loadall` and `net attach` (`docs/design/29-versions.md`) |
+| `libbpf` shared library | matching the floor `docs/design/29-versions.md` sets, linked at runtime by `marlind` |
 
-`bpftool` is not built by Marlin; it comes from the distribution. Nothing else is needed on the
-forwarding host — clang, libbpf and `bpftool gen object` are build-host requirements and produce
-the single `marlin.bpf.o` that ships.
+`bpftool`, `bash`, `iproute2`, `ethtool` and `util-linux` are **not** forwarding-host requirements.
+`marlind` (`data-plane/marlind/main.c`) is a binary linked against libbpf that calls the kernel
+directly — no shell, no shelled-out tool — and asserts host state rather than trusting it
+(§1.2, §1.3). `clang`, `libbpf`, `bpftool gen object` and a C toolchain to build
+`data-plane/marlind/main.c` are build-host requirements that produce the two artefacts that ship:
+`marlin.bpf.o` and the `marlind` binary; neither is needed to build the other.
 
 `docs/design/29-versions.md` lists the individual kernel features Marlin depends on and the
 version each arrived in; all are below 6.0. That table exists for the case where the 6.0 floor is
@@ -38,38 +41,92 @@ challenged, not as an invitation to run below it.
 
 ### 1.2 BPF filesystem and pinning
 
-Programs and maps are pinned, so they outlive the process that created them. The BPF filesystem
-must be mounted before the loader runs:
+Programs and maps are pinned, so they outlive the process that created them. **The BPF filesystem
+must already be mounted before the loader runs — mounting it is your prerequisite, not the
+loader's action:**
 
 ```sh
 mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
 ```
 
-The loader is `deploy/marlin-load.sh` and does exactly two things:
+`mount(2)` needs `CAP_SYS_ADMIN`, which no Marlin component holds (§1.6), so `marlind`
+only asserts the mountpoint and refuses if it is absent. On a systemd host this is rarely something
+you have to act on: PID 1 mounts the API filesystems, bpffs included, on every host this document
+targets. Confirm with `mountpoint -q /sys/fs/bpf`.
 
-```sh
-bpftool prog loadall marlin.bpf.o /sys/fs/bpf/marlin pinmaps /sys/fs/bpf/marlin
-bpftool net attach xdpdrv pinned /sys/fs/bpf/marlin/xdp_main dev "$IFACE"
-```
+Install `marlin.bpf.o`, `marlind` and the control-plane binary under `/usr/lib/marlin/`,
+and the environment file at `/etc/marlin/marlin.env` (from `deploy/marlin.env.example`). Nothing in
+the repository does this installation step yet — no packaging exists (`docs/REPO-STRUCTURE.md`) —
+so until it does, place the files there by hand or point `MARLIN_OBJ` at wherever `marlin.bpf.o`
+was built.
 
-- There is no map pre-creation step. Every map is sized at compile time and created from its BTF
-  declaration at load.
-- `bpftool`, not `ip`: iproute2's libbpf linkage is distribution-dependent and its legacy loader
-  handles BTF-defined maps and CO-RE poorly.
-- The attach is a legacy netlink attach, not `bpf_link`, so the program stays attached with no
-  process holding a file descriptor.
+**The loader is `marlind` (`marlind attach`), a binary linked against libbpf,
+not a shell script.** It preflights (§1.3's checks among them), loads `marlin.bpf.o`, pins every
+map and the program under `/sys/fs/bpf/marlin`, attaches with `bpf_link_create()` in native
+(`xdpdrv`-equivalent) mode, and then **holds the resulting link and blocks for as long as it
+runs** — see `docs/design/02-architecture.md` for the full sequence and the reasoning behind each
+step. Two consequences follow directly from holding the link rather than attaching and exiting:
+
+- **The attach lives exactly as long as the process.** `systemctl status marlind` showing
+  `active (running)` *is* the datapath being attached — there is no separate state to go stale
+  against it, unlike a `RemainAfterExit` oneshot that reports success forever regardless of what
+  happens to the attach afterwards.
+- **Nothing outside this process can detach or replace the program.** `ip link set dev "$IFACE"
+  xdp off` and `bpftool net detach xdpdrv dev "$IFACE"` both fail `EBUSY` against a link-owned
+  attach — a correctly-reported failure, not the silent no-op the older netlink attach allowed.
+
+There is no map pre-creation step; every map is sized at compile time and created from its BTF
+declaration at load. **Maps are reused across restarts and upgrades**, not just pinned: the loader
+sets a pin path on every map before loading, and libbpf reuses whatever already exists there and
+matches, creating only what is missing. The program itself is not reused this way — it always
+loads fresh from `marlin.bpf.o` — so replacing that file and restarting the service runs the new
+program without ever silently keeping the old one, while VIP configuration in the maps survives
+the restart intact. A map whose *definition* changed fails reuse with a libbpf error; recover with
+`marlind unload`, which removes the pins deliberately (below) — the operator's decision to
+accept that configuration loss, not something the loader does on your behalf.
 
 `IFACE` and the pin path come from `marlin.env.example`. `/sys/fs/bpf/marlin` is the default, not
 an invariant — if you change it, the control plane's configuration must agree.
 
+**Stopping the service detaches, but does not erase configuration.** `systemctl stop
+marlind` sends `SIGTERM`; the loader closes its link, the kernel detaches the program, and
+forwarding stops — **every VIP on the host goes down**, immediately, exactly as before. What is
+different is that the map pins are untouched: a subsequent restart reattaches against the same
+forwarding table with no reconfiguration needed. `marlin.service`'s `Requires=marlind.service`
+still means stopping the loader stops the control plane with it — that cascade is unchanged and
+still means restarting `marlin.service` directly, not the loader, is the way to restart the
+control plane alone.
+
+**Checking attach state:**
+
+```sh
+systemctl is-active marlind   # the in-systemd check
+marlind status                # equivalent, and usable without systemd
+```
+
+`marlind status` exits `0` if the datapath is attached, `3` if it is not, `4` if a link
+exists but does not match the pinned program (foreign or inconsistent), and `1` on a usage or
+environment error — which is also what a caller without `CAP_BPF` gets, since enumerating BPF
+links needs it. It prints a one-line summary either way and touches nothing.
+
+**Removing the pins is a separate, deliberate step — never run automatically:**
+
+```sh
+marlind unload
+```
+
+Refuses while the datapath is attached. Frees the ~26 MB `fwd_table` and every other pinned map,
+at the cost of the configuration a subsequent `attach` would otherwise have reused.
+
 ### 1.3 The XDP interface
 
-**Native XDP is mandatory.** `xdpdrv` fails the attach outright rather than falling back to
-generic/SKB mode. This is deliberate: a silent fallback would succeed at attach time and then cost
-roughly an order of magnitude in throughput, presenting as a software fault rather than a hardware
-one. Rule out the recoverable causes first — another XDP program already attached, an MTU above the
-driver's XDP limit, insufficient queue memory — and if none apply, the card or driver cannot do
-native XDP and the answer is different hardware, not a different flag.
+**Native XDP is mandatory.** `marlind` attaches with `XDP_FLAGS_DRV_MODE`, which fails
+the attach outright rather than falling back to generic/SKB mode. This is deliberate: a silent
+fallback would succeed at attach time and then cost roughly an order of magnitude in throughput,
+presenting as a software fault rather than a hardware one. Rule out the recoverable causes first —
+another XDP program already attached, an MTU above the driver's XDP limit, insufficient queue
+memory — and if none apply, the card or driver cannot do native XDP and the answer is different
+hardware, not a different flag.
 
 **Hardware receive coalescing must be off.** LRO merges arriving frames in hardware, before XDP
 sees them; the datapath assumes client-facing ingress is never larger than a standard frame and
@@ -128,7 +185,7 @@ have to read the design documents.
 
 | Component | Capabilities | For |
 |---|---|---|
-| `marlin-load.sh` | `CAP_BPF`, `CAP_NET_ADMIN` | load, pin, attach |
+| `marlind` | `CAP_BPF`, `CAP_NET_ADMIN` | load, pin, attach |
 | Control plane | `CAP_BPF`, `CAP_NET_ADMIN` | map I/O; maintaining kernel neighbour entries; binding probe sockets into the probe VRF |
 
 No component needs `CAP_SYS_ADMIN`. The probe isolation in §1.9 uses a VRF rather than a network
@@ -139,12 +196,16 @@ device with `SO_BINDTODEVICE` gates on `CAP_NET_RAW`, which `CAP_NET_ADMIN` does
 control plane needs **`CAP_NET_RAW` as well** for §1.9 to work. The conclusion holds — this is
 still short of `CAP_SYS_ADMIN` — but the capability set above is the design's, not a verified one.
 
-The loader is a systemd **oneshot with `RemainAfterExit`, ordered before the control plane
-service** — `deploy/marlin-load.service` before `deploy/marlin.service`. A pinned map does outlive
-its creator, so the ordering is not a technical necessity; it exists so that exactly one component
-owns map identity and sizing. The control plane opens pinned paths and performs I/O only. It never
-loads a program and never creates a map, so restarting or upgrading it does not disturb forwarding
-and does not drop connections. (Upgrading the datapath may.)
+The loader is a systemd **long-running service (`Type=notify`), ordered before the control
+plane** — `deploy/marlind.service` before `deploy/marlin.service`. Unlike the pins it
+creates, the loader's own attach does not outlive it (§1.2) — the ordering exists both so that
+exactly one component owns map identity and sizing, and because the control plane has nothing to
+open until the loader has attached at least once. The control plane opens pinned paths and
+performs I/O only. It never loads a program and never creates a map, so restarting or upgrading it
+does not disturb forwarding and does not drop connections. Restarting or upgrading the loader
+*does*: forwarding stops for the sub-second gap between the old process exiting and the new one
+re-attaching, though map state and VIP configuration survive that gap (§1.2) where they would not
+have under the previous, destructive detach.
 
 ### 1.7 Instance configuration
 
@@ -471,7 +532,7 @@ Two operational consequences worth knowing before you provision rather than afte
 - **A backend is up or down.** There is no drain. Rows pointing at a backend marked down drop
   (`backend_down`); they are not migrated. Marking a backend down or back up changes no forwarding
   table rows and disrupts nothing else.
-- **The mode bits of `flags`, and `addr`, `encap_dport`, `vni` and `inner_mac`, cannot be edited in place.** Changing any
+- **The mode bits of `flags`, and `addr`, `encap_dport`, `vni`, `inner_mac` and `id`, cannot be edited in place.** Changing any
   of them means removing the backend and adding it under a new identifier. Removal costs only that backend's own
   connections, but the addition half resets approximately `1/(N+1)` of established connections **on
   healthy backends** — about 1.3% at 75 backends. Adding a backend to a live VIP costs the same.
@@ -690,7 +751,7 @@ itself, since that is where the frame is actually delivered, is not settled by t
 documents (`docs/design/01-scope.md`; `PHASES.md`'s open-decision table, Phase 2b). Provision
 conservatively — as for L2 DSR, with ARP/NDP suppressed — until that closes.
 
-Changing a backend's `vni` or `inner_mac` is a remove-and-re-add, not an edit (§2.1).
+Changing a backend's `vni`, `inner_mac` or `id` is a remove-and-re-add, not an edit (§2.1).
 
 See §2.6 for packet size.
 

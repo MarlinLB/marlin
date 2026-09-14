@@ -10,7 +10,7 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
-#include <marlin/abi/types.h>
+#include <marlin/marlin.h> /* struct marlin_ctx; pulls in marlin/abi/types.h */
 
 __attribute__((weak)) struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -18,6 +18,22 @@ __attribute__((weak)) struct {
     __type(value, struct marlin_config);
     __uint(max_entries, 1);
 } config SEC(".maps");
+
+/*
+ * Per-packet working state, held per-CPU rather than on the BPF stack: struct
+ * marlin_ctx no longer counts against MAX_BPF_STACK in every frame that
+ * carries it (docs/design/05-budgets.md). One entry, looked up with the same
+ * constant key every packet: XDP runs pinned to whichever CPU is polling the
+ * receiving queue, so PERCPU_ARRAY gives each core its own slot with no
+ * cross-CPU contention and no risk of one CPU's in-flight packet clobbering
+ * another's.
+ */
+__attribute__((weak)) struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct marlin_ctx);
+    __uint(max_entries, 1);
+} mctx_scratch SEC(".maps");
 
 __attribute__((weak)) struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);

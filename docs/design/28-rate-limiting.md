@@ -24,14 +24,22 @@ must be zeroed before an IPv4 lookup.
 ## Timestamp and refill
 
 `bpf_ktime_get_ns() >> RL_TICK_SHIFT` (`RL_TICK_SHIFT` = 20, `docs/design/09-sizing.md`) — units of 1.048576 ms, avoiding
-a division. Thirty-two bits of that unit wrap after roughly 52 days of uptime; a wrap yields a
-negative elapsed time, clamped to zero, costing one source one refill interval.
+a division. Thirty-two bits of that unit wrap after roughly 52 days of uptime, or the clock can
+step backwards; either yields a negative elapsed time. **The bucket resyncs to full rather than
+crediting no refill.** Clamping elapsed to zero instead would leave the stale future timestamp in
+place — a drained bucket never reaches the compare-and-swap that would overwrite it, since the
+`tokens < ONE_TOKEN` test in "Update" below returns first — so the source would stay dropped
+until `now` caught back up to the stale value, on the order of the wrap period itself rather than
+one refill interval.
 
 **Refill is pre-scaled by the control plane.** There are 953.67 ticks per second — not an integer
 and not a shift — so converting an operator-facing tokens-per-second figure in the datapath would
 need a division per packet. `config.rl_refill` holds scaled tokens per tick, computed once as
 `rate << RL_TOKEN_SHIFT` divided by 953. Tokens per second is an API unit and never enters a map.
-Rounding down puts the enforced rate at most one part in 953 below the configured one.
+Rounding down puts the enforced rate at most one part in 953 below the configured one, and floors
+it entirely below roughly 3.73 tokens/sec, where `rate << RL_TOKEN_SHIFT` divided by 953 rounds to
+zero — a permanently empty bucket. `docs/design/20-configuration-validation.md`'s `rl_refill == 0`
+rejection is what keeps that floor from reaching the datapath as a silent lockout.
 
 `config.rl_burst` is stored scaled — `packets << RL_TOKEN_SHIFT` — so the datapath compares it
 against the token field without shifting. At `RL_TOKEN_SHIFT` of 8 the 32-bit token field holds
@@ -40,19 +48,35 @@ at most 2^24 − 1 whole packets, which bounds the configurable burst (`docs/des
 ## Update
 
 ```
-now = bpf_ktime_get_ns() >> RL_TICK_SHIFT
-b   = lookup(key); on miss, insert a full bucket and admit
+if mctx == NULL                      → abort, nullref
+if CFG_RL_ENABLE clear               → admit, unmetered
+if acl_verdict == ALLOW              → admit, unmetered (docs/design/27-source-filtering.md)
 
+now = bpf_ktime_get_ns() >> RL_TICK_SHIFT
+b   = lookup(key)
+if miss:
+    rc = spend(old=now<<32|burst_scaled, now, rl_refill, burst_scaled) → next
+    if rc != OK                      → drop, ratelimited (no insert)
+    insert(key, next); update failure → admit anyway, count rl_insert_failed
+    → admit
+
+old = READ_ONCE(b->state)
 unrolled RL_CAS_RETRIES times:
-    old     = READ_ONCE(b->state)
-    elapsed = clamp_low(now - (old >> 32), 0)
-    refill  = min((__u64)elapsed * rl_refill, burst_scaled)   /* 64-bit, then clamped */
-    tokens  = min((old & 0xffffffff) + refill, burst_scaled)
-    if tokens < ONE_TOKEN            → drop, ratelimited
-    if cmpxchg(&b->state, old,
-               (now << 32) | (tokens - ONE_TOKEN)) == old → admit
+    rc = spend(old, now, rl_refill, burst_scaled) → next
+    if rc != OK                      → drop, ratelimited
+    prev = cmpxchg(&b->state, old, next)
+    if prev == old                   → admit
+    old = prev
 
 retries exhausted → admit, count rl_cas_exhausted
+
+spend(old, now, rate, burst) -> next:
+    elapsed = now - (old >> 32)                                  /* signed */
+    refill  = burst                                     if elapsed < 0     /* resync, see above */
+            = min((__u64)elapsed * rate, burst)          otherwise         /* 64-bit, then clamped */
+    tokens  = min((old & 0xffffffff) + refill, burst)
+    if tokens < ONE_TOKEN                                → drop, ratelimited
+    next    = (now << 32) | (tokens - ONE_TOKEN)          → OK
 ```
 
 **The refill product is computed in 64 bits and clamped before the add.** `elapsed` is unbounded
@@ -82,11 +106,28 @@ Bounded memory is achieved; bounded cost is not, and is unmeasured. `PHASES.md` 
 that measurement a condition of enabling the limiter, and requires the mitigation to be chosen
 on the measurement rather than ahead of it.
 
+**An insert failure admits the packet.** Fail-closed here would let a control plane starving the
+map of memory — the same condition an attacker's flood produces — become a denial of service in
+its own right. The failure is still counted (`rl_insert_failed`), since otherwise it is invisible
+and is exactly the signal the insert-cost measurement above needs.
+
 ## Scope
 
 **One bucket per source, shared across every VIP that source addresses.** Per-VIP buckets would
 multiply the map by the VIP count and need a composite key, and the rate a source may send at is
 a property of the source — the argument `docs/design/17-reconfiguration.md` makes against a per-VIP down-set (`docs/design/25-rejected.md`).
 
+`VIP_RATELIMIT` gates the call, not the bucket: it decides whether a given packet's VIP invokes
+`marlin_ratelimit()` at all (`docs/design/11-pipeline.md` step 5), not which bucket a packet
+charges. A source addressing both a metered and an unmetered VIP spends tokens only on the
+metered VIP's packets, from the one bucket above — the unmetered VIP's packets to that same
+source never reach the token check and never spend one.
+
 An allowlisted source is never metered (`docs/design/27-source-filtering.md`), which is what keeps the management-prefix escape
 hatch intact when rate limiting is enabled.
+
+**The `acl_verdict` test in "Update" above carries no `VIP_ACL` test beside it**, and needs none.
+`docs/design/20-configuration-validation.md` rejects `VIP_RATELIMIT` on a VIP whose `VIP_ACL` is
+clear, so any packet reaching `marlin_ratelimit()` came from a VIP whose verdict is enforced. The
+absent test is a consequence of that rejection, not an omission; adding a redundant one would
+obscure which of the two mechanisms is load-bearing.

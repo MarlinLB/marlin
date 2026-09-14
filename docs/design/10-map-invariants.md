@@ -11,6 +11,8 @@ invalid:
 - Removing a backend means writing a zeroed `backends[id]` **and** rewriting every row that
   referenced it to 0.
 - `MARLIN_UP` is non-zero, so a zeroed slot also reads as not-UP.
+- A populated slot carries `struct backend.id` equal to its own index; a zeroed slot reads `id`
+  0, the same "never allocated" value, so removal stays a single zero-write with no special case.
 
 ## Zero the whole key before a hash lookup
 
