@@ -29,10 +29,10 @@ would have to be applied rather than omitting it. Those places are §1.9, §1.10
 | `libbpf` shared library | matching the floor `docs/design/29-versions.md` sets, linked at runtime by `marlind` |
 
 `bpftool`, `bash`, `iproute2`, `ethtool` and `util-linux` are **not** forwarding-host requirements.
-`marlind` (`data-plane/marlind/main.c`) is a binary linked against libbpf that calls the kernel
+`marlind` (`data-plane/marlind/`) is a binary linked against libbpf that calls the kernel
 directly — no shell, no shelled-out tool — and asserts host state rather than trusting it
 (§1.2, §1.3). `clang`, `libbpf`, `bpftool gen object` and a C toolchain to build
-`data-plane/marlind/main.c` are build-host requirements that produce the two artefacts that ship:
+`data-plane/marlind/` are build-host requirements that produce the two artefacts that ship:
 `marlin.bpf.o` and the `marlind` binary; neither is needed to build the other.
 
 `docs/design/29-versions.md` lists the individual kernel features Marlin depends on and the

@@ -80,18 +80,24 @@ marlin/
 │   │   └── ratelimit.c              # marlin_ratelimit()
 │   ├── include/
 │   │   ├── marlin.h                  # marlin_ctx, enum marlin_ret, marlin_* prototypes
-│   │   └── marlin/
-│   │       ├── abi/                  # every file here has a C# counterpart. Nothing else does.
-│   │       │   ├── types.h           # map key and value structs
-│   │       │   ├── limits.h          # docs/design/09-sizing.md constants — not in docs/design/03-translation-units.md, see §8
-│   │       │   └── enums.h           # modes, states, drop reasons, flag bits — see §8
-│   │       ├── maps.h
-│   │       ├── csum.h
-│   │       ├── entropy.h             # outer UDP source port entropy hash, shared by gue.c and vxlan.c
-│   │       ├── siphash.h
-│   │       ├── stats.h
-│   │       ├── acl.h
-│   │       └── ratelimit.h          # marlin_ratelimit() prototype
+│   │   ├── marlin/
+│   │   │   ├── abi/                  # every file here has a C# counterpart. Nothing else does.
+│   │   │   │   ├── types.h           # map key and value structs
+│   │   │   │   ├── limits.h          # docs/design/09-sizing.md constants — not in docs/design/03-translation-units.md, see §8
+│   │   │   │   └── enums.h           # modes, states, drop reasons, flag bits — see §8
+│   │   │   ├── maps.h
+│   │   │   ├── csum.h
+│   │   │   ├── entropy.h             # outer UDP source port entropy hash, shared by gue.c and vxlan.c
+│   │   │   ├── siphash.h
+│   │   │   ├── stats.h
+│   │   │   ├── acl.h
+│   │   │   └── ratelimit.h          # marlin_ratelimit() prototype
+│   │   └── marlind/                  # marlind's own headers — host-only, never reachable from a -target bpf TU (§3)
+│   │       ├── marlind.h             # struct config, EXIT_*, MARLIN_PROG_NAME, load_config()
+│   │       ├── log.h                 # logmsg(), die(), notify()
+│   │       ├── preflight.h           # preflight()
+│   │       ├── bpf_load.h            # load_and_pin_maps(), pin_program(), attach_link()
+│   │       └── cmd.h                 # attach_probe(), cmd_attach(), cmd_status(), cmd_unload()
 │   ├── tests/                       # native unit tests, `make tests` — Principle 5's exception
 │   │   ├── parser_test.c            # #includes bpf/parser.c to reach its static helpers
 │   │   ├── acl_test.c               # #includes bpf/acl.c; map lookups answered by stubs/ below
@@ -118,7 +124,14 @@ marlin/
 │   ├── tools/                       # dev-only, `make tools` — never installed
 │   │   └── verifier_stats.c        # loads marlin.bpf.o via libbpf; verifier insn/stack report
 │   └── marlind/                     # the loader; built by data-plane/Makefile's `marlind` target
-│       └── main.c                   # attach sequence of docs/design/02-architecture.md
+│       ├── main.c                   # dispatch: attach | status | unload
+│       ├── log.c                    # logmsg(), die(), notify()
+│       ├── config.c                 # load_config()
+│       ├── preflight.c              # preflight() -- host-state checks, docs/design/02-architecture.md
+│       ├── bpf_load.c               # load, pin, attach -- the map/program/link creation
+│       ├── cmd_attach.c             # cmd_attach(): netlink/signalfd watch + epoll loop
+│       ├── cmd_status.c             # cmd_status(), attach_probe() (also used by cmd_unload.c)
+│       └── cmd_unload.c             # cmd_unload()
 │
 ├── deploy/
 │   ├── marlind.service                # Type=notify, before marlin.service
@@ -152,8 +165,8 @@ marlin/
 ```
 
 **`data-plane/marlind/` is not `data-plane/tools/` and not `deploy/`.** `data-plane/tools/` is
-scoped to dev-only tooling (`verifier_stats.c` is never installed); `marlind/main.c` is a shipped artefact that
-runs on every forwarding host, so it belongs beside the other deployed pieces, not among
+scoped to dev-only tooling (`verifier_stats.c` is never installed); `marlind/`'s sources build a shipped
+artefact that runs on every forwarding host, so it belongs beside the other deployed pieces, not among
 diagnostics. It is not under `deploy/` either — that directory holds configuration and unit
 files, not source that a C toolchain compiles.
 
@@ -164,6 +177,13 @@ one build per *toolchain* serves Principle 2 better than one per artefact. `data
 builds both: `bpf` for `marlin.bpf.o` alone, `marlind` for the loader alone, `all` for both. This
 is the one directory in the tree holding two build targets, and that is deliberate: it is also
 the one place two deployed artefacts share every tool that produces them.
+
+**`include/marlind/` is host-only and is never reachable from a `-target bpf` TU.** It holds
+`marlind/`'s own headers (`struct config`, the CLI exit codes, and the prototypes each `marlind/*.c`
+crosses to reach another). It sits beside `include/marlin/`, not inside it, because `include/marlin/`
+is the datapath's own namespace (§3) and a header full of glibc/libbpf assumptions must not become
+reachable from a BPF TU by accident; `marlind.h` also `#error`s under `__bpf__` as a second line of
+defence. `.clang-tidy`'s `HeaderFilterRegex` and `make format`'s `$(HDRS)` cover both directories.
 
 ---
 
@@ -210,7 +230,7 @@ two that are boundaries for a reason beyond tidiness:
 - **`Marlin.Abi` carries no references at all.** That is what makes it safe as a universal
   dependency, and it is enforceable by reading one `.csproj`.
 - **`Marlin.Bpf` performs I/O and never creates a map or loads a program.**
-  `docs/design/02-architecture.md` confines map creation to `data-plane/marlind/main.c` so there is
+  `docs/design/02-architecture.md` confines map creation to `data-plane/marlind/bpf_load.c` so there is
   exactly one owner of map identity and sizing. The project boundary is where that rule is
   visible.
 - **`Marlin.Health` is separate** because `docs/design/18-health.md` gives it a socket-binding
