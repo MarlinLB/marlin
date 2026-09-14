@@ -65,10 +65,18 @@ MARLIND_OBJS := $(patsubst $(MARLIND_DIR)/%.c,$(BUILD_DIR)/marlind/%.o,$(MARLIND
 MARLIND_BIN  := $(BUILD_DIR)/marlind/marlind
 MARLIND_LIBS := -lbpf
 
+# Host-compiled diagnostic utilities (verifier_stats.c and friends); see the
+# comment above the verifier-stats target below for why they run offline.
+TOOL_SRCS := $(wildcard $(TOOLS_DIR)/*.c)
+TOOL_OBJS := $(patsubst $(TOOLS_DIR)/%.c,$(BUILD_DIR)/tools/%.o,$(TOOL_SRCS))
+TOOL_BINS := $(patsubst $(TOOLS_DIR)/%.c,$(BUILD_DIR)/tools/%,$(TOOL_SRCS))
+VERIFIER_STATS_BIN := $(BUILD_DIR)/tools/verifier_stats
+
 # clang-tidy is inert without a compile database, built by concatenating each
 # TU's -MJ fragment into a JSON array (trailing comma stripped from the last).
 CC_JSON := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/bpf/%.o.json,$(SRCS)) \
-	$(patsubst $(MARLIND_DIR)/%.c,$(BUILD_DIR)/marlind/%.o.json,$(MARLIND_SRCS))
+	$(patsubst $(MARLIND_DIR)/%.c,$(BUILD_DIR)/marlind/%.o.json,$(MARLIND_SRCS)) \
+	$(patsubst $(TOOLS_DIR)/%.c,$(BUILD_DIR)/tools/%.o.json,$(TOOL_SRCS))
 COMPILE_COMMANDS := $(BUILD_DIR)/compile_commands.json
 
 # Native unit tests over parser.c. Deliberately not part of $(SRCS): that
@@ -109,7 +117,7 @@ $(MARLIN_OBJ): $(OBJS)
 	@echo "linking $(notdir $@)"
 	@$(BPFTOOL) gen object $@ $(OBJS)
 
-$(COMPILE_COMMANDS): $(OBJS) $(MARLIND_OBJS)
+$(COMPILE_COMMANDS): $(OBJS) $(MARLIND_OBJS) $(TOOL_OBJS)
 	@echo "generate $(notdir $@)"
 	@{ echo '['; cat $(CC_JSON) | sed '$$s/,$$//'; echo ']'; } > $@
 
@@ -186,14 +194,20 @@ packet-tests: $(MARLIN_OBJ) $(PACKET_TEST_BIN)
 # labelled report instead of relaying it raw -- the kernel's "stack depth"
 # line lists one figure per function, not a chain to sum, and reads exactly
 # like one if left as-is.
-TOOL_SRCS := $(wildcard $(TOOLS_DIR)/*.c)
-TOOL_BINS := $(patsubst $(TOOLS_DIR)/%.c,$(BUILD_DIR)/tools/%,$(TOOL_SRCS))
-VERIFIER_STATS_BIN := $(BUILD_DIR)/tools/verifier_stats
-
-$(BUILD_DIR)/tools/%: $(TOOLS_DIR)/%.c
+$(BUILD_DIR)/tools/%.o: $(TOOLS_DIR)/%.c
 	@mkdir -p $(BUILD_DIR)/tools
 	@echo "compile $(notdir $<)"
+	@$(HOST_CC) $(HOST_CFLAGS) -I$(INC_DIR) -MJ $(BUILD_DIR)/tools/$*.o.json -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/tools/%: $(BUILD_DIR)/tools/%.o
+	@echo "linking $(notdir $@)"
 	@$(HOST_CC) $(HOST_CFLAGS) -o $@ $< -lbpf -lelf
+
+-include $(TOOL_OBJS:.o=.d)
+
+# Without this the .o files above are chained intermediates: make would
+# delete each one -- and stop regenerating its .d -- after every link.
+.SECONDARY: $(TOOL_OBJS)
 
 .PHONY: tools
 tools: $(TOOL_BINS)
