@@ -81,10 +81,11 @@ WarningsAsErrors: >
   -bugprone-reserved-identifier,
   -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
 
-# Analyse only our own headers (include/marlin.h, include/marlin/**/*.h);
-# everything else — libbpf/kernel UAPI headers pulled in from the system
-# include path — is excluded by not matching, not by a separate deny list.
-HeaderFilterRegex: '(^|.*/)include/marlin(/.*)?\.h$'
+# Analyse only our own headers (include/marlin.h, include/marlin/**/*.h,
+# include/marlind/**/*.h); everything else — libbpf/kernel UAPI headers
+# pulled in from the system include path — is excluded by not matching, not
+# by a separate deny list.
+HeaderFilterRegex: '(^|.*/)include/marlind?(/.*)?\.h$'
 
 FormatStyle: file
 SystemHeaders: false

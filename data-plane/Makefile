@@ -103,7 +103,7 @@ PACKET_TEST_BIN  := $(BUILD_DIR)/tests/packet/marlin_packet_tests
 PACKET_TEST_LIBS := -lbpf
 
 .PHONY: all
-all: bpf tools marlind
+all: bpf marlind tools
 
 .PHONY: bpf
 bpf: $(MARLIN_OBJ)
@@ -235,15 +235,20 @@ format:
 	$(MAKE) check-toolchain
 	@$(CLANG_FORMAT) -i --style=file:$(MARLIN_REPO_ROOT)/.clang-format $(SRCS) $(HDRS) $(MARLIND_SRCS)
 
-# Two invocations, not one over $(SRCS) $(MARLIND_SRCS): clang-tidy sharing one
+# Not one invocation over $(SRCS) $(MARLIND_SRCS): clang-tidy sharing one
 # process across a -target bpf TU and a host TU corrupts clang-analyzer-valist's
 # state, producing "uninitialized va_list" false positives in the host TU that
-# do not reproduce when either file set is checked alone.
+# do not reproduce when either file set is checked alone. The same corruption
+# also appears *within* $(MARLIND_SRCS) once it holds more than one host TU
+# that touches a va_list (log.c's logmsg()/die()/notify(), checked alongside
+# config.c and main.c) -- so each marlind file gets its own process too.
 .PHONY: tidy
 tidy:
 	@$(MAKE) $(COMPILE_COMMANDS)
 	@$(CLANG_TIDY) --config-file=$(MARLIN_REPO_ROOT)/.clang-tidy -p $(BUILD_DIR) $(SRCS)
-	@$(CLANG_TIDY) --config-file=$(MARLIN_REPO_ROOT)/.clang-tidy -p $(BUILD_DIR) $(MARLIND_SRCS)
+	@for f in $(MARLIND_SRCS); do \
+		$(CLANG_TIDY) --config-file=$(MARLIN_REPO_ROOT)/.clang-tidy -p $(BUILD_DIR) $$f || exit 1; \
+	done
 
 .PHONY: clean
 clean:
