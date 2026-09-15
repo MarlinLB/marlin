@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
  * The three marlind subcommands, and the silent attach-state probe both
- * status and unload need. Kept out of attach_probe(): it must never print,
- * so that `marlind unload` can call it without emitting a status line
+ * status and unpin need. Kept out of attach_probe(): it must never print,
+ * so that `marlind --unpin` can call it without emitting a status line
  * ahead of its own.
  */
 
@@ -23,4 +23,4 @@ int attach_probe(const struct config *cfg, struct attach_probe *probe);
 
 int cmd_attach(void);
 int cmd_status(void);
-int cmd_unload(void);
+int cmd_unpin(void);

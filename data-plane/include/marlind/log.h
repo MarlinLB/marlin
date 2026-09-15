@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
  * Logging and systemd notification. die() is _Noreturn on this declaration,
- * not only on its definition: without it, callers such as cmd_unload()'s
+ * not only on its definition: without it, callers such as cmd_unpin()'s
  * opendir() failure path read as falling through to code that assumes a
  * non-NULL dir/fd, which is what an undeclared-noreturn die() made the
  * static analyzer flag.

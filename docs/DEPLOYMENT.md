@@ -60,7 +60,7 @@ the repository does this installation step yet — no packaging exists (`docs/RE
 so until it does, place the files there by hand or point `MARLIN_OBJ` at wherever `marlin.bpf.o`
 was built.
 
-**The loader is `marlind` (`marlind attach`), a binary linked against libbpf,
+**The loader is `marlind` (`marlind --attach`), a binary linked against libbpf,
 not a shell script.** It preflights (§1.3's checks among them), loads `marlin.bpf.o`, pins every
 map and the program under `/sys/fs/bpf/marlin`, attaches with `bpf_link_create()` in native
 (`xdpdrv`-equivalent) mode, and then **holds the resulting link and blocks for as long as it
@@ -82,7 +82,7 @@ matches, creating only what is missing. The program itself is not reused this wa
 loads fresh from `marlin.bpf.o` — so replacing that file and restarting the service runs the new
 program without ever silently keeping the old one, while VIP configuration in the maps survives
 the restart intact. A map whose *definition* changed fails reuse with a libbpf error; recover with
-`marlind unload`, which removes the pins deliberately (below) — the operator's decision to
+`marlind --unpin`, which removes the pins deliberately (below) — the operator's decision to
 accept that configuration loss, not something the loader does on your behalf.
 
 `IFACE` and the pin path come from `marlin.env.example`. `/sys/fs/bpf/marlin` is the default, not
@@ -101,18 +101,19 @@ control plane alone.
 
 ```sh
 systemctl is-active marlind   # the in-systemd check
-marlind status                # equivalent, and usable without systemd
+marlind --status              # equivalent, and usable without systemd
 ```
 
-`marlind status` exits `0` if the datapath is attached, `3` if it is not, `4` if a link
+`marlind --status` exits `0` if the datapath is attached, `3` if it is not, `4` if a link
 exists but does not match the pinned program (foreign or inconsistent), and `1` on a usage or
 environment error — which is also what a caller without `CAP_BPF` gets, since enumerating BPF
-links needs it. It prints a one-line summary either way and touches nothing.
+links needs it. It prints a one-line summary either way and touches nothing. `marlind --help` and
+`marlind --version` also exit `0`.
 
 **Removing the pins is a separate, deliberate step — never run automatically:**
 
 ```sh
-marlind unload
+marlind --unpin
 ```
 
 Refuses while the datapath is attached. Frees the ~26 MB `fwd_table` and every other pinned map,

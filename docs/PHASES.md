@@ -88,7 +88,7 @@ further.
   control plane (`docs/design/02-architecture.md`).
 - `clang-format` and `clang-tidy` wired into CI, blocking per `.clang-tidy`'s
   `WarningsAsErrors`.
-- Load and attach verified in a network namespace: `marlind attach` loading, pinning
+- Load and attach verified in a network namespace: `marlind --attach` loading, pinning
   and attaching with `bpf_link_create()`. The attach must fail rather than degrade to SKB mode
   (`docs/design/02-architecture.md`).
 - `make tests` builds and runs the native unit tests, one binary per test file — `parser.c`,
@@ -442,6 +442,7 @@ section it affects, not in a document of its own.
 | The loader's real capability set: this table's "Build" section above and `data-plane/Makefile` both assert `CAP_PERFMON` is needed to load this object; `docs/DEPLOYMENT.md` §1.6 lists only `CAP_BPF`+`CAP_NET_ADMIN`. `data-plane/marlind/bpf_load.c` is now what calls `BPF_PROG_LOAD`, so this is where the real set gets measured, not merely asserted | `data-plane/marlind/bpf_load.c`, `docs/DEPLOYMENT.md` §1.6 | 1 |
 | Whether `/etc/sysctl.d/90-marlin.conf` (`docs/DEPLOYMENT.md` §1.8) is a shipped `deploy/` artefact or integrator host state | `docs/REPO-STRUCTURE.md` §2 | 1 |
 | Whether `deploy/marlind.service` stays flat or becomes a `marlind@.service` template keyed on `IFACE`, the only form that can express `BindsTo=sys-subsystem-net-devices-%i.device`. The loader's own `RTM_DELLINK` watch (`docs/design/02-architecture.md`) now covers the netdev-disappears case without it, so a template is no longer the only answer — but it remains the systemd-native one | `docs/REPO-STRUCTURE.md` §2 | 1 |
+| `MARLIN_VERSION` is a literal (`"0.0.0-dev"`) because no packaging exists yet; once it does, whether it comes from `git describe`, a release tag, or a build-injected define, and whether the control plane's own version string is required to match it | `data-plane/include/marlind/marlind.h` | 1 |
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |

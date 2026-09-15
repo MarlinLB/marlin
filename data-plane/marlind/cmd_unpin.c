@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * unload -- deliberate; never run by the unit.
+ * unpin -- deliberate; never run by the unit.
  */
 
 #include <dirent.h>
@@ -15,7 +15,7 @@
 #include <marlind/log.h>
 #include <marlind/marlind.h>
 
-int cmd_unload(void)
+int cmd_unpin(void)
 {
     struct config cfg;
     struct attach_probe probe;
@@ -32,7 +32,7 @@ int cmd_unload(void)
      * that happen by accident.
      */
     if(attach_probe(&cfg, &probe) == EXIT_ATTACHED) {
-        die("%s is currently attached -- stop the service before unloading its pins", cfg.iface);
+        die("%s is currently attached -- stop the service before unpinning", cfg.iface);
     }
 
     if(unlink(cfg.prog_pin) != 0 && errno != ENOENT) {

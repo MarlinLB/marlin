@@ -93,11 +93,11 @@ marlin/
 │   │   │   ├── acl.h
 │   │   │   └── ratelimit.h          # marlin_ratelimit() prototype
 │   │   └── marlind/                  # marlind's own headers — host-only, never reachable from a -target bpf TU (§3)
-│   │       ├── marlind.h             # struct config, EXIT_*, MARLIN_PROG_NAME, load_config()
+│   │       ├── marlind.h             # struct config, EXIT_*, MARLIN_PROG_NAME, MARLIN_VERSION, load_config()
 │   │       ├── log.h                 # logmsg(), die(), notify()
 │   │       ├── preflight.h           # preflight()
 │   │       ├── bpf_load.h            # load_and_pin_maps(), pin_program(), attach_link()
-│   │       └── cmd.h                 # attach_probe(), cmd_attach(), cmd_status(), cmd_unload()
+│   │       └── cmd.h                 # attach_probe(), cmd_attach(), cmd_status(), cmd_unpin()
 │   ├── tests/                       # native unit tests, `make tests` — Principle 5's exception
 │   │   ├── parser_test.c            # #includes bpf/parser.c to reach its static helpers
 │   │   ├── acl_test.c               # #includes bpf/acl.c; map lookups answered by stubs/ below
@@ -124,14 +124,14 @@ marlin/
 │   ├── tools/                       # dev-only, `make tools` — never installed
 │   │   └── verifier_stats.c        # loads marlin.bpf.o via libbpf; verifier insn/stack report
 │   └── marlind/                     # the loader; built by data-plane/Makefile's `marlind` target
-│       ├── main.c                   # dispatch: attach | status | unload
+│       ├── main.c                   # getopt_long: --attach | --status | --unpin
 │       ├── log.c                    # logmsg(), die(), notify()
 │       ├── config.c                 # load_config()
 │       ├── preflight.c              # preflight() -- host-state checks, docs/design/02-architecture.md
 │       ├── bpf_load.c               # load, pin, attach -- the map/program/link creation
 │       ├── cmd_attach.c             # cmd_attach(): netlink/signalfd watch + epoll loop
-│       ├── cmd_status.c             # cmd_status(), attach_probe() (also used by cmd_unload.c)
-│       └── cmd_unload.c             # cmd_unload()
+│       ├── cmd_status.c             # cmd_status(), attach_probe() (also used by cmd_unpin.c)
+│       └── cmd_unpin.c              # cmd_unpin()
 │
 ├── deploy/
 │   ├── marlind.service                # Type=notify, before marlin.service
