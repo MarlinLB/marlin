@@ -199,8 +199,8 @@ char _license[] SEC("license") = "Dual BSD/GPL"; // NOLINT(readability-identifie
  * reused. A dedicated section, not plain .rodata, so the split from the
  * bpf_printk format strings above is a distinct DATASEC nothing else touches.
  */
-_Static_assert(sizeof(MARLIN_VERSION) <= MARLIN_VERSION_MAX, "MARLIN_VERSION too long for struct marlin_build");
+_Static_assert(sizeof(MARLIN_BPF_VERSION) <= MARLIN_VERSION_MAX, "MARLIN_BPF_VERSION too long for struct marlin_build");
 const volatile struct marlin_build MARLIN_BUILD SEC(".rodata.marlin_version") = {
     .magic = MARLIN_BUILD_MAGIC,
-    .version = MARLIN_VERSION,
+    .version = MARLIN_BPF_VERSION,
 };

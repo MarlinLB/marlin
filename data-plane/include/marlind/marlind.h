@@ -14,7 +14,7 @@
 
 #include <limits.h>
 
-#include <marlin/version.h> /* generated from data-plane/VERSION; defines MARLIN_VERSION */
+#include <marlind/version.h> /* generated from data-plane/marlind/VERSION; defines MARLIND_VERSION */
 
 /* bpftool pins each program under its C function name, not its section name. */
 #define MARLIN_PROG_NAME       "xdp_main"
@@ -26,6 +26,7 @@
 #define EXIT_USAGE             1
 #define EXIT_NOT_ATTACHED      3
 #define EXIT_FOREIGN           4
+#define EXIT_INCOMPATIBLE      5
 
 struct config {
     const char *iface;

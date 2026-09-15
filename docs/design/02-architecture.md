@@ -16,7 +16,10 @@ into `marlin.bpf.o` (`docs/design/29-versions.md`). The forwarding host does not
 
 `marlind --attach`, in order:
 
-1. Preflight: refuses rather than configures (§1.3 of `docs/DEPLOYMENT.md`).
+1. Preflight: refuses rather than configures (§1.3 of `docs/DEPLOYMENT.md`) — the first check whose
+   subject is the object file itself, not the host: `marlin.bpf.o` must carry a build version
+   `marlind` supports (`data-plane/include/marlind/compat.h`'s minimum), checked before anything
+   below opens the object for real.
 2. Opens `marlin.bpf.o`, sets a pin path on every user-defined map, and loads it. libbpf reuses
    whatever is already pinned under `/sys/fs/bpf/marlin/` and creates the rest — the program
    always loads fresh, but map contents and VIP configuration survive both a restart and a

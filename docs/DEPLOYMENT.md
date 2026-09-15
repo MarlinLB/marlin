@@ -61,7 +61,8 @@ so until it does, place the files there by hand or point `MARLIN_OBJ` at whereve
 was built.
 
 **The loader is `marlind` (`marlind --attach`), a binary linked against libbpf,
-not a shell script.** It preflights (§1.3's checks among them), loads `marlin.bpf.o`, pins every
+not a shell script.** It preflights (§1.3's checks among them, plus a check that `MARLIN_OBJ`
+carries a build version `marlind` supports — below), loads `marlin.bpf.o`, pins every
 map and the program under `/sys/fs/bpf/marlin`, attaches with `bpf_link_create()` in native
 (`xdpdrv`-equivalent) mode, and then **holds the resulting link and blocks for as long as it
 runs** — see `docs/design/02-architecture.md` for the full sequence and the reasoning behind each
@@ -96,6 +97,16 @@ program pin itself uses.
 `IFACE` and the pin path come from `marlin.env.example`. `/sys/fs/bpf/marlin` is the default, not
 an invariant — if you change it, the control plane's configuration must agree.
 
+**`marlin.bpf.o` and `marlind` version independently** (`data-plane/bpf/VERSION`,
+`data-plane/marlind/VERSION`) — they are separate artefacts with separate release cadences, and a
+mismatch between the two figures `--version` prints (below) is normal, not a build error. What
+`marlind` enforces instead is a minimum supported `marlin.bpf.o` version, hand-maintained in
+`data-plane/include/marlind/compat.h`. `--attach` checks this in preflight, before loading or
+pinning anything: an object below that floor, or one that carries no build version at all (older
+than the version map itself), is refused with exit code `5` and no other state touched.
+`deploy/marlind.service` excludes exit `5` from `Restart=on-failure` — the condition is not
+fixable by retrying, only by installing a newer `marlin.bpf.o`.
+
 **Stopping the service detaches, but does not erase configuration.** `systemctl stop
 marlind` sends `SIGTERM`; the loader closes its link, the kernel detaches the program, and
 forwarding stops — **every VIP on the host goes down**, immediately, exactly as before. What is
@@ -115,25 +126,29 @@ marlind --status              # equivalent, and usable without systemd
 `marlind --status` exits `0` if the datapath is attached, `3` if it is not, `4` if a link
 exists but does not match the pinned program (foreign or inconsistent), and `1` on a usage or
 environment error — which is also what a caller without `CAP_BPF` gets, since enumerating BPF
-links needs it. It prints a one-line summary either way and touches nothing; when attached, that
+links needs it. `--attach` alone can also exit `5`: the version-floor refusal described above.
+`--status` does not check the floor — it reports on whatever is already attached, possibly by a
+different `marlind` build, so comparing that to *this* binary's floor would conflate the two. It
+prints a one-line summary either way and touches nothing; when attached, that
 line includes the running datapath's version, read from `<pin_dir>/version`:
 
 ```sh
 attached: xdp_main 0.1.0 (id 47) on eth0 (ifindex 2) via link 12; pins under /sys/fs/bpf/marlin
 ```
 
-`marlind --help` and `marlind --version` also exit `0`. `--version` prints marlind's own version
-and, separately, the version embedded in the object at `MARLIN_OBJ` (or its default) — so a
-loader and an object that disagree are visible before attaching, not only after:
+`marlind --help` and `marlind --version` also exit `0` unconditionally — `--version` runs the same
+compatibility check `--attach` does, but only reports it, never refuses:
 
 ```sh
 $ marlind --version
-marlind 0.1.0
+marlind 0.2.0
 marlin.bpf.o 0.1.0 (/usr/lib/marlin/marlin.bpf.o)
+marlind requires marlin.bpf.o 0.2.0 or newer -- --attach will refuse this object
 ```
 
-Both figures come from the same `data-plane/VERSION`; a mismatch means the two were built from
-different checkouts.
+The two version lines are independent numbers (above) — expect them to differ. The third line
+appears only when the object does not clear `marlind`'s floor, or carries no build version at all;
+its absence means `--attach` will accept this object.
 
 **Removing the pins is a separate, deliberate step — never run automatically:**
 

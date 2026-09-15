@@ -112,8 +112,10 @@ struct bpf_object *load_and_pin_maps(const char *obj_path, const char *pin_dir)
  * would otherwise never appear in a running program's bpf_prog_info.map_ids,
  * leaving no path from an attached program back to its own version.
  *
- * Not fatal if absent: an obj_path built before this map existed still
- * attaches, just with nothing for --status to show.
+ * The map == NULL guard below is defensive, not a supported path: preflight's
+ * check_object_version() (preflight.c) already refuses to reach here with an
+ * obj_path that carries no build version at all, since such an object
+ * predates every version include/marlind/compat.h's floor can name.
  */
 void pin_version(struct bpf_object *obj, const char *pin_dir)
 {

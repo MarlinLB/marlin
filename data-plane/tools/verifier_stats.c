@@ -65,10 +65,12 @@
 #define LOG_BUF_SIZE               (8 * 1024 * 1024)
 
 /*
- * Independent of data-plane/VERSION: every source file under tools/ links to
- * its own binary (data-plane/Makefile), never installed
- * (docs/REPO-STRUCTURE.md), so per-file self-versioning is what that
- * directory's shape already implies.
+ * Independent of data-plane/bpf/VERSION and data-plane/marlind/VERSION:
+ * every source file under tools/ links to its own binary
+ * (data-plane/Makefile), never installed (docs/REPO-STRUCTURE.md), so
+ * per-file self-versioning is what that directory's shape already implies.
+ * Also does not enforce include/marlind/compat.h's floor -- this is a dev
+ * tool meant to inspect arbitrary objects, not refuse them.
  */
 #define VERIFIER_STATS_VERSION "1.0"
 

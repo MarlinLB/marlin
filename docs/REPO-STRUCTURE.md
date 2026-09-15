@@ -66,11 +66,11 @@ marlin/
 │
 ├── data-plane/
 │   ├── Makefile                      # clang -target bpf; bpftool gen object; compile_commands.json
-│   ├── VERSION                       # marlin.bpf.o + marlind's shared version; sources include/marlin/version.h (generated)
-│   ├── CHANGELOG.md                  # datapath changelog; root CHANGELOG.md is the per-component index
 │   ├── .clang-format
 │   ├── .clang-tidy
 │   ├── bpf/
+│   │   ├── VERSION                   # marlin.bpf.o's own version; sources include/marlin/version.h (generated)
+│   │   ├── CHANGELOG.md              # marlin.bpf.o changelog; root CHANGELOG.md is the per-component index
 │   │   ├── main.c                  # XDP entry point
 │   │   ├── balancer.c                # marlin_balance()
 │   │   ├── parser.c
@@ -96,9 +96,10 @@ marlin/
 │   │   │   ├── acl.h
 │   │   │   └── ratelimit.h          # marlin_ratelimit() prototype
 │   │   └── marlind/                  # marlind's own headers — host-only, never reachable from a -target bpf TU (§3)
-│   │       ├── marlind.h             # struct config, EXIT_*, MARLIN_PROG_NAME, MARLIN_VERSION (via marlin/version.h), load_config()
+│   │       ├── marlind.h             # struct config, EXIT_*, MARLIN_PROG_NAME, MARLIND_VERSION (via marlind/version.h), load_config()
 │   │       ├── build.h               # marlin_build_from_object(), marlin_find_build_map() -- shared with tools/verifier_stats.c
-│   │       ├── log.h                 # logmsg(), die(), notify()
+│   │       ├── compat.h              # MARLIND_MIN_BPF_VERSION, marlind_version_cmp() -- the marlin.bpf.o version floor
+│   │       ├── log.h                 # logmsg(), die(), die_with(), notify()
 │   │       ├── preflight.h           # preflight()
 │   │       ├── bpf_load.h            # load_and_pin_maps(), pin_version(), pin_program(), attach_link()
 │   │       └── cmd.h                 # attach_probe(), cmd_attach(), cmd_status(), cmd_unpin()
@@ -111,6 +112,7 @@ marlin/
 │   │   ├── csum_test.c              # <marlin/csum.h>, header-only
 │   │   ├── mtu_test.c               # <marlin/mtu.h>, header-only
 │   │   ├── entropy_test.c           # <marlin/entropy.h>, header-only
+│   │   ├── compat_test.c            # <marlind/compat.h>, header-only -- marlind_version_cmp() and the version floor
 │   │   ├── packet.h                 # packet builder, shared with tests/packet/ below
 │   │   ├── harness.h                # shared with tests/packet/ below
 │   │   ├── stubs/                   # shadows <bpf/bpf_helpers.h> for the native tier only

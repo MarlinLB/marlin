@@ -26,16 +26,29 @@ void logmsg(const char *fmt, ...)
     fprintf(stderr, "\n");
 }
 
+static _Noreturn void vdie(int code, const char *fmt, va_list ap)
+{
+    fprintf(stderr, "marlind: ");
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "\n");
+    exit(code);
+}
+
 _Noreturn void die(const char *fmt, ...)
 {
     va_list ap;
 
-    fprintf(stderr, "marlind: ");
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fprintf(stderr, "\n");
-    exit(EXIT_USAGE);
+    vdie(EXIT_USAGE, fmt, ap);
+}
+
+_Noreturn void die_with(int code, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vdie(code, fmt, ap);
 }
 
 void notify(const char *fmt, ...)

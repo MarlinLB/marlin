@@ -13,6 +13,9 @@
 void logmsg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 _Noreturn void die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
+/* Like die(), but with a caller-chosen exit code -- EXIT_INCOMPATIBLE, not EXIT_USAGE, for a version floor breach. */
+_Noreturn void die_with(int code, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
 /*
  * Reimplements sd_notify(3) over its wire format directly rather than
  * linking libsystemd, for one call site.
