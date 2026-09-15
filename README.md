@@ -75,7 +75,7 @@ See `REPO-STRUCTURE.md` for the full tree and the reasoning behind each placemen
 The forwarding host runs one binary:
 
 ```sh
-marlind attach
+marlind --attach
 ```
 
 It loads `marlin.bpf.o`, pins it under `/sys/fs/bpf/marlin`, attaches natively to `$IFACE`, and

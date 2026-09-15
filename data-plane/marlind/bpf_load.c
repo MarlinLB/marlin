@@ -38,7 +38,7 @@ static int print_diagnostics(enum libbpf_print_level level, const char *fmt, va_
  * loads fresh from obj_path, but map contents and VIP configuration survive
  * both a restart and a datapath upgrade, as long as no map's definition has
  * changed. A definition that did change fails reuse with a libbpf error;
- * `marlind unload` clears the old pins deliberately.
+ * `marlind --unpin` clears the old pins deliberately.
  */
 struct bpf_object *load_and_pin_maps(const char *obj_path, const char *pin_dir)
 {

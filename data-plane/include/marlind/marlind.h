@@ -17,6 +17,15 @@
 /* bpftool pins each program under its C function name, not its section name. */
 #define MARLIN_PROG_NAME       "xdp_main"
 
+/*
+ * A literal, not a build-time git describe: no packaging exists yet
+ * (docs/DEPLOYMENT.md), and a -D on every marlind TU would rebuild the
+ * whole loader on each commit and make tarball builds disagree with git
+ * builds. See docs/PHASES.md's open-decision table for where this comes
+ * from once packaging does exist.
+ */
+#define MARLIN_VERSION          "0.0.0-dev"
+
 #define EXIT_ATTACHED          0
 #define EXIT_USAGE             1
 #define EXIT_NOT_ATTACHED      3

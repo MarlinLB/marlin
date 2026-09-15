@@ -14,7 +14,7 @@ into `marlin.bpf.o` (`docs/design/29-versions.md`). The forwarding host does not
 
 ## Attach sequence
 
-`marlind attach`, in order:
+`marlind --attach`, in order:
 
 1. Preflight: refuses rather than configures (§1.3 of `docs/DEPLOYMENT.md`).
 2. Opens `marlin.bpf.o`, sets a pin path on every map, and loads it. libbpf reuses whatever is
