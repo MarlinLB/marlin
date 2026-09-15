@@ -9,12 +9,14 @@
 
 #include <marlin.h>
 #include <marlin/acl.h>
+#include <marlin/build.h>
 #include <marlin/encap.h>
 #include <marlin/maps.h>
 #include <marlin/nexthop.h>
 #include <marlin/parser.h>
 #include <marlin/ratelimit.h>
 #include <marlin/stats.h>
+#include <marlin/version.h>
 
 static __always_inline int xdp_load_config(struct marlin_ctx *ctx)
 {
@@ -189,3 +191,16 @@ int xdp_main(struct xdp_md *ctx)
 }
 
 char _license[] SEC("license") = "Dual BSD/GPL"; // NOLINT(readability-identifier-naming) -- libbpf loader convention (SEC("license"))
+
+/*
+ * Read from the object file, not the running program: marlind and
+ * verifier_stats both call bpf_map__initial_value() on this before load, so
+ * the version is visible with no privileges and before any map is pinned or
+ * reused. A dedicated section, not plain .rodata, so the split from the
+ * bpf_printk format strings above is a distinct DATASEC nothing else touches.
+ */
+_Static_assert(sizeof(MARLIN_BPF_VERSION) <= MARLIN_VERSION_MAX, "MARLIN_BPF_VERSION too long for struct marlin_build");
+const volatile struct marlin_build MARLIN_BUILD SEC(".rodata.marlin_version") = {
+    .magic = MARLIN_BUILD_MAGIC,
+    .version = MARLIN_BPF_VERSION,
+};

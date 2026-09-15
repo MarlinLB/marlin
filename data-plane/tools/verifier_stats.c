@@ -58,9 +58,21 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
+#include <marlind/build.h>
+
 #define MARLIN_MAX_BPF_STACK       512
 #define MARLIN_VERIFIER_INSN_LIMIT 1000000
 #define LOG_BUF_SIZE               (8 * 1024 * 1024)
+
+/*
+ * Independent of data-plane/bpf/VERSION and data-plane/marlind/VERSION:
+ * every source file under tools/ links to its own binary
+ * (data-plane/Makefile), never installed (docs/REPO-STRUCTURE.md), so
+ * per-file self-versioning is what that directory's shape already implies.
+ * Also does not enforce include/marlind/compat.h's floor -- this is a dev
+ * tool meant to inspect arbitrary objects, not refuse them.
+ */
+#define VERIFIER_STATS_VERSION "1.0"
 
 /* Failures only: the verifier log is read from the buffer below, not this callback. */
 static int print_diagnostics(enum libbpf_print_level level, const char *fmt, va_list args)
@@ -548,8 +560,13 @@ int main(int argc, char **argv)
     long insns;
     LIBBPF_OPTS(bpf_object_open_opts, opts, .kernel_log_level = 1 | 4);
 
+    if(argc == 2 && strcmp(argv[1], "--version") == 0) {
+        printf("verifier_stats %s\n", VERIFIER_STATS_VERSION);
+        return 0;
+    }
+
     if(argc != 2) {
-        fprintf(stderr, "usage: %s <marlin.bpf.o>\n", argv[0]);
+        fprintf(stderr, "usage: %s <marlin.bpf.o>|--version\n", argv[0]);
         return 1;
     }
 
@@ -601,6 +618,14 @@ int main(int argc, char **argv)
         fprintf(stderr, "verifier-stats: failed to open %s\n", argv[1]);
         free(log_buf);
         return 1;
+    }
+
+    {
+        const struct marlin_build *build = marlin_build_from_object(obj);
+
+        if(build != NULL) {
+            printf("%s version: %.*s\n\n", argv[1], (int)sizeof(build->version), build->version);
+        }
     }
 
     if(bpf_object__load(obj) != 0) {

@@ -13,6 +13,9 @@ EnvironmentFile=/etc/marlin/marlin.env
 ExecStart=/usr/lib/marlin/marlind --attach
 Restart=on-failure
 RestartSec=1s
+# EXIT_INCOMPATIBLE (5): the object is below marlind's floor, or predates
+# build versioning -- unfixable by retrying, only by replacing a file.
+RestartPreventExitStatus=5
 OOMScoreAdjust=-500
 MemoryAccounting=yes
 CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN

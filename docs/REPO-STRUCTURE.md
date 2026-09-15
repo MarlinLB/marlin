@@ -69,6 +69,8 @@ marlin/
 │   ├── .clang-format
 │   ├── .clang-tidy
 │   ├── bpf/
+│   │   ├── VERSION                   # marlin.bpf.o's own version; sources include/marlin/version.h (generated)
+│   │   ├── CHANGELOG.md              # marlin.bpf.o changelog; root CHANGELOG.md is the per-component index
 │   │   ├── main.c                  # XDP entry point
 │   │   ├── balancer.c                # marlin_balance()
 │   │   ├── parser.c
@@ -86,6 +88,7 @@ marlin/
 │   │   │   │   ├── limits.h          # docs/design/09-sizing.md constants — not in docs/design/03-translation-units.md, see §8
 │   │   │   │   └── enums.h           # modes, states, drop reasons, flag bits — see §8
 │   │   │   ├── maps.h
+│   │   │   ├── build.h               # struct marlin_build, embedded in .rodata.marlin_version (bpf/main.c)
 │   │   │   ├── csum.h
 │   │   │   ├── entropy.h             # outer UDP source port entropy hash, shared by gue.c and vxlan.c
 │   │   │   ├── siphash.h
@@ -93,10 +96,12 @@ marlin/
 │   │   │   ├── acl.h
 │   │   │   └── ratelimit.h          # marlin_ratelimit() prototype
 │   │   └── marlind/                  # marlind's own headers — host-only, never reachable from a -target bpf TU (§3)
-│   │       ├── marlind.h             # struct config, EXIT_*, MARLIN_PROG_NAME, MARLIN_VERSION, load_config()
-│   │       ├── log.h                 # logmsg(), die(), notify()
+│   │       ├── marlind.h             # struct config, EXIT_*, MARLIN_PROG_NAME, MARLIND_VERSION (via marlind/version.h), load_config()
+│   │       ├── build.h               # marlin_build_from_object(), marlin_find_build_map() -- shared with tools/verifier_stats.c
+│   │       ├── compat.h              # MARLIND_MIN_BPF_VERSION, marlind_version_cmp() -- the marlin.bpf.o version floor
+│   │       ├── log.h                 # logmsg(), die(), die_with(), notify()
 │   │       ├── preflight.h           # preflight()
-│   │       ├── bpf_load.h            # load_and_pin_maps(), pin_program(), attach_link()
+│   │       ├── bpf_load.h            # load_and_pin_maps(), pin_version(), pin_program(), attach_link()
 │   │       └── cmd.h                 # attach_probe(), cmd_attach(), cmd_status(), cmd_unpin()
 │   ├── tests/                       # native unit tests, `make tests` — Principle 5's exception
 │   │   ├── parser_test.c            # #includes bpf/parser.c to reach its static helpers
@@ -107,6 +112,7 @@ marlin/
 │   │   ├── csum_test.c              # <marlin/csum.h>, header-only
 │   │   ├── mtu_test.c               # <marlin/mtu.h>, header-only
 │   │   ├── entropy_test.c           # <marlin/entropy.h>, header-only
+│   │   ├── compat_test.c            # <marlind/compat.h>, header-only -- marlind_version_cmp() and the version floor
 │   │   ├── packet.h                 # packet builder, shared with tests/packet/ below
 │   │   ├── harness.h                # shared with tests/packet/ below
 │   │   ├── stubs/                   # shadows <bpf/bpf_helpers.h> for the native tier only
@@ -169,6 +175,11 @@ scoped to dev-only tooling (`verifier_stats.c` is never installed); `marlind/`'s
 artefact that runs on every forwarding host, so it belongs beside the other deployed pieces, not among
 diagnostics. It is not under `deploy/` either — that directory holds configuration and unit
 files, not source that a C toolchain compiles.
+
+`tools/verifier_stats.c` including `include/marlind/build.h` reads as a boundary crossing, but the
+directory's actual contract (§3) is host-only, not marlind-only — `data-plane/Makefile`'s tools
+rule already passes `-I$(INC_DIR)`, so the include costs nothing to satisfy — and this is the one
+piece of logic both binaries would otherwise duplicate.
 
 **`marlind/` sits inside `data-plane/`, not beside it, and has no makefile of its own.** The
 loader shares the datapath's host toolchain end to end — the same `clang`, the same

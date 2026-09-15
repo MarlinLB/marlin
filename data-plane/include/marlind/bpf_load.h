@@ -10,5 +10,6 @@
 #include <bpf/libbpf.h>
 
 struct bpf_object *load_and_pin_maps(const char *obj_path, const char *pin_dir);
+void pin_version(struct bpf_object *obj, const char *pin_dir);
 struct bpf_program *pin_program(struct bpf_object *obj, const char *obj_path, const char *prog_pin);
 int attach_link(int prog_fd, const char *iface, int ifindex);

@@ -24,8 +24,13 @@
 
 #include <getopt.h>
 #include <stdio.h>
+#include <string.h>
 
+#include <bpf/libbpf.h>
+
+#include <marlind/build.h>
 #include <marlind/cmd.h>
+#include <marlind/compat.h>
 #include <marlind/marlind.h>
 
 enum mode {
@@ -39,6 +44,49 @@ static void usage(FILE *out, const char *argv0)
 {
     fprintf(out, "usage: %s --attach|--status|--unpin\n", argv0);
     fprintf(out, "       %s --help|--version\n", argv0);
+}
+
+/*
+ * An incompatible pair is visible here, before attaching, rather than only
+ * during preflight -- config_obj_path(), not load_config(): --version must
+ * exit 0 regardless of compatibility (docs/DEPLOYMENT.md), and opening a
+ * file to read its .rodata needs no privilege. marlind and marlin.bpf.o
+ * version independently (data-plane/marlind/VERSION, data-plane/bpf/VERSION),
+ * so the two figures below are not expected to match -- what matters is
+ * whether the object clears MARLIND_MIN_BPF_VERSION, checked here the same
+ * way preflight's check_object_version() checks it before --attach.
+ */
+static void print_version(void)
+{
+    const char *path = config_obj_path();
+    struct bpf_object *obj;
+
+    printf("marlind %s\n", MARLIND_VERSION);
+
+    obj = bpf_object__open_file(path, NULL);
+    if(obj == NULL) {
+        printf("marlin.bpf.o: no object at %s\n", path);
+        return;
+    }
+
+    const struct marlin_build *build = marlin_build_from_object(obj);
+    const char *base = strrchr(path, '/');
+
+    if(build == NULL) {
+        printf("%s (no embedded build version) (%s)\n", base != NULL ? base + 1 : path, path);
+        printf("marlind requires marlin.bpf.o %s or newer -- --attach will refuse this object\n", MARLIND_MIN_BPF_VERSION);
+    } else {
+        char version[MARLIN_VERSION_MAX + 1];
+
+        marlind_build_version(build, version, sizeof(version));
+        printf("%s %s (%s)\n", base != NULL ? base + 1 : path, version, path);
+
+        if(marlind_bpf_object_supported(version) != MARLIND_COMPAT_OK) {
+            printf("marlind requires marlin.bpf.o %s or newer -- --attach will refuse this object\n", MARLIND_MIN_BPF_VERSION);
+        }
+    }
+
+    bpf_object__close(obj);
 }
 
 int main(int argc, char **argv)
@@ -87,7 +135,7 @@ int main(int argc, char **argv)
             usage(stdout, argv[0]);
             return 0;
         case 'V':
-            printf("marlind %s\n", MARLIN_VERSION);
+            print_version();
             return 0;
         default:
             usage(stderr, argv[0]);

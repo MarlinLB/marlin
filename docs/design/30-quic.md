@@ -53,7 +53,9 @@ Three things fall out:
 - **No version parsing.** Long-header packet-type codepoints are version-specific — QUIC v2
   (RFC 9369) remaps Initial and 0-RTT relative to v1 — and RFC 8999 does not pin them across
   versions. Not interpreting them at all avoids a wire-format dependency this project has
-  nowhere to track (`docs/design/29-versions.md` covers kernel and toolchain versions only).
+  nowhere to track (`docs/design/29-versions.md` covers kernel and toolchain versions only —
+  Marlin's own build version, `data-plane/include/marlin/build.h`, tracks neither and is not a
+  substitute).
 - **No Initial/0-RTT special case.** Katran needs one, because it steers long headers; this
   design does not. This is a correctness requirement, not only simplicity: a client's Initial
   DCID is client-invented, so a false accept in the check field (below) would repeat

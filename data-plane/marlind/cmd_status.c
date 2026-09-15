@@ -5,6 +5,7 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,6 +15,7 @@
 
 #include <bpf/bpf.h>
 
+#include <marlin/build.h>
 #include <marlind/cmd.h>
 #include <marlind/log.h>
 #include <marlind/marlind.h>
@@ -88,10 +90,44 @@ int attach_probe(const struct config *cfg, struct attach_probe *probe)
     return EXIT_NOT_ATTACHED;
 }
 
+/*
+ * Reads the version pinned by pin_version() (bpf_load.c) straight from
+ * bpffs -- no libbpf object, no privilege beyond what bpf_obj_get() already
+ * needs for prog_pin above. Leaves out[0] '\0' on any failure, including an
+ * attach that predates this pin, so the caller can fall back silently.
+ */
+static void read_version(const char *pin_dir, char *out, size_t out_sz)
+{
+    struct marlin_build build;
+    char path[PATH_MAX];
+    __u32 zero = 0;
+    int map_fd;
+    int n;
+
+    out[0] = '\0';
+
+    n = snprintf(path, sizeof(path), "%s/%s", pin_dir, MARLIN_VERSION_PIN);
+    if(n < 0 || (size_t)n >= sizeof(path)) {
+        return;
+    }
+
+    map_fd = bpf_obj_get(path);
+    if(map_fd < 0) {
+        return;
+    }
+
+    if(bpf_map_lookup_elem(map_fd, &zero, &build) == 0) {
+        snprintf(out, out_sz, "%.*s", (int)sizeof(build.version), build.version);
+    }
+
+    close(map_fd);
+}
+
 int cmd_status(void)
 {
     struct config cfg;
     struct attach_probe probe;
+    char version[MARLIN_VERSION_MAX];
     int rc;
 
     load_config(&cfg);
@@ -103,8 +139,14 @@ int cmd_status(void)
                probe.prog_id, cfg.pin_dir);
         break;
     case EXIT_ATTACHED:
-        printf("attached: %s (id %u) on %s (ifindex %d) via link %u; pins under %s\n", MARLIN_PROG_NAME, probe.prog_id, cfg.iface,
-               cfg.ifindex, probe.link_id, cfg.pin_dir);
+        read_version(cfg.pin_dir, version, sizeof(version));
+        if(version[0] != '\0') {
+            printf("attached: %s %s (id %u) on %s (ifindex %d) via link %u; pins under %s\n", MARLIN_PROG_NAME, version, probe.prog_id,
+                   cfg.iface, cfg.ifindex, probe.link_id, cfg.pin_dir);
+        } else {
+            printf("attached: %s (id %u) on %s (ifindex %d) via link %u; pins under %s\n", MARLIN_PROG_NAME, probe.prog_id, cfg.iface,
+                   cfg.ifindex, probe.link_id, cfg.pin_dir);
+        }
         break;
     default:
         printf("not attached: no XDP link on %s\n", cfg.iface);

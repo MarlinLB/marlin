@@ -19,6 +19,7 @@
 #include <bpf/libbpf.h>
 
 #include <marlind/bpf_load.h>
+#include <marlind/build.h>
 #include <marlind/log.h>
 #include <marlind/marlind.h>
 
@@ -32,13 +33,23 @@ static int print_diagnostics(enum libbpf_print_level level, const char *fmt, va_
 }
 
 /*
- * Sets a pin path on every map before loading, so libbpf's own reuse logic
- * (bpf_object__load() -> bpf_object__reuse_map()) picks up whatever is
- * already pinned under pin_dir and creates the rest -- the program always
- * loads fresh from obj_path, but map contents and VIP configuration survive
- * both a restart and a datapath upgrade, as long as no map's definition has
- * changed. A definition that did change fails reuse with a libbpf error;
- * `marlind --unpin` clears the old pins deliberately.
+ * Sets a pin path on every user-defined map before loading, so libbpf's own
+ * reuse logic (bpf_object__load() -> bpf_object__reuse_map()) picks up
+ * whatever is already pinned under pin_dir and creates the rest -- the
+ * program always loads fresh from obj_path, but map contents and VIP
+ * configuration survive both a restart and a datapath upgrade, as long as no
+ * map's definition has changed. A definition that did change fails reuse
+ * with a libbpf error; `marlind --unpin` clears the old pins deliberately.
+ *
+ * Internal maps (.rodata, .bss, ...) are excluded from all of this: their
+ * libbpf-generated names contain a '.', and the kernel's bpffs refuses to
+ * look up any name containing one (EPERM -- reserved for future extensions),
+ * so pinning one the way the loop below pins ordinary maps cannot work at
+ * all. Reusing one across an upgrade would also silently keep its old
+ * contents -- exactly wrong for .rodata.marlin_version, the one internal map
+ * this object carries, when a version bump is the reason for the upgrade.
+ * pin_version() below pins it separately, once loaded, under a name this
+ * loader chooses instead of one libbpf derived from the object's basename.
  */
 struct bpf_object *load_and_pin_maps(const char *obj_path, const char *pin_dir)
 {
@@ -56,7 +67,13 @@ struct bpf_object *load_and_pin_maps(const char *obj_path, const char *pin_dir)
 
     bpf_object__for_each_map(map, obj)
     {
-        int n = snprintf(path, sizeof(path), "%s/%s", pin_dir, bpf_map__name(map));
+        int n;
+
+        if(bpf_map__is_internal(map)) {
+            continue;
+        }
+
+        n = snprintf(path, sizeof(path), "%s/%s", pin_dir, bpf_map__name(map));
 
         if(n < 0 || (size_t)n >= sizeof(path)) {
             die("pin path too long for map %s", bpf_map__name(map));
@@ -71,12 +88,57 @@ struct bpf_object *load_and_pin_maps(const char *obj_path, const char *pin_dir)
         die("failed to load %s: %s", obj_path, strerror(-err));
     }
 
-    err = bpf_object__pin_maps(obj, pin_dir);
+    /*
+     * NULL, not pin_dir: bpf_object__pin_maps() given a directory pins every
+     * autocreate map under it by name regardless of whether a pin_path was
+     * set above, which would re-introduce exactly the internal-map pin the
+     * loop above just avoided. NULL pins only maps that already carry one.
+     */
+    err = bpf_object__pin_maps(obj, NULL);
     if(err != 0) {
         die("failed to pin maps under %s: %s", pin_dir, strerror(-err));
     }
 
     return obj;
+}
+
+/*
+ * The version global is excluded from load_and_pin_maps() above, so it is
+ * pinned here instead, after load, on the same always-replace discipline
+ * pin_program() below uses: unconditionally, replacing any stale pin from a
+ * previous version. This is what lets `marlind --status` and `bpftool map
+ * dump pinned <pin_dir>/version` see the version of what actually loaded,
+ * not of whatever last succeeded -- a map nothing in the datapath reads
+ * would otherwise never appear in a running program's bpf_prog_info.map_ids,
+ * leaving no path from an attached program back to its own version.
+ *
+ * The map == NULL guard below is defensive, not a supported path: preflight's
+ * check_object_version() (preflight.c) already refuses to reach here with an
+ * obj_path that carries no build version at all, since such an object
+ * predates every version include/marlind/compat.h's floor can name.
+ */
+void pin_version(struct bpf_object *obj, const char *pin_dir)
+{
+    struct bpf_map *map = marlin_find_build_map(obj);
+    char path[PATH_MAX];
+    int n;
+
+    if(map == NULL) {
+        return;
+    }
+
+    n = snprintf(path, sizeof(path), "%s/%s", pin_dir, MARLIN_VERSION_PIN);
+    if(n < 0 || (size_t)n >= sizeof(path)) {
+        die("pin path too long for the version map");
+    }
+
+    if(unlink(path) != 0 && errno != ENOENT) {
+        die("failed to remove stale pin %s: %s", path, strerror(errno));
+    }
+
+    if(bpf_map__pin(map, path) != 0) {
+        die("failed to pin the build-version map at %s: %s", path, strerror(errno));
+    }
 }
 
 struct bpf_program *pin_program(struct bpf_object *obj, const char *obj_path, const char *prog_pin)

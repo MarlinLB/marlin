@@ -16,12 +16,21 @@ into `marlin.bpf.o` (`docs/design/29-versions.md`). The forwarding host does not
 
 `marlind --attach`, in order:
 
-1. Preflight: refuses rather than configures (§1.3 of `docs/DEPLOYMENT.md`).
-2. Opens `marlin.bpf.o`, sets a pin path on every map, and loads it. libbpf reuses whatever is
-   already pinned under `/sys/fs/bpf/marlin/` and creates the rest — the program always loads
-   fresh, but map contents and VIP configuration survive both a restart and a datapath upgrade,
-   provided no map's definition changed.
-3. Pins the program, replacing any stale pin from a previous run.
+1. Preflight: refuses rather than configures (§1.3 of `docs/DEPLOYMENT.md`) — the first check whose
+   subject is the object file itself, not the host: `marlin.bpf.o` must carry a build version
+   `marlind` supports (`data-plane/include/marlind/compat.h`'s minimum), checked before anything
+   below opens the object for real.
+2. Opens `marlin.bpf.o`, sets a pin path on every user-defined map, and loads it. libbpf reuses
+   whatever is already pinned under `/sys/fs/bpf/marlin/` and creates the rest — the program
+   always loads fresh, but map contents and VIP configuration survive both a restart and a
+   datapath upgrade, provided no map's definition changed. Internal maps (`.rodata`, `.bss`, …)
+   are excluded: their libbpf-derived names contain a `.`, which bpffs refuses to look up, and
+   reusing one across an upgrade would silently keep its old contents — wrong by construction for
+   `.rodata.marlin_version`, the build-version global this object carries, on the one upgrade that
+   changes it.
+3. Pins the program, replacing any stale pin from a previous run — and, the same way, pins the
+   version global under `<pin_dir>/version`, so `marlind --status` and `bpftool map dump pinned`
+   both see the version of what actually loaded.
 4. Calls `bpf_link_create()` on the program against the interface's ifindex with
    `XDP_FLAGS_DRV_MODE`, and holds the resulting link for as long as it runs.
 5. Reports readiness to systemd and blocks — woken only by `SIGTERM`/`SIGINT`, or by a netlink

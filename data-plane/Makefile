@@ -35,7 +35,7 @@ MULTIARCH_TRIPLET := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null 
 	|| gcc -print-multiarch 2>/dev/null \
 	|| echo "$$(uname -m)-linux-gnu")
 
-INCLUDES := -I$(INC_DIR)
+INCLUDES := -I$(INC_DIR) -I$(BUILD_DIR)/include
 ifneq ($(MULTIARCH_TRIPLET),)
 MULTIARCH_INC := /usr/include/$(MULTIARCH_TRIPLET)
 ifneq ($(wildcard $(MULTIARCH_INC)),)
@@ -64,6 +64,18 @@ MARLIND_SRCS := $(wildcard $(MARLIND_DIR)/*.c)
 MARLIND_OBJS := $(patsubst $(MARLIND_DIR)/%.c,$(BUILD_DIR)/marlind/%.o,$(MARLIND_SRCS))
 MARLIND_BIN  := $(BUILD_DIR)/marlind/marlind
 MARLIND_LIBS := -lbpf
+
+# marlin.bpf.o and marlind version independently (bpf/CHANGELOG.md,
+# marlind/CHANGELOG.md): the loader and the datapath object are separate
+# artefacts with separate release cadences. The oldest marlin.bpf.o a given
+# marlind will attach is a hand-maintained literal in
+# include/marlind/compat.h, not a generated file: it is a compatibility
+# claim about other builds, not a fact about this one. verifier_stats
+# versions itself in tools/verifier_stats.c and reads neither.
+BPF_VERSION_FILE     := $(SRC_DIR)/VERSION
+BPF_VERSION_H        := $(BUILD_DIR)/include/marlin/version.h
+MARLIND_VERSION_FILE := $(MARLIND_DIR)/VERSION
+MARLIND_VERSION_H    := $(BUILD_DIR)/include/marlind/version.h
 
 # Host-compiled diagnostic utilities (verifier_stats.c and friends); see the
 # comment above the verifier-stats target below for why they run offline.
@@ -108,10 +120,49 @@ all: bpf marlind tools
 .PHONY: bpf
 bpf: $(MARLIN_OBJ)
 
-$(BUILD_DIR)/bpf/%.o: $(SRC_DIR)/%.c
+.PHONY: version
+version:
+	@printf 'marlin.bpf.o  %s\n' "$$(cat $(BPF_VERSION_FILE))"
+	@printf 'marlind       %s\n' "$$(cat $(MARLIND_VERSION_FILE))"
+
+# Regenerated whenever the source VERSION changes; cmp -s || mv leaves the
+# file (and its mtime) alone otherwise, so an unchanged version does not
+# force a rebuild -- see docs/PHASES.md's decision on why these are
+# checked-in files, not `git describe`. Each header is a prerequisite of
+# its own %.o pattern rule only below, not the other's, so bumping one
+# version does not rebuild the other artefact. A direct prerequisite
+# rather than relying solely on -MMD because the header must already
+# exist the first time either rule runs.
+$(BPF_VERSION_H): $(BPF_VERSION_FILE)
+	@mkdir -p $(dir $@)
+	@{ \
+		echo '#pragma once'; \
+		printf '#define MARLIN_BPF_VERSION "%s"\n' "$$(cat $<)"; \
+	} > $@.tmp
+	@cmp -s $@.tmp $@ 2>/dev/null && rm -f $@.tmp || mv $@.tmp $@
+
+$(MARLIND_VERSION_H): $(MARLIND_VERSION_FILE)
+	@mkdir -p $(dir $@)
+	@{ \
+		echo '#pragma once'; \
+		echo '#if defined(__bpf__)'; \
+		echo '#error "include/marlind/ is host-only; do not include it from BPF sources"'; \
+		echo '#endif'; \
+		printf '#define MARLIND_VERSION "%s"\n' "$$(cat $<)"; \
+	} > $@.tmp
+	@cmp -s $@.tmp $@ 2>/dev/null && rm -f $@.tmp || mv $@.tmp $@
+
+# -MMD/-MP plus the -include below give the bpf side real header tracking:
+# previously this rule tracked no header at all (bpftool gen object has no
+# equivalent of a .d file), so editing e.g. include/marlin/acl.h silently
+# left a stale build/bpf/*.o in place. $(BPF_VERSION_H) stays a direct
+# prerequisite too, for the first build, before any .d exists.
+$(BUILD_DIR)/bpf/%.o: $(SRC_DIR)/%.c $(BPF_VERSION_H)
 	@mkdir -p $(BUILD_DIR)/bpf
 	@echo "compile $(notdir $<)"
-	@$(CLANG) -target bpf -mcpu=v3 -g -O2 -Wall -Wextra $(INCLUDES) -MJ $(BUILD_DIR)/bpf/$*.o.json -c -o $@ $<
+	@$(CLANG) -target bpf -mcpu=v3 -g -O2 -Wall -Wextra $(INCLUDES) -MJ $(BUILD_DIR)/bpf/$*.o.json -MMD -MP -c -o $@ $<
+
+-include $(OBJS:.o=.d)
 
 $(MARLIN_OBJ): $(OBJS)
 	@echo "linking $(notdir $@)"
@@ -123,10 +174,10 @@ $(COMPILE_COMMANDS): $(OBJS) $(MARLIND_OBJS) $(TOOL_OBJS)
 
 # Host compile, not -target bpf: main.c needs libbpf's syscall wrappers and
 # system headers, neither of which the bpf target's include search covers.
-$(BUILD_DIR)/marlind/%.o: $(MARLIND_DIR)/%.c
+$(BUILD_DIR)/marlind/%.o: $(MARLIND_DIR)/%.c $(MARLIND_VERSION_H)
 	@mkdir -p $(BUILD_DIR)/marlind
 	@echo "compile $(notdir $<)"
-	@$(HOST_CC) $(HOST_CFLAGS) -I$(INC_DIR) -MJ $(BUILD_DIR)/marlind/$*.o.json -MMD -MP -c -o $@ $<
+	@$(HOST_CC) $(HOST_CFLAGS) -I$(INC_DIR) -I$(BUILD_DIR)/include -MJ $(BUILD_DIR)/marlind/$*.o.json -MMD -MP -c -o $@ $<
 
 $(MARLIND_BIN): $(MARLIND_OBJS)
 	@echo "linking $(notdir $@)"

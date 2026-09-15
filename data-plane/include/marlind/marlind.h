@@ -14,22 +14,19 @@
 
 #include <limits.h>
 
+#include <marlind/version.h> /* generated from data-plane/marlind/VERSION; defines MARLIND_VERSION */
+
 /* bpftool pins each program under its C function name, not its section name. */
 #define MARLIN_PROG_NAME       "xdp_main"
 
-/*
- * A literal, not a build-time git describe: no packaging exists yet
- * (docs/DEPLOYMENT.md), and a -D on every marlind TU would rebuild the
- * whole loader on each commit and make tarball builds disagree with git
- * builds. See docs/PHASES.md's open-decision table for where this comes
- * from once packaging does exist.
- */
-#define MARLIN_VERSION          "0.0.0-dev"
+/* Pinned under <pin_dir>/version; the .rodata global marlin.bpf.o's own copy comes from. */
+#define MARLIN_VERSION_PIN     "version"
 
 #define EXIT_ATTACHED          0
 #define EXIT_USAGE             1
 #define EXIT_NOT_ATTACHED      3
 #define EXIT_FOREIGN           4
+#define EXIT_INCOMPATIBLE      5
 
 struct config {
     const char *iface;
@@ -40,3 +37,6 @@ struct config {
 };
 
 void load_config(struct config *cfg);
+
+/* MARLIN_OBJ resolved against its default, with no other config or env requirement. */
+const char *config_obj_path(void);

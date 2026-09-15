@@ -22,6 +22,10 @@
 #include <linux/magic.h>
 #include <linux/sockios.h>
 
+#include <bpf/libbpf.h>
+
+#include <marlind/build.h>
+#include <marlind/compat.h>
 #include <marlind/log.h>
 #include <marlind/preflight.h>
 
@@ -36,6 +40,45 @@ static void check_obj_readable(const char *path)
 {
     if(access(path, R_OK) != 0) {
         die("no object at %s -- build it: make -C data-plane", path);
+    }
+}
+
+/*
+ * Refuses before load_and_pin_maps() opens the object for real, so an
+ * object below the floor -- or one predating the build-version map
+ * entirely, which by construction predates every version a floor can
+ * name -- creates and pins nothing. The second bpf_object__open_file()
+ * this costs is one process-startup call, traded for surfacing the
+ * refusal before any host state changes.
+ */
+static void check_object_version(const char *path)
+{
+    struct bpf_object *obj;
+    const struct marlin_build *build;
+    char version[MARLIN_VERSION_MAX + 1];
+    enum marlind_compat compat;
+
+    obj = bpf_object__open_file(path, NULL);
+    if(obj == NULL) {
+        die("failed to open %s", path);
+    }
+
+    build = marlin_build_from_object(obj);
+    if(build == NULL) {
+        bpf_object__close(obj);
+        die_with(EXIT_INCOMPATIBLE, "%s carries no build version; marlind requires %s or newer", path, MARLIND_MIN_BPF_VERSION);
+    }
+
+    marlind_build_version(build, version, sizeof(version));
+    bpf_object__close(obj);
+
+    compat = marlind_bpf_object_supported(version);
+    if(compat == MARLIND_COMPAT_TOO_OLD) {
+        die_with(EXIT_INCOMPATIBLE, "%s is version %s; marlind requires %s or newer", path, version, MARLIND_MIN_BPF_VERSION);
+    }
+    if(compat == MARLIND_COMPAT_UNPARSEABLE) {
+        die_with(EXIT_INCOMPATIBLE, "%s has an unparseable build version %s; marlind requires %s or newer", path, version,
+                 MARLIND_MIN_BPF_VERSION);
     }
 }
 
@@ -184,6 +227,7 @@ void preflight(const struct config *cfg)
 {
     check_root();
     check_obj_readable(cfg->obj_path);
+    check_object_version(cfg->obj_path);
     check_bpffs_mounted();
     check_offload_off(cfg->iface);
 }
