@@ -24,7 +24,11 @@
 
 #include <getopt.h>
 #include <stdio.h>
+#include <string.h>
 
+#include <bpf/libbpf.h>
+
+#include <marlind/build.h>
 #include <marlind/cmd.h>
 #include <marlind/marlind.h>
 
@@ -39,6 +43,35 @@ static void usage(FILE *out, const char *argv0)
 {
     fprintf(out, "usage: %s --attach|--status|--unpin\n", argv0);
     fprintf(out, "       %s --help|--version\n", argv0);
+}
+
+/*
+ * A mismatched pair is visible here, before attaching, rather than only
+ * after -- config_obj_path(), not load_config(): --version must exit 0 with
+ * no IFACE set (docs/DEPLOYMENT.md), and opening a file to read its .rodata
+ * needs no privilege.
+ */
+static void print_version(void)
+{
+    const char *path = config_obj_path();
+    struct bpf_object *obj;
+
+    printf("marlind %s\n", MARLIN_VERSION);
+
+    obj = bpf_object__open_file(path, NULL);
+    if(obj == NULL) {
+        return;
+    }
+
+    const struct marlin_build *build = marlin_build_from_object(obj);
+
+    if(build != NULL) {
+        const char *base = strrchr(path, '/');
+
+        printf("%s %.*s (%s)\n", base != NULL ? base + 1 : path, (int)sizeof(build->version), build->version, path);
+    }
+
+    bpf_object__close(obj);
 }
 
 int main(int argc, char **argv)
@@ -87,7 +120,7 @@ int main(int argc, char **argv)
             usage(stdout, argv[0]);
             return 0;
         case 'V':
-            printf("marlind %s\n", MARLIN_VERSION);
+            print_version();
             return 0;
         default:
             usage(stderr, argv[0]);

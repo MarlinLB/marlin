@@ -77,13 +77,21 @@ step. Two consequences follow directly from holding the link rather than attachi
 
 There is no map pre-creation step; every map is sized at compile time and created from its BTF
 declaration at load. **Maps are reused across restarts and upgrades**, not just pinned: the loader
-sets a pin path on every map before loading, and libbpf reuses whatever already exists there and
-matches, creating only what is missing. The program itself is not reused this way — it always
-loads fresh from `marlin.bpf.o` — so replacing that file and restarting the service runs the new
-program without ever silently keeping the old one, while VIP configuration in the maps survives
-the restart intact. A map whose *definition* changed fails reuse with a libbpf error; recover with
-`marlind --unpin`, which removes the pins deliberately (below) — the operator's decision to
-accept that configuration loss, not something the loader does on your behalf.
+sets a pin path on every user-defined map before loading, and libbpf reuses whatever already
+exists there and matches, creating only what is missing. The program itself is not reused this
+way — it always loads fresh from `marlin.bpf.o` — so replacing that file and restarting the
+service runs the new program without ever silently keeping the old one, while VIP configuration in
+the maps survives the restart intact. A map whose *definition* changed fails reuse with a libbpf
+error; recover with `marlind --unpin`, which removes the pins deliberately (below) — the
+operator's decision to accept that configuration loss, not something the loader does on your
+behalf.
+
+**Internal maps are never reused.** `marlin.bpf.o`'s embedded build version
+(`.rodata.marlin_version`) is excluded from the pin-and-reuse step above — its libbpf-derived name
+contains a `.`, which the kernel's bpffs refuses to look up, and reuse would defeat the point of a
+version on the one upgrade that changes it. It is pinned separately, after load, under
+`<pin_dir>/version`, unconditionally replacing whatever was there — the same discipline the
+program pin itself uses.
 
 `IFACE` and the pin path come from `marlin.env.example`. `/sys/fs/bpf/marlin` is the default, not
 an invariant — if you change it, the control plane's configuration must agree.
@@ -107,8 +115,25 @@ marlind --status              # equivalent, and usable without systemd
 `marlind --status` exits `0` if the datapath is attached, `3` if it is not, `4` if a link
 exists but does not match the pinned program (foreign or inconsistent), and `1` on a usage or
 environment error — which is also what a caller without `CAP_BPF` gets, since enumerating BPF
-links needs it. It prints a one-line summary either way and touches nothing. `marlind --help` and
-`marlind --version` also exit `0`.
+links needs it. It prints a one-line summary either way and touches nothing; when attached, that
+line includes the running datapath's version, read from `<pin_dir>/version`:
+
+```sh
+attached: xdp_main 0.1.0 (id 47) on eth0 (ifindex 2) via link 12; pins under /sys/fs/bpf/marlin
+```
+
+`marlind --help` and `marlind --version` also exit `0`. `--version` prints marlind's own version
+and, separately, the version embedded in the object at `MARLIN_OBJ` (or its default) — so a
+loader and an object that disagree are visible before attaching, not only after:
+
+```sh
+$ marlind --version
+marlind 0.1.0
+marlin.bpf.o 0.1.0 (/usr/lib/marlin/marlin.bpf.o)
+```
+
+Both figures come from the same `data-plane/VERSION`; a mismatch means the two were built from
+different checkouts.
 
 **Removing the pins is a separate, deliberate step — never run automatically:**
 

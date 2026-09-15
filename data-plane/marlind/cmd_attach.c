@@ -141,6 +141,7 @@ int cmd_attach(void)
     }
 
     obj = load_and_pin_maps(cfg.obj_path, cfg.pin_dir);
+    pin_version(obj, cfg.pin_dir);
     prog = pin_program(obj, cfg.obj_path, cfg.prog_pin);
     link_fd = attach_link(bpf_program__fd(prog), cfg.iface, cfg.ifindex);
 

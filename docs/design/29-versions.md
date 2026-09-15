@@ -1,5 +1,8 @@
 # Marlin — Version Requirements
 
+Inbound floors this project depends on -- kernel and toolchain. Marlin's own version, embedded in
+`marlin.bpf.o` and reported by `marlind`, is unrelated and lives in `data-plane/VERSION`
+(`docs/PHASES.md`'s open-decision table, `data-plane/include/marlin/build.h`).
 
 ## Kernel
 

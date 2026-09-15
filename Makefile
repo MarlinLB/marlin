@@ -10,7 +10,7 @@ MAKEFLAGS += --no-print-directory
 
 .DEFAULT_GOAL := all
 
-.PHONY: all data-plane bpf marlind check-toolchain ci format tidy clean tests packet-tests verifier-stats tools help
+.PHONY: all data-plane bpf marlind version check-toolchain ci format tidy clean tests packet-tests verifier-stats tools help
 
 all: data-plane
 
@@ -25,6 +25,10 @@ bpf:
 ## Build only the data-plane loader (data-plane/Makefile's `marlind`).
 marlind:
 	@$(MAKE) -C $(DATA_PLANE_DIR) marlind
+
+## Print the version shared by marlin.bpf.o and marlind (data-plane/VERSION).
+version:
+	@$(MAKE) -C $(DATA_PLANE_DIR) version
 
 ## Verify the data-plane toolchain (clang, bpftool, clang-format, clang-tidy versions).
 check-toolchain:
@@ -72,6 +76,7 @@ help:
 	@echo "  data-plane      Build everything under data-plane/ (marlin.bpf.o and marlind)"
 	@echo "  bpf             Build only the eBPF/XDP datapath object"
 	@echo "  marlind         Build only the data-plane loader"
+	@echo "  version         Print the version shared by marlin.bpf.o and marlind"
 	@echo "  check-toolchain Verify the data-plane toolchain is present and correct"
 	@echo "  ci              check-toolchain + a full build, the way CI runs it"
 	@echo "  format          Rewrite data-plane C sources/headers with clang-format"

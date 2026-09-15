@@ -66,6 +66,8 @@ marlin/
 │
 ├── data-plane/
 │   ├── Makefile                      # clang -target bpf; bpftool gen object; compile_commands.json
+│   ├── VERSION                       # marlin.bpf.o + marlind's shared version; sources include/marlin/version.h (generated)
+│   ├── CHANGELOG.md                  # datapath changelog; root CHANGELOG.md is the per-component index
 │   ├── .clang-format
 │   ├── .clang-tidy
 │   ├── bpf/
@@ -86,6 +88,7 @@ marlin/
 │   │   │   │   ├── limits.h          # docs/design/09-sizing.md constants — not in docs/design/03-translation-units.md, see §8
 │   │   │   │   └── enums.h           # modes, states, drop reasons, flag bits — see §8
 │   │   │   ├── maps.h
+│   │   │   ├── build.h               # struct marlin_build, embedded in .rodata.marlin_version (bpf/main.c)
 │   │   │   ├── csum.h
 │   │   │   ├── entropy.h             # outer UDP source port entropy hash, shared by gue.c and vxlan.c
 │   │   │   ├── siphash.h
@@ -93,10 +96,11 @@ marlin/
 │   │   │   ├── acl.h
 │   │   │   └── ratelimit.h          # marlin_ratelimit() prototype
 │   │   └── marlind/                  # marlind's own headers — host-only, never reachable from a -target bpf TU (§3)
-│   │       ├── marlind.h             # struct config, EXIT_*, MARLIN_PROG_NAME, MARLIN_VERSION, load_config()
+│   │       ├── marlind.h             # struct config, EXIT_*, MARLIN_PROG_NAME, MARLIN_VERSION (via marlin/version.h), load_config()
+│   │       ├── build.h               # marlin_build_from_object(), marlin_find_build_map() -- shared with tools/verifier_stats.c
 │   │       ├── log.h                 # logmsg(), die(), notify()
 │   │       ├── preflight.h           # preflight()
-│   │       ├── bpf_load.h            # load_and_pin_maps(), pin_program(), attach_link()
+│   │       ├── bpf_load.h            # load_and_pin_maps(), pin_version(), pin_program(), attach_link()
 │   │       └── cmd.h                 # attach_probe(), cmd_attach(), cmd_status(), cmd_unpin()
 │   ├── tests/                       # native unit tests, `make tests` — Principle 5's exception
 │   │   ├── parser_test.c            # #includes bpf/parser.c to reach its static helpers
@@ -169,6 +173,11 @@ scoped to dev-only tooling (`verifier_stats.c` is never installed); `marlind/`'s
 artefact that runs on every forwarding host, so it belongs beside the other deployed pieces, not among
 diagnostics. It is not under `deploy/` either — that directory holds configuration and unit
 files, not source that a C toolchain compiles.
+
+`tools/verifier_stats.c` including `include/marlind/build.h` reads as a boundary crossing, but the
+directory's actual contract (§3) is host-only, not marlind-only — `data-plane/Makefile`'s tools
+rule already passes `-I$(INC_DIR)`, so the include costs nothing to satisfy — and this is the one
+piece of logic both binaries would otherwise duplicate.
 
 **`marlind/` sits inside `data-plane/`, not beside it, and has no makefile of its own.** The
 loader shares the datapath's host toolchain end to end — the same `clang`, the same

@@ -16,6 +16,23 @@
 #define MARLIN_DEFAULT_OBJ     "/usr/lib/marlin/marlin.bpf.o"
 #define MARLIN_DEFAULT_PIN_DIR "/sys/fs/bpf/marlin"
 
+/*
+ * Split out of load_config() so that `marlind --version` can resolve which
+ * object it would load without also requiring IFACE -- --version is
+ * documented to exit 0 unconditionally (docs/DEPLOYMENT.md), which
+ * load_config()'s die() on a missing IFACE would otherwise break.
+ */
+const char *config_obj_path(void)
+{
+    const char *obj_path = getenv("MARLIN_OBJ");
+
+    if(obj_path == NULL || obj_path[0] == '\0') {
+        obj_path = MARLIN_DEFAULT_OBJ;
+    }
+
+    return obj_path;
+}
+
 void load_config(struct config *cfg)
 {
     const char *pindir;
@@ -28,10 +45,7 @@ void load_config(struct config *cfg)
         die("IFACE is unset -- set it in /etc/marlin/marlin.env");
     }
 
-    cfg->obj_path = getenv("MARLIN_OBJ");
-    if(cfg->obj_path == NULL || cfg->obj_path[0] == '\0') {
-        cfg->obj_path = MARLIN_DEFAULT_OBJ;
-    }
+    cfg->obj_path = config_obj_path();
 
     pindir = getenv("MARLIN_PIN_DIR");
     if(pindir == NULL || pindir[0] == '\0') {
