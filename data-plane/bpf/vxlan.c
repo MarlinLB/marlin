@@ -63,8 +63,8 @@ int marlin_vxlan_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
 
     inner_len = (__u16)(mctx->pkt_len - ETH_HLEN);
 
-    data = (void *)(unsigned long)ctx->data;
-    data_end = (void *)(unsigned long)ctx->data_end;
+    data = (void *)(unsigned long)ctx->data;         // NOLINT(performance-no-int-to-ptr)
+    data_end = (void *)(unsigned long)ctx->data_end; // NOLINT(performance-no-int-to-ptr)
     eth = data;
 
     if((void *)(eth + 1) > data_end) {
@@ -79,8 +79,8 @@ int marlin_vxlan_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
         return MARLIN_DROP_ADJUST_HEAD;
     }
 
-    data = (void *)(unsigned long)ctx->data;
-    data_end = (void *)(unsigned long)ctx->data_end;
+    data = (void *)(unsigned long)ctx->data;         // NOLINT(performance-no-int-to-ptr)
+    data_end = (void *)(unsigned long)ctx->data_end; // NOLINT(performance-no-int-to-ptr)
 
     /*
      * Implied by the eth+1 check above once adjust_head succeeds, since

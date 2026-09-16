@@ -51,8 +51,8 @@ int marlin_ipip_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
         return MARLIN_DROP_ADJUST_HEAD;
     }
 
-    data = (void *)(unsigned long)ctx->data;
-    data_end = (void *)(unsigned long)ctx->data_end;
+    data = (void *)(unsigned long)ctx->data;         // NOLINT(performance-no-int-to-ptr)
+    data_end = (void *)(unsigned long)ctx->data_end; // NOLINT(performance-no-int-to-ptr)
 
     if((char *)data + ETH_HLEN + MARLIN_OVERHEAD_IPIP > (char *)data_end) {
         return MARLIN_DROP_ADJUST_HEAD;

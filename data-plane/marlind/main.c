@@ -19,6 +19,11 @@
  * There is no --detach: the attach is bpf_link-owned and held for the
  * process's lifetime, so SIGTERM is the only way to end it.
  *
+ * Single-threaded by construction: cmd_attach()'s wait is one epoll_wait
+ * loop over a signalfd and a netlink socket, not a thread pool, and no
+ * marlind source spawns a thread or forks. Nothing here needs to be
+ * reentrant or async-signal-safe beyond that.
+ *
  * Env: IFACE (required), MARLIN_OBJ, MARLIN_PIN_DIR (see load_config()).
  */
 
@@ -42,8 +47,8 @@ enum mode {
 
 static void usage(FILE *out, const char *argv0)
 {
-    fprintf(out, "usage: %s --attach|--status|--unpin\n", argv0);
-    fprintf(out, "       %s --help|--version\n", argv0);
+    (void)fprintf(out, "usage: %s --attach|--status|--unpin\n", argv0);
+    (void)fprintf(out, "       %s --help|--version\n", argv0);
 }
 
 /*

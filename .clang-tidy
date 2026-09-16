@@ -32,8 +32,10 @@ Checks: >
   -misc-include-cleaner,
   -misc-no-recursion,
   -readability-avoid-nested-conditional-operator,
+  -readability-isolate-declaration,
   -readability-magic-numbers,
-  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -concurrency-mt-unsafe
 
 # Rationale for each exclusion above (kept out of the block so the list stays
 # machine-editable):
@@ -57,6 +59,11 @@ Checks: >
 #       Redundant: the eBPF verifier rejects recursion at load time, and the
 #       check misfires on __always_inline helper chains.
 #
+#   readability-isolate-declaration
+#       Fires on combined declarations like `void *data, *data_end;`, which
+#       this codebase uses deliberately to keep related pointers visually
+#       paired. Not wanted.
+#
 #   readability-magic-numbers
 #       Not wanted. Packet-processing code is full of legitimate numeric
 #       literals (offsets, header lengths, protocol constants) and the check
@@ -67,6 +74,15 @@ Checks: >
 #       _s variants (memset_s, memcpy_s). Those don't exist in this
 #       freestanding eBPF environment — no libc, no Annex K — so the check
 #       has no actionable fix here.
+#
+#   concurrency-mt-unsafe
+#       marlind (data-plane/marlind/) is single-threaded by construction: one
+#       epoll_wait loop in cmd_attach.c, signalfd rather than async signal
+#       handlers, no pthread/fork anywhere in that tree. The check's targets
+#       here are strerror, getenv, getopt_long and readdir, none of which
+#       have an MT-safe POSIX drop-in worth adopting for code that never
+#       runs on more than one thread. This is the only concurrency-* check
+#       that fires on C, so the group is effectively retired by this line.
 #
 # readability-identifier-length stays ENABLED but is retuned via the
 # Minimum*NameLength options below, so the established 2-3 char names
@@ -110,7 +126,9 @@ CheckOptions:
   readability-identifier-naming.EnumConstantCase: UPPER_CASE
   readability-identifier-naming.MacroDefinitionCase: UPPER_CASE
   readability-identifier-naming.GlobalConstantCase: UPPER_CASE
-  readability-identifier-naming.StaticConstantCase: UPPER_CASE
+  # Function-local static const tables (main.c's getopt `opts`,
+  # verifier_stats.c's `needle`) read as locals, not as constants.
+  readability-identifier-naming.StaticConstantCase: lower_case
   # Tolerate kernel-style annotation macros and include guards.
   readability-identifier-naming.MacroDefinitionIgnoredRegexp: '^(_.*|.*_H_?)$'
 
