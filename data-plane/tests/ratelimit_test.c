@@ -136,6 +136,45 @@ MARLIN_TEST(rl_spend_negative_elapsed_resyncs)
     CHECK_EQ(10, next >> 32); /* resyncs to now, not to the stale timestamp */
 }
 
+/*
+ * A losing CAS retry adopts the bucket a concurrent CPU just wrote, whose
+ * timestamp can legitimately read ahead of this retry's own clock sample --
+ * cross-CPU bpf_ktime_get_ns() skew, or the two samples straddling a tick
+ * boundary. Without the skew tolerance this would take the resync-to-burst
+ * branch above on every contended tick: a source flooding across receive
+ * queues would refill to burst each time its retry lost, exactly the bypass
+ * this fix exists to close.
+ */
+MARLIN_TEST(rl_spend_concurrent_writer_one_tick_ahead_does_not_resync)
+{
+    __u64 next;
+    int rc;
+    __u64 old = ((__u64)51 << 32) | (2 * MARLIN_RL_ONE_TOKEN); /* winner stamped one tick ahead */
+
+    rc = rl_spend(old, 50, MARLIN_RL_ONE_TOKEN, 100 * MARLIN_RL_ONE_TOKEN, &next);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(MARLIN_RL_ONE_TOKEN, next & MARLIN_RL_STATE_MASK); /* no refill credited */
+    CHECK_EQ(51, next >> 32); /* the newer timestamp is kept, never rewound */
+}
+
+/*
+ * One tick past the skew window is no longer explainable by a concurrent
+ * writer's clock sample -- it is the genuine wrap/backwards-clock case, and
+ * must still resync exactly as rl_spend_negative_elapsed_resyncs pins.
+ */
+MARLIN_TEST(rl_spend_skew_window_boundary_resyncs)
+{
+    __u64 next;
+    int rc;
+    __u64 burst = 5 * MARLIN_RL_ONE_TOKEN;
+    __u64 old = (__u64)(50 + MARLIN_RL_SKEW_TICKS + 1) << 32; /* drained, past the window */
+
+    rc = rl_spend(old, 50, MARLIN_RL_ONE_TOKEN, burst, &next);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(burst - MARLIN_RL_ONE_TOKEN, next & MARLIN_RL_STATE_MASK);
+    CHECK_EQ(50, next >> 32); /* resyncs to now, not to the stale timestamp */
+}
+
 MARLIN_TEST(rl_spend_tokens_above_lowered_burst_converge_down)
 {
     __u64 next;

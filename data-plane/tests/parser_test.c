@@ -963,11 +963,11 @@ MARLIN_TEST(parse_ipv4_non_first_fragment_icmp_is_not_forwarded)
 }
 
 /*
- * The fragment early-return bypasses the ESP/AH rejection entirely: an
- * unfragmented ESP packet is DROP_UNSUPPORTED_PROTO, but a fragment of one
- * is not. Two policies for one protocol -- Observation 3, pinned as-is.
+ * The ESP/AH rejection is applied ahead of the fragment early-return, so a
+ * non-first fragment of an ESP or AH datagram is unsupported_proto exactly
+ * like the unfragmented packet -- one policy for the protocol, not two.
  */
-MARLIN_TEST(parse_ipv4_non_first_fragment_esp_is_ok_not_unsupported)
+MARLIN_TEST(parse_ipv4_non_first_fragment_esp_is_unsupported_proto)
 {
     struct xdp_md md;
     struct marlin_ctx mctx;
@@ -979,8 +979,22 @@ MARLIN_TEST(parse_ipv4_non_first_fragment_esp_is_ok_not_unsupported)
     pb_xdp(&md);
     mctx_init(&mctx);
     rc = marlin_parse(&md, &mctx);
-    CHECK_RET(MARLIN_OK, rc);
-    CHECK_EQ(IPPROTO_ESP, mctx.tuple.proto);
+    CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
+}
+
+MARLIN_TEST(parse_ipv4_non_first_fragment_ah_is_unsupported_proto)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_AH, 5, 0x0040, V4_SRC, V4_DST);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
 }
 
 /*
@@ -1081,7 +1095,7 @@ MARLIN_TEST(parse_ipv6_non_first_fragment_icmpv6_is_not_forwarded)
     CHECK_RET(MARLIN_PASS_NOT_FORWARDED, rc);
 }
 
-MARLIN_TEST(parse_ipv6_non_first_fragment_esp_is_ok_not_unsupported)
+MARLIN_TEST(parse_ipv6_non_first_fragment_esp_is_unsupported_proto)
 {
     struct xdp_md md;
     struct marlin_ctx mctx;
@@ -1094,8 +1108,23 @@ MARLIN_TEST(parse_ipv6_non_first_fragment_esp_is_ok_not_unsupported)
     pb_xdp(&md);
     mctx_init(&mctx);
     rc = marlin_parse(&md, &mctx);
-    CHECK_RET(MARLIN_OK, rc);
-    CHECK_EQ(IPPROTO_ESP, mctx.tuple.proto);
+    CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
+}
+
+MARLIN_TEST(parse_ipv6_non_first_fragment_ah_is_unsupported_proto)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    pb_ipv6(IPPROTO_FRAGMENT, SRC6, DST6);
+    pb_frag6(IPPROTO_AH, 0x0008);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
 }
 
 /* --- IPv6 body ------------------------------------------------------------ */

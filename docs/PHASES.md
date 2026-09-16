@@ -299,7 +299,11 @@ configuration surface for either would resolve both.
    `ext_hdr_limit`, not `parse_error`
    (`data-plane/tests/packet/xdp_10_verdict.c`,
    `ext_hdr_limit_nine_headers_is_drop_and_distinct_from_parse_error`). Parsing does not depend
-   on Phase 2b's forwarding code, so this criterion is that forwarding not regress it.
+   on Phase 2b's forwarding code, so this criterion is that forwarding not regress it. An ESP or
+   AH non-first fragment in either family is `unsupported_proto`, the same verdict as the
+   unfragmented head, not the admitted-tail exemption an earlier revision pinned
+   (`data-plane/tests/packet/xdp_10_verdict.c`,
+   `unsupported_proto_ipv4_esp_non_first_fragment_is_drop_and_counted` and its v6 counterpart).
 4. A redirect to an ifindex absent from `tx_ports` is a countable `XDP_ABORTED`, not a silent
    loss (`docs/design/09-sizing.md`).
 5. Reported verifier complexity is inside budget with all four modes and both families
@@ -416,7 +420,10 @@ the control-plane conversion, and the concurrency evidence.
    seeded `state` word including refill, the clamp to `rl_burst`, the sub-one-token drop, the
    timestamp wrap clamp, and a tick delta whose refill product would overflow 32 bits; bucket
    exhaustion asserted as bounds rather than exact token counts; insertion beyond
-   `MAX_RL_ENTRIES` distinct sources holding capacity with no failed insertion.
+   `MAX_RL_ENTRIES` distinct sources holding capacity with no failed insertion; and the
+   cross-tick boundary between a losing CAS retry's ordinary clock skew (no refill, timestamp
+   kept) and a genuine wrap or clock step (resync to burst), pinned in
+   `data-plane/tests/ratelimit_test.c` as pure `rl_spend()` arithmetic.
 3. An allowlisted source at any rate is never `ratelimited` — the assertion that an allow
    verdict survives the VIP lookup on `marlin_ctx.acl_verdict` (`docs/design/11-pipeline.md`).
 4. `rl_cas_exhausted` characterised under concurrent senders across multiple receive queues.

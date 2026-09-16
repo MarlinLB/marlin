@@ -12,8 +12,9 @@ asserted separately or ignored. Preserving this property is one of the reasons a
 rejected (`docs/design/25-rejected.md`).
 
 Coverage: every mode, both inner families, IPv6-inner over IPv4-outer, malformed and truncated
-headers, fragments in both families, IPv6 extension-header chains — including one at
-`MAX_EXT_HDRS` and one beyond it — ICMP errors including the embedded-header path,
+headers, fragments in both families — including an ESP/AH non-first fragment, `unsupported_proto`
+in both families exactly like the unfragmented head — IPv6 extension-header chains — including
+one at `MAX_EXT_HDRS` and one beyond it — ICMP errors including the embedded-header path,
 port-agnostic VIPs, the sentinel and down-backend paths, and the header-adjustment paths where
 pointer invalidation bites.
 
@@ -162,8 +163,15 @@ bucket across successive invocations asserting bounds rather than exact token co
 beyond `MAX_RL_ENTRIES` distinct sources and assert capacity holds with no failed insertion; and
 an allowlisted source at any rate is never `ratelimited`.
 
-**Concurrency is out of reach of `bpf_prog_test_run`**, which is single-threaded. The
-compare-and-swap loop's contention behaviour and `rl_cas_exhausted` need the integration
+**Concurrency's arithmetic is in reach even though the contention itself is not.** A losing CAS
+retry's clock sample reading slightly behind the winner's bucket is not the wrap case above, and
+`data-plane/tests/ratelimit_test.c`'s `rl_spend()` regime pins both the boundary that must not
+resync (`MARLIN_RL_SKEW_TICKS` or fewer ticks behind, no refill, timestamp kept) and the one that
+must (one tick past it, resync to burst) — a pure function of `rl_spend()`'s own arguments, so it
+needs no concurrency to exercise.
+
+**Contention itself is out of reach of `bpf_prog_test_run`**, which is single-threaded. The
+compare-and-swap loop's actual multi-CPU behaviour and `rl_cas_exhausted` need the integration
 environment below with concurrent senders across multiple receive queues.
 
 ## Native unit tests
@@ -202,8 +210,9 @@ counterpart, and a native case with none asserts only what the packet tier canno
 `ratelimit.c` qualifies under a narrower form of the same test, in two parts. `rl_spend()` — the
 token-bucket arithmetic, factored out for exactly this reason — reads no map and no packet byte
 and is a pure function of its arguments, so `data-plane/tests/ratelimit_test.c` calls it directly
-with no stub at all: refill, both clamps, the sub-one-token drop, and the wrap-or-backwards-clock
-resync all move to zero-stub cases this way. `marlin_ratelimit()` itself calls three helpers, and
+with no stub at all: refill, both clamps, the sub-one-token drop, the wrap-or-backwards-clock
+resync, and the boundary between that resync and a concurrent writer's skew all move to
+zero-stub cases this way. `marlin_ratelimit()` itself calls three helpers, and
 all three are answered: `data-plane/tests/stubs/hash_stub.h` for `bpf_map_lookup_elem` and
 `bpf_map_update_elem` (exact-key match, no eviction), `data-plane/tests/stubs/time_stub.h` for
 `bpf_ktime_get_ns()` (settable — `bpf_prog_test_run` cannot fake the kernel's clock, and the
