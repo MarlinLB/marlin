@@ -99,6 +99,8 @@ int xdp_main(struct xdp_md *ctx)
     }
 
     rc = marlin_balancer_process(ctx, mctx);
+    marlin_stats_reason(rc);
+
     return marlin_action(rc);
 }
 
