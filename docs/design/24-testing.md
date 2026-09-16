@@ -61,6 +61,14 @@ today (`data-plane/tests/parser_test.c`); the assertions below are packet-level 
 - A fragmented UDP datagram on a `VIP_QUIC` VIP routes by hash. QUIC's 1200-byte floor and
   DPLPMTUD keep it unfragmented in practice (`docs/design/23-mtu.md`), but the path must be
   explicit.
+- Bytes physically present past the datagram's declared UDP length never classify or steer:
+  `parser.c`'s bound is native-tested directly (`parse_quic_padded_zero_length_payload_no_flag`
+  and its siblings in `data-plane/tests/parser_test.c`, including a direct assertion on
+  `mctx.udp_payload_len` itself). A valid connection ID physically past the declared length, a
+  partial one, and the header-only case where both bounds must compose, are packet-level —
+  `data-plane/tests/packet/xdp_80_quic.c` — because they exercise `marlin_balancer_quic_decode()`,
+  which has no native stub. A padded, header-only, non-QUIC datagram must not move
+  `quic_cid_check_failed` either: that would mean the decoder ran over padding.
 
 **The `NO_NEIGH` fallback fires only on its exact conditions.** Five cases against one flagged
 L2 DSR backend with a stored MAC and no neighbour entry: on-link route, FIB returns the ingress

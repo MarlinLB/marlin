@@ -107,17 +107,25 @@ static void quic_forge_cid(__u8 *cid, __u32 cid_len, __u32 backend_id)
  * l4_off + MARLIN_UDP_HLEN + 1, so the full eight-byte UDP header has to be on
  * the wire for those offsets to line up. src is a parameter, not always
  * V4_SRC, so a migration case can vary it while the destination and
- * connection ID stay fixed.
+ * connection ID stay fixed. declared_len is independent of cid_len -- every
+ * other case wants them consistent (what quic_build_frame() below gives),
+ * but the declared-length bound needs to put more, or fewer, bytes on the
+ * wire than the datagram claims to hold.
  */
-static void quic_build_frame(__be32 src, __u8 form_byte, const __u8 *cid, __u32 cid_len)
+static void quic_build_frame_declared_len(__be32 src, __u8 form_byte, const __u8 *cid, __u32 cid_len, __u16 declared_len)
 {
     pb_reset();
     pb_eth(ETH_P_IP);
     memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
     memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
     pb_ipv4(IPPROTO_UDP, MARLIN_IPV4_IHL_MIN, 0, src, V4_DST);
-    pb_udp(33333, (__u16)QUIC_VIP_PORT, (__u16)(MARLIN_UDP_HLEN + 1 + cid_len));
+    pb_udp(33333, (__u16)QUIC_VIP_PORT, declared_len);
     pb_quic_cid(form_byte, cid, cid_len);
+}
+
+static void quic_build_frame(__be32 src, __u8 form_byte, const __u8 *cid, __u32 cid_len)
+{
+    quic_build_frame_declared_len(src, form_byte, cid, cid_len, (__u16)(MARLIN_UDP_HLEN + 1 + cid_len));
 }
 
 /*
@@ -372,6 +380,129 @@ MARLIN_TEST(quic_truncated_entropy_falls_back_to_hash)
     pb_ipv4(IPPROTO_UDP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
     pb_udp(33333, (__u16)QUIC_VIP_PORT, (__u16)(MARLIN_UDP_HLEN + 1 + MARLIN_QUIC_CID_ENTROPY_OFF + 2));
     pb_quic_cid(QUIC_SHORT_FORM, cid, MARLIN_QUIC_CID_ENTROPY_OFF + 2);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(failed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED));
+    CHECK_EQ(routed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
+
+    quic_vip_clear();
+}
+
+/*
+ * A fully valid forged connection ID sits on the wire, but the UDP header
+ * declares only the form byte -- the decoder must bound itself against
+ * mctx->udp_payload_len (parser.c), not against bpf_xdp_load_bytes()'s
+ * frame-extent check, or these physically-present bytes steer the packet.
+ */
+MARLIN_TEST(quic_cid_past_declared_udp_len_falls_back_to_hash)
+{
+    __u64 failed_before, routed_before;
+    __u8 cid[QUIC_CID_LEN];
+    struct xdp_run_result result;
+
+    quic_vip_seed(QUIC_CID_LEN, VIP_QUIC, 1, 0);
+    failed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
+    routed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED);
+
+    quic_forge_cid(cid, QUIC_CID_LEN, ALT_BACKEND_ID);
+    quic_build_frame_declared_len(V4_SRC, QUIC_SHORT_FORM, cid, QUIC_CID_LEN, (__u16)(MARLIN_UDP_HLEN + 1));
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(failed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED));
+    CHECK_EQ(routed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
+
+    quic_vip_clear();
+}
+
+/*
+ * The declared length covers the form byte and part of the connection ID,
+ * not all of it -- the sibling of the truncated-entropy case above, but
+ * where the missing bytes are physically present on the wire rather than
+ * absent from the frame. Same bound, different reason it needs proving.
+ */
+MARLIN_TEST(quic_partial_cid_in_declared_udp_len_falls_back_to_hash)
+{
+    __u64 failed_before, routed_before;
+    __u8 cid[QUIC_CID_LEN];
+    struct xdp_run_result result;
+
+    quic_vip_seed(QUIC_CID_LEN, VIP_QUIC, 1, 0);
+    failed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
+    routed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED);
+
+    quic_forge_cid(cid, QUIC_CID_LEN, ALT_BACKEND_ID);
+    quic_build_frame_declared_len(V4_SRC, QUIC_SHORT_FORM, cid, QUIC_CID_LEN, (__u16)(MARLIN_UDP_HLEN + QUIC_CID_LEN));
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(failed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED));
+    CHECK_EQ(routed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
+
+    quic_vip_clear();
+}
+
+/*
+ * A valid forged CID physically follows a UDP header declaring zero
+ * payload bytes -- the end-to-end proof that the parser's flag (never set,
+ * docs/design/30-quic.md) and the decoder's own length gate compose: either
+ * bound alone would already stop this packet, but this is what proves
+ * neither is silently relying on the other.
+ */
+MARLIN_TEST(quic_header_only_declared_udp_len_falls_back_to_hash)
+{
+    __u64 failed_before, routed_before;
+    __u8 cid[QUIC_CID_LEN];
+    struct xdp_run_result result;
+
+    quic_vip_seed(QUIC_CID_LEN, VIP_QUIC, 1, 0);
+    failed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
+    routed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED);
+
+    quic_forge_cid(cid, QUIC_CID_LEN, ALT_BACKEND_ID);
+    quic_build_frame_declared_len(V4_SRC, QUIC_SHORT_FORM, cid, QUIC_CID_LEN, (__u16)MARLIN_UDP_HLEN);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(failed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED));
+    CHECK_EQ(routed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
+
+    quic_vip_clear();
+}
+
+/*
+ * The Ethernet-minimum-padding shape: a header-only UDP datagram whose
+ * trailing zero bytes read as an all-zero connection ID if either bound is
+ * missing. Zero bytes clear MARLIN_QUIC_CID_GEN_MASK, so a decoder reached
+ * by mistake runs all the way to the check field instead of bailing out
+ * early -- this is the case that would inflate quic_cid_check_failed on
+ * ordinary padded traffic rather than merely mis-steering it.
+ */
+MARLIN_TEST(quic_padded_non_quic_udp_does_not_count_check_failed)
+{
+    __u64 failed_before, routed_before;
+    struct xdp_run_result result;
+
+    quic_vip_seed(QUIC_CID_LEN, VIP_QUIC, 1, 0);
+    failed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
+    routed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED);
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_UDP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_udp(33333, (__u16)QUIC_VIP_PORT, MARLIN_UDP_HLEN); /* declares no payload */
+    pb_pad(QUIC_CID_LEN + 1);                             /* Ethernet-minimum-padding shape: zero bytes */
 
     result = run_current_packet();
     CHECK_EQ(0, result.err);

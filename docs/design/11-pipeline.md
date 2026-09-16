@@ -22,8 +22,10 @@ clients, there is no reverse path and no classifier.
    zero and the VIP lookup falls to the port-agnostic retry below.
 
    A UDP payload opening with a QUIC short header is flagged `MARLIN_CTX_F_QUIC` here, for
-   step 6 to steer on. A long header is never flagged: RFC 9000 §9 forbids migrating before
-   the handshake completes, so every long-header packet is safe on the hash path
+   step 6 to steer on — but only once the datagram's own declared UDP length, not merely
+   `data_end`, leaves at least one payload byte; a header-only datagram's trailing frame padding
+   must never be read as that byte. A long header is never flagged: RFC 9000 §9 forbids
+   migrating before the handshake completes, so every long-header packet is safe on the hash path
    (`docs/design/30-quic.md`).
 3. **ACL evaluate** — `marlin_acl_check()`. Produces allow, block or no-match on
    `marlin_ctx.acl_verdict`. Nothing is dropped here. `docs/design/27-source-filtering.md`.

@@ -170,8 +170,9 @@ __u32 pb_ports(__u16 sport_host, __u16 dport_host)
 
 /*
  * Full 8-byte UDP header -- source and dest overlay marlin_l4_ports exactly
- * as pb_ports() writes them; len_host and check are never read by parser.c
- * but are filled in so a captured packet's fixed header matches the wire.
+ * as pb_ports() writes them. len_host is marlin_parse_quic()'s declared-
+ * payload bound (docs/design/30-quic.md); check is filled in so a captured
+ * packet's fixed header matches the wire but is never read by parser.c.
  */
 __u32 pb_udp(__u16 sport_host, __u16 dport_host, __u16 len_host)
 {

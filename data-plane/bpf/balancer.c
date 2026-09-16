@@ -111,9 +111,6 @@ static __always_inline int marlin_balancer_acl_enforce(const struct marlin_ctx *
     return MARLIN_DROP_ACL_BLOCKED;
 }
 
-/*
- * Retrieve the VIP corresponding to the current packet. To save stack space, a live pointer is used.
- */
 static __always_inline const struct vip_meta *marlin_balancer_vip(const struct marlin_ctx *mctx)
 {
     const struct vip_meta *meta;
@@ -126,7 +123,6 @@ static __always_inline const struct vip_meta *marlin_balancer_vip(const struct m
         return meta;
     }
 
-    /* Port-agnostic VIP: retry with port 0. */
     vkey.port = 0;
 
     return bpf_map_lookup_elem(&vip_map, &vkey);
@@ -177,45 +173,49 @@ static __always_inline __u32 marlin_balancer_quic_decode(struct xdp_md *ctx, con
     __u64 mask;
 
     if(mctx->flags & MARLIN_CTX_F_FRAG_ANY) {
-        return 0;
+        return MARLIN_NO_BACKEND;
     }
 
     cid_len = VIP_QUIC_CID_LEN(vip->flags);
 
     if(cid_len < MARLIN_QUIC_CID_MIN || cid_len > MARLIN_QUIC_CID_MAX) {
-        return 0;
+        return MARLIN_NO_BACKEND;
+    }
+
+    if(mctx->udp_payload_len < 1 + cid_len) {
+        return MARLIN_NO_BACKEND;
     }
 
     ent_len = cid_len - MARLIN_QUIC_CID_ENTROPY_OFF;
     off = (__u32)mctx->l4_off + MARLIN_UDP_HLEN + 1;
 
     if(bpf_xdp_load_bytes(ctx, off, hdr, sizeof(hdr)) < 0) {
-        return 0;
+        return MARLIN_NO_BACKEND;
     }
 
     if(hdr[0] & MARLIN_QUIC_CID_GEN_MASK) {
         marlin_stats_reason(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
-        return 0;
+        return MARLIN_NO_BACKEND;
     }
 
     __builtin_memset(&in, 0, sizeof(in));
     in.domain = MARLIN_QUIC_SIPHASH_DOMAIN;
 
     if(bpf_xdp_load_bytes(ctx, off + MARLIN_QUIC_CID_ENTROPY_OFF, in.entropy, ent_len) < 0) {
-        return 0;
+        return MARLIN_NO_BACKEND;
     }
 
     mask = marlin_siphash(&in, sizeof(in), vip->hash_key);
 
     if((hdr[0] & MARLIN_QUIC_CID_CHECK_MASK) != (__u8)((mask >> 16) & MARLIN_QUIC_CID_CHECK_MASK)) {
         marlin_stats_reason(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
-        return 0;
+        return MARLIN_NO_BACKEND;
     }
 
     id = (((__u32)hdr[1] << 8) | (__u32)hdr[2]) ^ (__u32)(mask & 0xffff);
 
     if(id >= MAX_BACKENDS) {
-        return 0;
+        return MARLIN_NO_BACKEND;
     }
 
     return id;
@@ -249,7 +249,7 @@ static __always_inline const struct backend *marlin_balancer_select_backend_by_h
 
     id = *slot;
 
-    if(id == 0 || id >= MAX_BACKENDS) {
+    if(id == MARLIN_NO_BACKEND || id >= MAX_BACKENDS) {
         return NULL;
     }
 
@@ -264,7 +264,7 @@ static __always_inline const struct backend *marlin_balancer_select_backend_quic
 
     id = marlin_balancer_quic_decode(ctx, mctx, vip);
 
-    if(id == 0) {
+    if(id == MARLIN_NO_BACKEND) {
         return NULL;
     }
 

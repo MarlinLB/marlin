@@ -9,4 +9,6 @@
 #include <linux/bpf.h>
 #include <marlin/marlin.h>
 
+#define MARLIN_NO_BACKEND 0
+
 int marlin_balancer_process(struct xdp_md *ctx, struct marlin_ctx *mctx);
