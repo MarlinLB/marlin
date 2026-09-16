@@ -18,10 +18,10 @@
  * include path ever reaches it after this one. */
 #define __BPF_HELPERS__
 
+#include "../time_stub.h"
 #include "../map_stub.h"
 #include "../hash_stub.h"
 #include "../xdp_stub.h"
-#include "../time_stub.h"
 
 #define __uint(name, val)  int (*name)[val]
 #define __type(name, val)  typeof(val) *name
@@ -66,6 +66,7 @@
 static __attribute__((unused)) void *bpf_map_lookup_elem(void *map, const void *key)
 {
     if(hash_stub_owns(map)) {
+        time_stub_hash_lookup();
         return hash_stub_lookup(map, key);
     }
 

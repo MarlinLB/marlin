@@ -163,12 +163,11 @@ bucket across successive invocations asserting bounds rather than exact token co
 beyond `MAX_RL_ENTRIES` distinct sources and assert capacity holds with no failed insertion; and
 an allowlisted source at any rate is never `ratelimited`.
 
-**Concurrency's arithmetic is in reach even though the contention itself is not.** A losing CAS
-retry's clock sample reading slightly behind the winner's bucket is not the wrap case above, and
-`data-plane/tests/ratelimit_test.c`'s `rl_spend()` regime pins both the boundary that must not
-resync (`MARLIN_RL_SKEW_TICKS` or fewer ticks behind, no refill, timestamp kept) and the one that
-must (one tick past it, resync to burst) — a pure function of `rl_spend()`'s own arguments, so it
-needs no concurrency to exercise.
+**The concurrency-sensitive ordering is native-testable even though contention itself is not.**
+`data-plane/tests/ratelimit_test.c` advances the clock from an older value while the hash-map
+lookup returns a bucket carrying the newer timestamp. The hit path must read that bucket before
+sampling time, then spend from its remaining tokens without a wrap resync. Genuine negative
+elapsed time stays covered separately as `rl_spend()`'s wrap/backwards-clock case.
 
 **Contention itself is out of reach of `bpf_prog_test_run`**, which is single-threaded. The
 compare-and-swap loop's actual multi-CPU behaviour and `rl_cas_exhausted` need the integration

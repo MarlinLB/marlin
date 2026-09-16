@@ -32,19 +32,13 @@ place — a drained bucket never reaches the compare-and-swap that would overwri
 until `now` caught back up to the stale value, on the order of the wrap period itself rather than
 one refill interval.
 
-**A negative elapsed has a second, unrelated cause the resync above must not fire for.** A CAS
-retry that lost an exchange adopts the winning CPU's bucket state (`old = prev` in "Update"
-below) and evaluates it against a clock sample the retry took before the exchange — a sample
-that can legitimately read up to `MARLIN_RL_SKEW_TICKS` (2) ticks behind the winner's own,
-either from ordinary cross-CPU `bpf_ktime_get_ns()` skew or from the two samples straddling a
-tick boundary. Resyncing to burst on every such loss would refill the bucket on every contended
-tick — exactly the bypass a source flooding across receive queues would want, and the workload
-the limiter exists to answer. `spend()` therefore treats the two causes differently: an elapsed
-of `-1` or `-2` credits no refill and keeps the winner's newer timestamp — the bucket is already
-at least as current as the retry knew — while anything past `-MARLIN_RL_SKEW_TICKS` is the
-genuine wrap or clock step and resyncs as above. The retry loop also re-samples the clock after
-each loss, so this narrow band is the only skew a live retry can ever present; a wider one is
-never a live CPU's clock.
+**The timestamp is sampled after the state it measures.** On a hit, the datapath reads
+`bucket->state` first and calls `bpf_ktime_get_ns()` second. A writer that completed before the
+read therefore cannot carry a timestamp newer than that sample. A writer that completes after
+the read makes the compare-and-swap fail; the retry adopts the returned state and samples time
+again before evaluating it. This ordering removes concurrency as a source of negative elapsed
+time, so every negative value reaching `spend()` is the wrap or backwards-clock case above and
+may resync to full without granting a contending source an extra burst.
 
 **Refill is pre-scaled by the control plane.** There are 953.67 ticks per second — not an integer
 and not a shift — so converting an operator-facing tokens-per-second figure in the datapath would
@@ -66,29 +60,29 @@ if mctx == NULL                      → abort, nullref
 if CFG_RL_ENABLE clear               → admit, unmetered
 if acl_verdict == ALLOW              → admit, unmetered (docs/design/27-source-filtering.md)
 
-now = bpf_ktime_get_ns() >> RL_TICK_SHIFT
 b   = lookup(key)
 if miss:
+    now = bpf_ktime_get_ns() >> RL_TICK_SHIFT
     rc = spend(old=now<<32|burst_scaled, now, rl_refill, burst_scaled) → next
     if rc != OK                      → drop, ratelimited (no insert)
     insert(key, next); update failure → admit anyway, count rl_insert_failed
     → admit
 
 old = READ_ONCE(b->state)
+now = bpf_ktime_get_ns() >> RL_TICK_SHIFT
 unrolled RL_CAS_RETRIES times:
     rc = spend(old, now, rl_refill, burst_scaled) → next
     if rc != OK                      → drop, ratelimited
     prev = cmpxchg(&b->state, old, next)
     if prev == old                   → admit
     old = prev
-    now = bpf_ktime_get_ns() >> RL_TICK_SHIFT     /* re-sample: see the skew note above */
+    now = bpf_ktime_get_ns() >> RL_TICK_SHIFT
 
 retries exhausted → admit, count rl_cas_exhausted
 
 spend(old, now, rate, burst) -> next:
     elapsed = now - (old >> 32)                                  /* signed */
-    refill  = burst                                     if elapsed < -SKEW_TICKS  /* resync, see above */
-            = 0, now = old >> 32                        if -SKEW_TICKS <= elapsed < 0  /* concurrent writer, see above */
+    refill  = burst                                     if elapsed < 0     /* resync, see above */
             = min((__u64)elapsed * rate, burst)          otherwise         /* 64-bit, then clamped */
     tokens  = min((old & 0xffffffff) + refill, burst)
     if tokens < ONE_TOKEN                                → drop, ratelimited
@@ -115,12 +109,11 @@ A compare-and-swap loop is also the right shape for the contention pattern: a si
 line rate across all receive queues contends one cacheline, and a failed exchange retries locally
 rather than serialising the CPUs behind a lock.
 
-**A failed exchange is evidence of a concurrent writer, never of a clock anomaly.** The loser's
-`old` becomes the winner's `next`, whose timestamp reflects a clock sample newer than the one
-the loser is still holding — that is what a normal race looks like, not a 32-bit wrap. The retry
-re-reads the clock before evaluating `spend()` again, and `spend()`'s skew tolerance above is
-what keeps the interval between the loser's stale sample and the fresh one from being misread as
-a wrap on the attempt in between.
+**A failed exchange is evidence of a concurrent writer, never of a clock anomaly.** The loser
+adopts the state returned by the exchange and re-reads the clock before evaluating `spend()`
+again. The same state-then-time ordering is used before the first attempt, so a writer landing
+between the initial lookup and state read cannot create the stale-sample window on that path
+either.
 
 **The miss path is the expensive one, and an attacker controls it.** A spoofed high-cardinality
 flood misses on every packet, so every packet performs an insert and an LRU eviction rather than a
