@@ -6,13 +6,13 @@ All notable changes to `marlin.bpf.o` will be documented in this file. Versioned
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.0.1] - 2026-09-16
 
-### Fixed
-
-- QUIC classification (`parser.c`) no longer reads a UDP datagram's declared payload; it now
-  bounds the header-form byte against `udp->len`, not merely `data_end`, so a header-only
-  datagram's Ethernet padding can no longer be misread as a QUIC short header.
-- QUIC connection-ID decoding (`balancer.c`) no longer reads past a UDP datagram's declared
-  length; it now bounds the connection ID against `marlin_ctx.udp_payload_len` before loading it,
-  so bytes physically present past the declared datagram can no longer be read as CID entropy.
+- Implement DSR load balancing mechanism.
+- Implement support for the following forwarding modes:
+  - GUE;
+  - IP in IP;
+  - VXLAN;
+  - L2 DSR.
+- Implement traffic control via IP based ACL.
+- Prevent DDoS via rate limiting.
