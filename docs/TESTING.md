@@ -364,9 +364,15 @@ echo "✓ BPF program loaded and attached to veth_test0"
 # sudo cat /sys/kernel/debug/tracing/trace_pipe
 
 # 7. Configure the control plane (or manually write maps)
-# This is where the C# service would populate vip_map, backends, etc.
-# For manual testing, you can use bpftool:
-# sudo bpftool map update name vip_map key ... value ...
+# This is where the C# service would populate vip_map, backends, etc. For
+# manual testing, seed vip_map/fwd_table with the host tool built alongside
+# the datapath (data-plane/tools/marlin_seed.c) and backends/config with
+# bpftool directly -- data-plane/scripts/common.sh's pack_backend()/
+# pack_config() show the byte layout. Example, one backend at id 1:
+# sudo bpftool map update pinned /sys/fs/bpf/marlin/backends key 1 0 0 0 \
+#     value <32 bytes packed from struct backend, types.h>
+# sudo data-plane/build/tools/marlin_seed add /sys/fs/bpf/marlin \
+#     203.0.113.1 80 6 0 0 1   # vip=203.0.113.1 port=80 proto=tcp(6) vip_num=0 flags=0 backend_id=1
 
 # 8. Send test traffic in on the peer
 # (step §5.1 — tcpdump, scapy, or a custom tool)

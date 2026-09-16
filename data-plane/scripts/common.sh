@@ -34,11 +34,26 @@ XDP_MODE="${XDP_MODE:-xdpgeneric}"
 BPFFS=/sys/fs/bpf
 BPFTOOL="${BPFTOOL:-bpftool}"
 
-HTTP_PORT="${HTTP_PORT:-80}" # listen and test_http_get; no VIP lookup exists yet,
-                             # so the port is the listener's alone (bpf/main.c)
+HTTP_PORT="${HTTP_PORT:-80}" # listen, test_http_get, and half of vip_map's key
+                             # (balancer.c) -- seed() and the listener must agree
 
 ABI_HDR="${SCRIPT_DIR}/../include/marlin/abi/defines.h"
 RET_HDR="${SCRIPT_DIR}/../include/marlin/marlin.h"
+
+# Real backend and VIP identifiers, not the reserved sentinel: backends[0] is
+# never allocated (docs/design/10-map-invariants.md) and vip_num 0 is simply
+# this rig's own, only entry in fwd_table's row space. Every rig seeds
+# exactly one backend and one VIP, so both are fixed here instead of per rig.
+BACKEND_ID=1
+BACKEND_KEY="${BACKEND_ID} 0 0 0" # little-endian __u32 array key -- these rigs are x86_64-only
+VIP_NUM=0
+IPPROTO_TCP=6
+
+# vip_map and fwd_table are written by tools/marlin_seed, not by a
+# python/bpftool packer like backends and config below: vip_key's zeroed
+# union and fwd_table's TABLE_SIZE rows are exactly the case pack_backend's
+# own comment warns against re-mirroring by hand.
+SEEDER="${MARLIN_SEEDER:-${SCRIPT_DIR}/../build/tools/marlin_seed}"
 
 # ---------------------------------------------------------------------------
 # Basic helpers
@@ -208,7 +223,7 @@ attach() {
 	fi
 	do_attach
 	echo "attached ${PROG} to ${MARLIN_IF} (${XDP_MODE}), pinned under ${PINDIR}"
-	echo "next: '$0 seed' -- until config and backends[0] are written, every packet passes"
+	echo "next: '$0 seed' -- until vip_map and backends[${BACKEND_ID}] are written, every packet passes"
 }
 
 detach() {
@@ -243,9 +258,46 @@ reload() {
 # Until then manual map writes are the sanctioned route (docs/TESTING.md §10),
 # and without them an attached program passes every packet.
 #
-# vip_map and fwd_table are not written by any rig, because nothing reads them
-# yet -- xdp_interim_nexthop() takes backends[0] directly (bpf/main.c). They
-# become required when selection lands (docs/PHASES.md, Phase 2b).
+# vip_map and fwd_table are seeded through marlin_seed (below); backends and
+# config keep the python/bpftool packers, since neither needs a struct key or
+# a 65536-row table.
+
+need_seeder() {
+	[[ -x ${SEEDER} ]] || {
+		echo "no seeder binary at ${SEEDER} -- build it: make -C ${SCRIPT_DIR}/.. tools" >&2
+		exit 1
+	}
+}
+
+# vip_num is always 0: every rig configures exactly one VIP, so its
+# fwd_table block never collides with another rig's pins.
+vip_seed() {
+	local backend_id=$1
+	need_seeder
+	"${SEEDER}" add "${PINDIR}" "${VIP}" "${HTTP_PORT}" "${IPPROTO_TCP}" "${VIP_NUM}" 0 "${backend_id}"
+}
+
+# Deletes the vip_map entry rather than zeroing it: a *present* entry
+# pointing fwd_table at backend 0 would drop as no_backend (bpf/balancer.c),
+# not restore the pass-through unseed() promises.
+vip_unseed() {
+	need_seeder
+	"${SEEDER}" del "${PINDIR}" "${VIP}" "${HTTP_PORT}" "${IPPROTO_TCP}" "${VIP_NUM}"
+}
+
+vip_seeded() {
+	[[ -e ${PINDIR}/vip_map ]] || return 1
+	"${BPFTOOL}" -j map dump pinned "${PINDIR}/vip_map" 2>/dev/null | python3 -c '
+import json, sys
+
+try:
+    entries = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+
+sys.exit(0 if entries else 1)
+'
+}
 
 # One #define, read out of the ABI header at run time. Copying the values here
 # would make this a third hand-written mirror of the ABI with nothing checking
@@ -261,12 +313,14 @@ abi_define() {
 # takes. python3 rather than shell arithmetic: both mix network-order
 # addresses with host-order words, and struct.pack states which is which.
 #
-# id is a fourth, always-available argument (default 0, matching the
-# never-allocated-slot-0 sentinel: every rig seeds slot 0). encap_dport/vni/
-# inner_mac stay an optional tail after it: a mode that does not use one of
-# those fields omits it, rather than writing a value and relying on the
-# datapath to ignore it. l2dsr_wsl.sh and ipip_wsl.sh call this with three
-# arguments only.
+# id is a fourth, always-available argument -- every call site passes
+# ${BACKEND_ID} explicitly, since it must match the array slot the bpftool
+# key below writes (docs/design/10-map-invariants.md: a populated slot's
+# struct backend.id equals its own index; index 0 is never allocated).
+# encap_dport/vni/inner_mac stay an optional tail after it: a mode that does
+# not use one of those fields omits it, rather than writing a value and
+# relying on the datapath to ignore it. l2dsr_wsl.sh and ipip_wsl.sh call
+# this with four arguments only.
 pack_backend() {
 	python3 - "$@" <<'PY'
 import socket, struct, sys
@@ -274,8 +328,11 @@ import socket, struct, sys
 def mac_bytes(s):
     return bytes(int(x, 16) for x in s.split(":")) if s else b"\0" * 6
 
+if len(sys.argv) < 5:
+    sys.exit("id is required (the array slot this value will be written to)")
+
 addr, mac, flags = sys.argv[1], sys.argv[2], int(sys.argv[3])
-be_id       = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+be_id       = int(sys.argv[4])
 encap_dport = int(sys.argv[5]) if len(sys.argv) > 5 else 0
 vni         = int(sys.argv[6]) if len(sys.argv) > 6 else 0
 inner_mac   = sys.argv[7] if len(sys.argv) > 7 else ""
@@ -326,26 +383,37 @@ print(" ".join("0x%02x" % b for b in raw))
 PY
 }
 
-# Decode backends[0] as bpftool returns it, and exit non-zero when the entry is
-# not seeded.
+# Decode backends[id] as bpftool returns it, and exit non-zero when the entry
+# is not seeded. id defaults to ${BACKEND_ID}: every rig seeds exactly one.
+#
+# backends is a plain ARRAY, so `map dump` returns all MAX_BACKENDS entries in
+# index order -- selecting by decoded key rather than positionally is what
+# makes this keep working now that the seeded slot is not index 0.
 #
 # The offsets below are a third mirror of struct backend
 # (include/marlin/abi/types.h) that would drift silently -- named BTF fields
 # are checked against them here rather than trusted. mac/inner_mac are not
 # BTF-checked: bpftool's rendering of a __u8[6] is less stable than a scalar's.
 backend_show() {
-	local bit
+	local id=${1:-${BACKEND_ID}} bit
 	bit=$(abi_define MARLIN_BE_F_STATE_BIT)
 	[[ -e ${PINDIR}/backends ]] || { echo "  no pins under ${PINDIR}"; return 1; }
 	"${BPFTOOL}" -j map dump pinned "${PINDIR}/backends" 2>/dev/null | python3 -c '
 import json, socket, struct, sys
 
 state_bit = int(sys.argv[1])
+want_id = int(sys.argv[2])
+
+def num(v):
+    if isinstance(v, list):
+        return int("".join(b[2:] for b in reversed(v)), 16)
+    return int(v)
 
 try:
-    entry = json.load(sys.stdin)[0]
-except (ValueError, IndexError):
-    print("  backends is unreadable -- is the object still loaded?")
+    entries = json.load(sys.stdin)
+    entry = next(e for e in entries if num(e["key"]) == want_id)
+except (ValueError, StopIteration):
+    print("  backends[%d] is unreadable -- is the object still loaded?" % want_id)
     sys.exit(1)
 
 raw = bytes(int(b, 16) for b in entry["value"])
@@ -375,7 +443,7 @@ print("  inner  %s" % ":".join("%02x" % b for b in inner_mac))
 print("  id     %u" % be_id)
 print("  flags  0x%02x  mode %u, state %s" % (flags, flags & 0x0f, "UP" if up else "DOWN"))
 sys.exit(0 if up else 1)
-' "${bit}"
+' "${bit}" "${id}"
 }
 
 config_show() {
@@ -411,22 +479,31 @@ backend_seeded() {
 }
 
 seed_or_die() {
-	[[ -e ${PINDIR}/backends ]] || {
+	[[ -e ${PINDIR}/backends && -e ${PINDIR}/vip_map && -e ${PINDIR}/fwd_table ]] || {
 		echo "no pinned maps under ${PINDIR} -- run '$0 attach' first" >&2; exit 1; }
 }
 
+# Removes the vip_map entry before zeroing the backend, not after: with the
+# order reversed there is a window where the VIP still matches and
+# fwd_table still names this backend, but the backend itself is DOWN, which
+# drops as backend_down (bpf/balancer.c) instead of the pass-through this
+# promises. Deleting the VIP entry is what actually restores it --
+# marlin_balancer_admit() returns MARLIN_PASS_VIP_MISS on the miss, which
+# main.c maps to XDP_PASS.
 unseed() {
 	need_root
 	need_cmd python3 "${BPFTOOL}"
 	seed_or_die
 
+	vip_unseed
+
 	local value
-	value=$(pack_backend 0.0.0.0 "" 0)
+	value=$(pack_backend 0.0.0.0 "" 0 0)
 	# shellcheck disable=SC2086
-	"${BPFTOOL}" map update pinned "${PINDIR}/backends" key 0 0 0 0 value ${value}
-	echo "backends[0] zeroed; ${PROG} passes every packet again."
+	"${BPFTOOL}" map update pinned "${PINDIR}/backends" key ${BACKEND_KEY} value ${value}
+	echo "vip_map entry removed and backends[${BACKEND_ID}] zeroed; ${PROG} passes every packet again."
 	if [[ -e ${PINDIR}/config ]]; then
-		echo "config left in place: it is read on every packet, before the backend lookup."
+		echo "config left in place: it is read on every packet, before the VIP lookup."
 	fi
 }
 
@@ -574,9 +651,9 @@ listen() {
 	if ! xdp_attached; then
 		echo "note: nothing is attached to ${MARLIN_IF} -- run '$0 attach' then '$0 seed'," >&2
 		echo "      or the client cannot reach ${VIP} at all." >&2
-	elif ! backend_seeded; then
-		echo "note: backends[0] is not seeded -- ${PROG} passes every packet" >&2
-		echo "      (bpf/main.c). Run '$0 seed' in another terminal." >&2
+	elif ! vip_seeded || ! backend_seeded; then
+		echo "note: vip_map or backends[${BACKEND_ID}] is not seeded -- ${PROG} passes every packet" >&2
+		echo "      (bpf/balancer.c). Run '$0 seed' in another terminal." >&2
 	fi
 
 	if be_port_busy "${port}"; then
@@ -659,8 +736,8 @@ test_http_get() {
 		exit 1
 	fi
 
-	if ! backend_seeded; then
-		echo "note: backends[0] is not seeded -- expect this GET to time out" >&2
+	if ! vip_seeded || ! backend_seeded; then
+		echo "note: vip_map or backends[${BACKEND_ID}] is not seeded -- expect this GET to time out" >&2
 	fi
 
 	stats_snapshot
