@@ -33,9 +33,12 @@ pointer invalidation bites.
 - An ICMP error on a flagged VIP selects the same row as the flow it reports on. This fails
   unless `parser.c` recovers the embedded destination port into `tuple.sport`
   (`docs/design/13-icmp.md`), and it is the only test that catches that omission.
-- `tuple.pad` non-zero changes the selected row on a flagged VIP and does not on an unflagged
-  one — the assertion behind `docs/design/10-map-invariants.md`'s zeroing rule for a struct that
-  is hashed whole rather than used as a map key.
+
+`tuple.pad` non-zero changing the selected row on a flagged VIP and not on an unflagged one —
+the assertion behind `docs/design/10-map-invariants.md`'s zeroing rule for a struct that is
+hashed whole rather than used as a map key — is native-tier-only: `pad` takes no packet bytes,
+so nothing here gives the packet tier a wire-level knob to turn it with. See
+`data-plane/tests/balancer_test.c` below.
 
 **`VIP_QUIC` steers a flagged short-header packet by connection ID instead of the hash, once
 `balancer.c` exists** (`docs/design/30-quic.md`). `parser.c`'s classification is native-unit-tested
@@ -46,9 +49,10 @@ today (`data-plane/tests/parser_test.c`); the assertions below are packet-level 
   backend — the migration assertion, and the whole point of the feature.
 - The same two packets on a VIP without `VIP_QUIC` select by hash and may therefore differ —
   proving the flag is what does it.
-- A connection ID whose check field fails, or whose decoded `backend_id` is 0, `>= MAX_BACKENDS`,
-  or not `MARLIN_UP`, falls through to the hash path and counts — never an out-of-bounds
-  `backends[]` read.
+- A connection ID whose check field fails, or whose generation bits are set, falls through to
+  the hash path and counts `quic_cid_check_failed`. One whose decoded `backend_id` is 0,
+  `>= MAX_BACKENDS`, or not `MARLIN_UP` falls through to the hash path uncounted — never an
+  out-of-bounds `backends[]` read.
 - A non-QUIC UDP packet and a long-header QUIC packet on a `VIP_QUIC` VIP both route by hash,
   unchanged.
 - An ICMP error on a `VIP_QUIC` VIP routes by hash: an embedded header carries at most 8 bytes of
@@ -219,10 +223,16 @@ for the same reason as the ACL case above: a global subprogram's BTF struct-poin
 non-NULL by verifier contract, so `bpf_prog_test_run` can never drive the branch, and calling the
 `static` function directly on the host is the only way to. `parser_test.c` asserts it once for
 each of `marlin_parse()`'s two parameters; `data-plane/tests/nexthop_test.c` does the same for
-`marlin_nexthop_l2dsr()` and `marlin_nexthop_encapsulate()`, four cases in total. `nexthop_test.c`
-does not make `nexthop.c` a qualifying translation unit under the three-part test above — its
-FIB fallback and redirect path stay real-kernel-only, per `main.c` above — the file exists solely
-for the two branches that return before either helper is reached.
+`marlin_nexthop_l2dsr()` and `marlin_nexthop_encapsulate()`, four cases in total, and
+`data-plane/tests/balancer_test.c` for `marlin_balancer_process()`'s two, six in total.
+`nexthop_test.c` does not make `nexthop.c` a qualifying translation unit under the three-part
+test above — its FIB fallback and redirect path stay real-kernel-only, per `main.c` above — the
+file exists solely for the two branches that return before either helper is reached.
+`balancer_test.c` does not qualify `balancer.c` either, for the reason the open-decision table in
+`docs/PHASES.md` gives (no `ARRAY`, `bpf_xdp_load_bytes()` or `bpf_xdp_get_buff_len()` stub);
+alongside the abort cases, it also carries the `tuple.pad` assertion above, which needs no map or
+packet-adjusting helper at all — only `marlin_siphash()` called directly on two tuples that
+differ in one field the packet tier cannot vary.
 
 What it buys over the packet-level harness: the `static` helpers (`marlin_parse_frag6`,
 `marlin_walk_ext6`, `marlin_parse_icmp`, …) are otherwise unreachable except through
@@ -241,9 +251,9 @@ only; the packet-adjusting stub (`data-plane/tests/stubs/xdp_stub.h`) and the ra
 `make tests` (not part of `make all`; part of `make ci`) builds and runs one binary per test
 file — `data-plane/tests/csum_test.c`, `data-plane/tests/mtu_test.c`,
 `data-plane/tests/entropy_test.c`, `data-plane/tests/parser_test.c`, `data-plane/tests/acl_test.c`,
-`data-plane/tests/nexthop_test.c`, `data-plane/tests/ipip_test.c` and
-`data-plane/tests/ratelimit_test.c` today; `docs/PHASES.md` tracks which translation units the
-mechanism covers as more are added.
+`data-plane/tests/nexthop_test.c`, `data-plane/tests/ipip_test.c`,
+`data-plane/tests/ratelimit_test.c` and `data-plane/tests/balancer_test.c` today; `docs/PHASES.md`
+tracks which translation units the mechanism covers as more are added.
 
 This is also why a sub-`ETH_HLEN` truncation case cannot move to the packet-level harness: the
 kernel's XDP `BPF_PROG_TEST_RUN` path rejects `data_size_in` below `ETH_HLEN` (14 bytes) before
