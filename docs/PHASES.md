@@ -421,9 +421,9 @@ the control-plane conversion, and the concurrency evidence.
    timestamp wrap clamp, and a tick delta whose refill product would overflow 32 bits; bucket
    exhaustion asserted as bounds rather than exact token counts; insertion beyond
    `MAX_RL_ENTRIES` distinct sources holding capacity with no failed insertion; and the
-   cross-tick boundary between a losing CAS retry's ordinary clock skew (no refill, timestamp
-   kept) and a genuine wrap or clock step (resync to burst), pinned in
-   `data-plane/tests/ratelimit_test.c` as pure `rl_spend()` arithmetic.
+   state-then-time ordering that prevents a concurrent newer bucket from looking like a clock
+   wrap, and genuine negative elapsed time still resyncing to burst; both pinned in
+   `data-plane/tests/ratelimit_test.c`.
 3. An allowlisted source at any rate is never `ratelimited` — the assertion that an allow
    verdict survives the VIP lookup on `marlin_ctx.acl_verdict` (`docs/design/11-pipeline.md`).
 4. `rl_cas_exhausted` characterised under concurrent senders across multiple receive queues.

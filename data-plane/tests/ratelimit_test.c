@@ -9,10 +9,10 @@
  * is a pure function of its arguments, so the arithmetic cases call it
  * directly with no stub at all; marlin_ratelimit() itself needs the map and
  * clock stubs and covers what rl_spend() cannot -- the gates, the key
- * construction, and the miss path's insert. Eviction and capacity under
- * MAX_RL_ENTRIES stay packet-tier-only: the LRU_HASH's eviction is not a
- * function of the arguments, which is exactly what disqualifies it from
- * this tier under that document's three-part test.
+ * construction, hit-path state/time ordering, and the miss path's insert.
+ * Eviction and capacity under MAX_RL_ENTRIES stay packet-tier-only: the
+ * LRU_HASH's eviction is not a function of the arguments, which is exactly
+ * what disqualifies it from this tier under that document's three-part test.
  */
 
 #include <stdio.h>
@@ -136,43 +136,35 @@ MARLIN_TEST(rl_spend_negative_elapsed_resyncs)
     CHECK_EQ(10, next >> 32); /* resyncs to now, not to the stale timestamp */
 }
 
-/*
- * A losing CAS retry adopts the bucket a concurrent CPU just wrote, whose
- * timestamp can legitimately read ahead of this retry's own clock sample --
- * cross-CPU bpf_ktime_get_ns() skew, or the two samples straddling a tick
- * boundary. Without the skew tolerance this would take the resync-to-burst
- * branch above on every contended tick: a source flooding across receive
- * queues would refill to burst each time its retry lost, exactly the bypass
- * this fix exists to close.
- */
-MARLIN_TEST(rl_spend_concurrent_writer_one_tick_ahead_does_not_resync)
+/* The hit path must sample time after reading the state it measures. */
+MARLIN_TEST(rl_hit_samples_time_after_reading_the_bucket)
 {
-    __u64 next;
-    int rc;
-    __u64 old = ((__u64)51 << 32) | (2 * MARLIN_RL_ONE_TOKEN); /* winner stamped one tick ahead */
+    struct marlin_ctx m;
+    const struct rl_key *key;
+    struct rl_bucket *bucket;
 
-    rc = rl_spend(old, 50, MARLIN_RL_ONE_TOKEN, 100 * MARLIN_RL_ONE_TOKEN, &next);
-    CHECK_RET(MARLIN_OK, rc);
-    CHECK_EQ(MARLIN_RL_ONE_TOKEN, next & MARLIN_RL_STATE_MASK); /* no refill credited */
-    CHECK_EQ(51, next >> 32); /* the newer timestamp is kept, never rewound */
-}
+    mctx_init(&m, AF_INET, CFG_RL_ENABLE, MARLIN_ACL_NONE);
+    mctx_src4(&m, RL_ADDR4(10, 50, 50, 6));
+    m.cfg.rl_burst = 5 * MARLIN_RL_ONE_TOKEN;
 
-/*
- * One tick past the skew window is no longer explainable by a concurrent
- * writer's clock sample -- it is the genuine wrap/backwards-clock case, and
- * must still resync exactly as rl_spend_negative_elapsed_resyncs pins.
- */
-MARLIN_TEST(rl_spend_skew_window_boundary_resyncs)
-{
-    __u64 next;
-    int rc;
-    __u64 burst = 5 * MARLIN_RL_ONE_TOKEN;
-    __u64 old = (__u64)(50 + MARLIN_RL_SKEW_TICKS + 1) << 32; /* drained, past the window */
+    CHECK_RET(MARLIN_OK, marlin_ratelimit(&m));
+    key = hash_stub_last_key();
+    bucket = hash_stub_lookup(&ratelimit, key);
+    CHECK_TRUE(bucket != NULL);
+    bucket->state = ((__u64)53 << 32) | (2 * MARLIN_RL_ONE_TOKEN);
 
-    rc = rl_spend(old, 50, MARLIN_RL_ONE_TOKEN, burst, &next);
-    CHECK_RET(MARLIN_OK, rc);
-    CHECK_EQ(burst - MARLIN_RL_ONE_TOKEN, next & MARLIN_RL_STATE_MASK);
-    CHECK_EQ(50, next >> 32); /* resyncs to now, not to the stale timestamp */
+    /*
+     * Simulate another CPU advancing the bucket after an early clock sample
+     * but before lookup returns. Sampling before the read would see tick 50
+     * and resync this tick-53 bucket to burst; sampling after it spends from
+     * the winner's two tokens at tick 53 instead.
+     */
+    time_stub_set_ns((__u64)50 << RL_TICK_SHIFT);
+    time_stub_set_ns_on_next_hash_lookup((__u64)53 << RL_TICK_SHIFT);
+
+    CHECK_RET(MARLIN_OK, marlin_ratelimit(&m));
+    CHECK_EQ(MARLIN_RL_ONE_TOKEN, bucket->state & MARLIN_RL_STATE_MASK);
+    CHECK_EQ(53, bucket->state >> 32);
 }
 
 MARLIN_TEST(rl_spend_tokens_above_lowered_burst_converge_down)
@@ -187,7 +179,7 @@ MARLIN_TEST(rl_spend_tokens_above_lowered_burst_converge_down)
     CHECK_EQ(burst - MARLIN_RL_ONE_TOKEN, next & MARLIN_RL_STATE_MASK);
 }
 
-/* ---- marlin_ratelimit(): the gates, the key, and the miss path --------- */
+/* ---- marlin_ratelimit(): gates, key, hit ordering, and miss path ------- */
 
 MARLIN_TEST(rl_null_ctx_aborts)
 {
