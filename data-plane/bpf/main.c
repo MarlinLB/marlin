@@ -19,8 +19,8 @@
 #ifdef MARLIN_DEBUG
 #define MARLIN_DBG(...) bpf_printk(__VA_ARGS__)
 #else
-#define MARLIN_DBG(...)                                                                                                            \
-    do {                                                                                                                           \
+#define MARLIN_DBG(...) \
+    do {                \
     } while(0)
 #endif
 
