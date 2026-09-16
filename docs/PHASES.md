@@ -150,7 +150,7 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 2. `bpf_prog_test_run` asserts exact output bytes for: a VIP hit rewriting the destination MAC
    and returning `XDP_TX`; a miss returning `XDP_PASS` counting `vip_miss`; `backend_id == 0`
    dropping `no_backend`; `state != MARLIN_UP` dropping `backend_down`. Each is registered in
-   `data-plane/tests/packet/xdp_test.c` and, for as long as the path it asserts is unreachable,
+   `data-plane/tests/packet/xdp_60_balancer.c` and, for as long as the path it asserts is unreachable,
    carries a `MARLIN_SKIP` naming this line — so `make packet-tests` reports it as `skip` rather
    than a pass.
 3. The C# service configures that VIP and backend from scratch on a running datapath, and the
@@ -297,7 +297,7 @@ configuration surface for either would resolve both.
    tier or a native-driver rig.
 3. An extension-header chain at `MAX_EXT_HDRS` and one beyond it are distinguishable —
    `ext_hdr_limit`, not `parse_error`
-   (`data-plane/tests/packet/xdp_test.c`,
+   (`data-plane/tests/packet/xdp_10_verdict.c`,
    `ext_hdr_limit_nine_headers_is_drop_and_distinct_from_parse_error`). Parsing does not depend
    on Phase 2b's forwarding code, so this criterion is that forwarding not regress it.
 4. A redirect to an ifindex absent from `tx_ports` is a countable `XDP_ABORTED`, not a silent
@@ -361,8 +361,8 @@ rate-limiter conversion.
 3. `backend.mac` freshness tested against neighbour churn, which needs its own netlink-level
    tests (`docs/design/24-testing.md`).
 4. `docs/design/24-testing.md`'s ACL coverage passes at both tiers — `make tests`'s
-   `data-plane/tests/acl_test.c` and `make packet-tests`'s `xdp_test.c` — **including the
-   placement assertions**, packet-tier-only since they depend on step ordering: a blocked source
+   `data-plane/tests/acl_test.c` and `make packet-tests`'s `xdp_20_acl.c` — **including the
+   placement assertions** (`xdp_70_acl_placement.c`), packet-tier-only since they depend on step ordering: a blocked source
    addressed to a destination that is not a VIP drops with `acl_blocked`, not `vip_miss`; the same
    source addressed to a `VIP_ACL` VIP drops `acl_blocked`; and addressed to a VIP with the bit
    clear, forwards. The first is the whole of `docs/design/11-pipeline.md`'s host-firewall property
@@ -387,7 +387,7 @@ rate-limiter conversion.
 
 The datapath token bucket is `ratelimit.c`'s, gated at its `balancer.c` call site by
 `VIP_RATELIMIT` and instance-wide by `CFG_RL_ENABLE`, and covered at both the native
-(`data-plane/tests/ratelimit_test.c`) and packet (`data-plane/tests/packet/xdp_test.c`'s `rl_*`
+(`data-plane/tests/ratelimit_test.c`) and packet (`data-plane/tests/packet/xdp_30_ratelimit.c`'s `rl_*`
 cases) tiers. What this phase adds is the measurement that decides whether it may be turned on,
 the control-plane conversion, and the concurrency evidence.
 

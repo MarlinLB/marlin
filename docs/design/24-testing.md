@@ -184,10 +184,10 @@ real kernel. `ipip.c` satisfies this shape — see below.
 The cost is that such a case asserts two things at once: that `acl.c` queries the right map with
 the right key, and that the stub's longest-match scan agrees with the kernel's trie. Only the
 first is what the tier is for. The second is bounded by rule: every prefix-arithmetic case in
-`data-plane/tests/acl_test.c` has a named counterpart in `data-plane/tests/packet/xdp_test.c`, and
+`data-plane/tests/acl_test.c` has a named counterpart in `data-plane/tests/packet/xdp_20_acl.c`, and
 a native case with no counterpart asserts only lookup bookkeeping — which map, how many times,
 with what key — never a prefix outcome. `ipip.c` carries the equivalent rule: every case in
-`data-plane/tests/ipip_test.c` that duplicates a `tests/packet/xdp_test.c` assertion names its
+`data-plane/tests/ipip_test.c` that duplicates a `tests/packet/xdp_45_encap.c` assertion names its
 counterpart, and a native case with none asserts only what the packet tier cannot observe — an
 `mctx` write-back, a NULL argument, a headroom failure, or a helper call count.
 
@@ -203,7 +203,7 @@ native tier needs no faking, since it calls the real function on the real argume
 only under the stub's restriction to a single non-evicting map: the real `ratelimit` is an
 `LRU_HASH`, whose eviction is not a function of the arguments, so eviction and capacity at
 `MAX_RL_ENTRIES`, and `rl_cas_exhausted` under real cross-CPU contention, stay packet-tier-only —
-`data-plane/tests/packet/xdp_test.c`'s `rl_*` cases are the real-kernel counterpart the third
+`data-plane/tests/packet/xdp_30_ratelimit.c`'s `rl_*` cases are the real-kernel counterpart the third
 condition requires. Matching `acl.c`'s rule, a native case duplicating one of those assertions
 names its counterpart; a native case with none — the NULL abort, the gates admitting with zero
 lookups, the key's byte-exact construction with `pad` zeroed, an insert failure still admitting —

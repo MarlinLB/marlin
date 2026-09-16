@@ -549,7 +549,7 @@ MARLIN_TEST(vxlan_encap_builds_the_outer_and_inner_headers_byte_for_byte)
 {
     /*
      * Mirrors vxlan_encap_zero_lookup_writes_outer_and_inner_ethernet_headers
-     * (tests/packet/xdp_test.c). This is vxlan.c's central hazard
+     * (tests/packet/xdp_45_encap.c). This is vxlan.c's central hazard
      * (docs/design/14-forwarding-modes.md SS7.4): the outer Ethernet header
      * is built from the *saved* arriving addresses, not by relocating and
      * swapping the arriving header the way nexthop.c's default does for
@@ -646,7 +646,7 @@ MARLIN_TEST(vxlan_encap_frame_too_big_returns_before_the_helper)
 {
     /*
      * Mirrors vxlan_encap_frame_too_big_drops_before_adjust_head
-     * (tests/packet/xdp_test.c); the native-only half is that the helper is
+     * (tests/packet/xdp_45_encap.c); the native-only half is that the helper is
      * never reached at all, asserted directly rather than inferred from an
      * unmodified frame.
      */
@@ -670,7 +670,7 @@ MARLIN_TEST(vxlan_encap_frame_too_big_returns_before_the_helper)
 
 MARLIN_TEST(vxlan_encap_max_frame_zero_disables_the_check)
 {
-    /* Mirrors vxlan_encap_max_frame_zero_disables_the_check (tests/packet/xdp_test.c). */
+    /* Mirrors vxlan_encap_max_frame_zero_disables_the_check (tests/packet/xdp_45_encap.c). */
     struct marlin_ctx mctx;
     struct xdp_md ctx;
 

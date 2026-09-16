@@ -122,6 +122,16 @@ PACKET_TEST_OBJS := $(patsubst $(PACKET_TEST_DIR)/%.c,$(BUILD_DIR)/tests/packet/
 PACKET_TEST_BIN  := $(BUILD_DIR)/tests/packet/marlin_packet_tests
 PACKET_TEST_LIBS := -lbpf
 
+# harness.c / packet.c hold what tests/harness.h and tests/packet.h used to
+# define inline. Built once per tier, not shared: the native tier carries
+# TEST_SANITIZE and tests/stubs, the packet tier neither, and an ASan object
+# will not link into a binary built without it. Kept out of $(BUILD_DIR)/tests/
+# so the one-binary-per-test pattern rules there below do not also match these.
+SUPPORT_DIR         := $(TEST_DIR)/support
+SUPPORT_SRCS        := $(wildcard $(SUPPORT_DIR)/*.c)
+NATIVE_SUPPORT_OBJS := $(patsubst $(SUPPORT_DIR)/%.c,$(BUILD_DIR)/support/native/%.o,$(SUPPORT_SRCS))
+PACKET_SUPPORT_OBJS := $(patsubst $(SUPPORT_DIR)/%.c,$(BUILD_DIR)/support/packet/%.o,$(SUPPORT_SRCS))
+
 .PHONY: all
 all: bpf marlind tools
 
@@ -203,13 +213,20 @@ $(BUILD_DIR)/tests/%.o: $(TEST_DIR)/%.c $(TEST_HDRS) $(SRCS) $(HDRS)
 	@echo "compile $(notdir $<)"
 	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) $(TEST_INCLUDES) -MMD -MP -c -o $@ $<
 
-$(BUILD_DIR)/tests/%: $(BUILD_DIR)/tests/%.o
+# See the SUPPORT_DIR comment above: built with the same sanitizer/include
+# flags as every other native-tier object, so it links into $(TEST_BINS).
+$(BUILD_DIR)/support/native/%.o: $(SUPPORT_DIR)/%.c $(TEST_HDRS) $(HDRS)
+	@mkdir -p $(BUILD_DIR)/support/native
+	@echo "compile $(notdir $<)"
+	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) $(TEST_INCLUDES) -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/tests/%: $(BUILD_DIR)/tests/%.o $(NATIVE_SUPPORT_OBJS)
 	@echo "linking $(notdir $@)"
-	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) -o $@ $<
+	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) -o $@ $< $(NATIVE_SUPPORT_OBJS)
 
 # Without this the .o files above are chained intermediates: make would
 # delete each one -- and stop regenerating its .d -- after every link.
-.SECONDARY: $(TEST_OBJS)
+.SECONDARY: $(TEST_OBJS) $(NATIVE_SUPPORT_OBJS) $(PACKET_SUPPORT_OBJS)
 
 .PHONY: tests
 tests: $(TEST_BINS)
@@ -219,7 +236,7 @@ tests: $(TEST_BINS)
 	done; \
 	exit $$fail
 
--include $(TEST_OBJS:.o=.d)
+-include $(TEST_OBJS:.o=.d) $(NATIVE_SUPPORT_OBJS:.o=.d) $(PACKET_SUPPORT_OBJS:.o=.d)
 
 # Links against libbpf and loads marlin.bpf.o rather than #include-ing
 # parser.c. TEST_SANITIZE is left off: LeakSanitizer flags libbpf's own allocations.
@@ -228,9 +245,17 @@ $(BUILD_DIR)/tests/packet/%.o: $(PACKET_TEST_DIR)/%.c $(PACKET_TEST_HDRS) $(TEST
 	@echo "compile $(notdir $<)"
 	@$(HOST_CC) $(TEST_CFLAGS) $(INCLUDES) -MMD -MP -c -o $@ $<
 
-$(PACKET_TEST_BIN): $(PACKET_TEST_OBJS)
+# Same source as $(BUILD_DIR)/support/native/%.o above, compiled without
+# TEST_SANITIZE/tests/stubs to match every other packet-tier object -- an
+# ASan-built object will not link into a binary built without ASan.
+$(BUILD_DIR)/support/packet/%.o: $(SUPPORT_DIR)/%.c $(TEST_HDRS) $(HDRS)
+	@mkdir -p $(BUILD_DIR)/support/packet
+	@echo "compile $(notdir $<)"
+	@$(HOST_CC) $(TEST_CFLAGS) $(INCLUDES) -MMD -MP -c -o $@ $<
+
+$(PACKET_TEST_BIN): $(PACKET_TEST_OBJS) $(PACKET_SUPPORT_OBJS)
 	@echo "linking $(notdir $@)"
-	@$(HOST_CC) $(TEST_CFLAGS) -o $@ $(PACKET_TEST_OBJS) $(PACKET_TEST_LIBS)
+	@$(HOST_CC) $(TEST_CFLAGS) -o $@ $(PACKET_TEST_OBJS) $(PACKET_SUPPORT_OBJS) $(PACKET_TEST_LIBS)
 
 -include $(PACKET_TEST_OBJS:.o=.d)
 

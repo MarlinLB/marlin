@@ -521,7 +521,7 @@ MARLIN_TEST(gue_encap_builds_the_outer_headers_byte_for_byte)
 {
     /*
      * Mirrors gue_encap_zero_lookup_swaps_ethernet_and_builds_outer_header
-     * (tests/packet/xdp_test.c). The swapped MACs asserted there are
+     * (tests/packet/xdp_45_encap.c). The swapped MACs asserted there are
      * nexthop.c's contribution, not gue.c's, so this checks only the
      * headers gue.c itself writes and that the arriving Ethernet header
      * relocated unchanged. The entropy source port is checked by calling
@@ -585,7 +585,7 @@ MARLIN_TEST(gue_encap_builds_the_outer_headers_byte_for_byte)
 MARLIN_TEST(gue_encap_ipv6_inner_sets_gue_proto_41)
 {
     /*
-     * Mirrors gue_encap_ipv6_inner_sets_gue_proto_41 (tests/packet/xdp_test.c).
+     * Mirrors gue_encap_ipv6_inner_sets_gue_proto_41 (tests/packet/xdp_45_encap.c).
      * Also a regression test for the bug where the outer Ethernet header's
      * EtherType carried the arriving frame's ETH_P_IPV6 forward unchanged:
      * the arriving EtherType mirrors tuple.family exactly (parser.c), but
@@ -619,7 +619,7 @@ MARLIN_TEST(gue_encap_frame_too_big_returns_before_the_helper)
 {
     /*
      * Mirrors gue_encap_frame_too_big_drops_before_adjust_head
-     * (tests/packet/xdp_test.c); the native-only half is that the helper is
+     * (tests/packet/xdp_45_encap.c); the native-only half is that the helper is
      * never reached at all, asserted directly rather than inferred from an
      * unmodified frame.
      */
@@ -642,7 +642,7 @@ MARLIN_TEST(gue_encap_frame_too_big_returns_before_the_helper)
 
 MARLIN_TEST(gue_encap_max_frame_zero_disables_the_check)
 {
-    /* Mirrors gue_encap_max_frame_zero_disables_the_check (tests/packet/xdp_test.c). */
+    /* Mirrors gue_encap_max_frame_zero_disables_the_check (tests/packet/xdp_45_encap.c). */
     struct marlin_ctx mctx;
     struct xdp_md ctx;
 

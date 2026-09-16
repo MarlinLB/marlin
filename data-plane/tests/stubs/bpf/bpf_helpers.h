@@ -94,7 +94,7 @@ static __attribute__((unused)) long bpf_xdp_adjust_head(struct xdp_md *ctx, int 
 
 /*
  * nexthop.c's FIB fallback and redirect path are the packet tier's job
- * (tests/packet/xdp_test.c's nexthop_interim_* section, a real kernel FIB):
+ * (tests/packet/xdp_40_fib.c's fib_no_neigh_* cases, a real kernel FIB):
  * unlike bpf_map_lookup_elem and bpf_xdp_adjust_head, there is no native
  * model of either helper here. These exist only so the translation unit
  * links; a native case that reaches past a NULL-argument check into either
