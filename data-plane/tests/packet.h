@@ -216,13 +216,24 @@ static __attribute__((unused)) __u32 pb_udp(__u16 sport_host, __u16 dport_host, 
 /*
  * One byte carrying only the QUIC header-form bit (RFC 8999 SS4.1;
  * MARLIN_QUIC_LONG_HEADER in proto.h): 0x80 set selects a long header, clear
- * selects short. Nothing in this repo decodes past the form bit yet
- * (docs/design/30-quic.md), so this is the whole of a QUIC payload the
- * builder needs to produce.
+ * selects short. For a case that stops at the form bit -- a long header, or a
+ * payload too short to hold a connection ID.
  */
 static __attribute__((unused)) __u32 pb_quic_form(__u8 first_byte)
 {
     return pb_raw(&first_byte, sizeof(first_byte));
+}
+
+/*
+ * Short header plus the destination connection ID that follows it, which is
+ * what balancer.c steers on (docs/design/30-quic.md). The ID's own layout is
+ * the caller's business: this only guarantees it lands immediately after the
+ * form byte, where the decoder reads it.
+ */
+static __attribute__((unused)) __u32 pb_quic_cid(__u8 first_byte, const __u8 *cid, __u32 cid_len)
+{
+    pb_raw(&first_byte, sizeof(first_byte));
+    return pb_raw(cid, cid_len);
 }
 
 static __u32 pb_icmp(__u8 type, __u8 code)

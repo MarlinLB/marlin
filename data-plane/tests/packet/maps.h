@@ -106,10 +106,8 @@ static __u64 xdp_drop_stats_total(int rc)
  * vip_stats/backend_stats are BPF_MAP_TYPE_PERCPU_ARRAY of struct stats --
  * same per-CPU summing as xdp_drop_stats_total above, but the value is
  * packets+bytes rather than one __u64, so the sum is taken per field.
- * Unreferenced until balancer.c writes these maps (docs/PHASES.md); the
- * cases that will call them are MARLIN_SKIP placeholders below.
  */
-static __attribute__((unused)) struct stats xdp_vip_stats_total(__u32 vip_num)
+static struct stats xdp_vip_stats_total(__u32 vip_num)
 {
     int fd = xdp_map_fd("vip_stats");
     int ncpus = libbpf_num_possible_cpus();
@@ -142,7 +140,7 @@ static __attribute__((unused)) struct stats xdp_vip_stats_total(__u32 vip_num)
     return total;
 }
 
-static __attribute__((unused)) struct stats xdp_backend_stats_total(__u32 backend_id)
+static struct stats xdp_backend_stats_total(__u32 backend_id)
 {
     int fd = xdp_map_fd("backend_stats");
     int ncpus = libbpf_num_possible_cpus();
@@ -350,4 +348,134 @@ static __attribute__((unused)) void xdp_rl_clear(void)
             exit(1);
         }
     }
+}
+
+/*
+ * vip_map (HASH, struct vip_key -> struct vip_meta): built from the real ABI
+ * structs, same discipline as the ACL helpers above. The key must be zeroed
+ * before its fields are set -- balancer.c builds its lookup key with a
+ * memset and an IPv4 packet leaves addr6[1..3] zero, so a userspace key with
+ * anything else there silently fails to match.
+ */
+static __attribute__((unused)) void xdp_vip_add(const struct vip_key *key, const struct vip_meta *meta)
+{
+    int fd = xdp_map_fd("vip_map");
+
+    if(bpf_map_update_elem(fd, key, meta, BPF_ANY) != 0) {
+        fprintf(stderr, "packet-tests: failed to seed vip_map: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+/* Non-fatal on ENOENT, for the same teardown reason as xdp_tx_ports_del. */
+static __attribute__((unused)) void xdp_vip_del(const struct vip_key *key)
+{
+    int fd = xdp_map_fd("vip_map");
+
+    if(bpf_map_delete_elem(fd, key) != 0 && errno != ENOENT) {
+        fprintf(stderr, "packet-tests: failed to clear a vip_map entry: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+static __attribute__((unused)) void xdp_vip_clear(void)
+{
+    int fd = xdp_map_fd("vip_map");
+    struct vip_key next;
+
+    while(bpf_map_get_next_key(fd, NULL, &next) == 0) {
+        if(bpf_map_delete_elem(fd, &next) != 0) {
+            fprintf(stderr, "packet-tests: failed to clear an entry from vip_map: %s\n", strerror(errno));
+            exit(1);
+        }
+    }
+}
+
+/*
+ * fwd_table is one flat ARRAY of MAX_VIPS * TABLE_SIZE slots; VIP `vip_num`
+ * owns the block at vip_num * TABLE_SIZE and balancer.c picks a row inside it
+ * with a keyed SipHash over the packet tuple. Userspace cannot recompute that
+ * row without duplicating both the hash and struct packet_tuple's exact
+ * layout, so every slot in the block is written instead: the row a packet
+ * lands on stops mattering and a forwarding case asserts selection without
+ * depending on a reimplementation staying in step.
+ */
+static void xdp_fwd_write_block(__u32 vip_num, __u32 id_even, __u32 id_odd)
+{
+    LIBBPF_OPTS(bpf_map_batch_opts, opts);
+    int fd = xdp_map_fd("fwd_table");
+    __u32 base = vip_num * TABLE_SIZE;
+    __u32 count = TABLE_SIZE;
+    __u32 *keys, *values;
+    __u32 i;
+
+    keys = calloc(TABLE_SIZE, sizeof(*keys));
+    values = calloc(TABLE_SIZE, sizeof(*values));
+
+    if(keys == NULL || values == NULL) {
+        fprintf(stderr, "packet-tests: out of memory writing fwd_table\n");
+        exit(1);
+    }
+
+    for(i = 0; i < TABLE_SIZE; i++) {
+        keys[i] = base + i;
+        values[i] = (i & 1U) ? id_odd : id_even;
+    }
+
+    /* ARRAY batch update needs 5.6; the element loop is the fallback. */
+    if(bpf_map_update_batch(fd, keys, values, &count, &opts) != 0 || count != TABLE_SIZE) {
+        for(i = 0; i < TABLE_SIZE; i++) {
+            if(bpf_map_update_elem(fd, &keys[i], &values[i], BPF_ANY) != 0) {
+                fprintf(stderr, "packet-tests: failed to write fwd_table[%u]: %s\n", keys[i], strerror(errno));
+                exit(1);
+            }
+        }
+    }
+
+    free(values);
+    free(keys);
+}
+
+static __attribute__((unused)) void xdp_fwd_fill(__u32 vip_num, __u32 id)
+{
+    xdp_fwd_write_block(vip_num, id, id);
+}
+
+/*
+ * Splits a VIP's block between two backends on the low bit of the row index.
+ * Which backend a packet reaches then reports one bit of its hash, which is
+ * what lets a case observe that a tuple field does or does not feed the hash
+ * without ever computing it.
+ */
+static __attribute__((unused)) void xdp_fwd_fill_striped(__u32 vip_num, __u32 id_even, __u32 id_odd)
+{
+    xdp_fwd_write_block(vip_num, id_even, id_odd);
+}
+
+static __attribute__((unused)) void xdp_fwd_clear(__u32 vip_num)
+{
+    xdp_fwd_write_block(vip_num, 0, 0);
+}
+
+/*
+ * backends is an ARRAY, so index 0 exists but balancer.c treats a zero
+ * forwarding-table slot as "empty" and refuses to resolve it. Callers must
+ * pass a non-zero id for a backend they expect to be reachable.
+ */
+static __attribute__((unused)) void xdp_backend_write(__u32 id, const struct backend *be)
+{
+    int fd = xdp_map_fd("backends");
+
+    if(bpf_map_update_elem(fd, &id, be, BPF_ANY) != 0) {
+        fprintf(stderr, "packet-tests: failed to seed backends[%u]: %s\n", id, strerror(errno));
+        exit(1);
+    }
+}
+
+static __attribute__((unused)) void xdp_backend_clear(__u32 id)
+{
+    struct backend be;
+
+    memset(&be, 0, sizeof(be));
+    xdp_backend_write(id, &be);
 }

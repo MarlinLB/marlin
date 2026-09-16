@@ -38,6 +38,136 @@ static struct xdp_run_result run_packet_on(__u32 ingress_ifindex)
     return xdp_run(pb_arena, pb_len, out_buf, sizeof(out_buf), ingress_ifindex);
 }
 
+#define NH_INGRESS_IFINDEX 1U
+
+#define NH_BACKEND_ADDR 0x0c0c0c0cU /* 12.12.12.12 */
+
+static const unsigned char NH_MARLIN_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+static const unsigned char NH_ROUTER_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+static const unsigned char NH_BACKEND_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
+
+static const unsigned char NH_DECOY_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x0b};
+
+static const unsigned char VXLAN_INNER_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x04};
+
+static const unsigned char ALT_BACKEND_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x05};
+
+/* ---- VIP and backend fixture ------------------------------------------ */
+
+/*
+ * balancer.c refuses a forwarding-table slot of 0, so no fixture backend may
+ * live at index 0 of the backends array.
+ */
+#define NH_BACKEND_ID  1U
+#define ALT_BACKEND_ID 2U
+
+#define NH_VIP_NUM  0U
+#define UDP_VIP_NUM 1U
+#define ALT_VIP_NUM 2U
+
+/*
+ * Every fixture VIP shares one hash key. Its value is arbitrary to the
+ * forwarding cases, which fill a VIP's whole block so the row SipHash picks
+ * cannot matter, but the QUIC cases forge a connection ID against it and so
+ * need it to be a value userspace knows.
+ */
+#define VIP_FIXTURE_HASH_KEY_BYTE 0x5aU
+
+static void vip_key4(struct vip_key *key, __be32 addr, __u16 port_host, __u8 proto)
+{
+    memset(key, 0, sizeof(*key));
+    key->addr4 = addr;
+    key->port = bpf_htons(port_host);
+    key->proto = proto;
+    key->family = AF_INET;
+}
+
+static void vip_key6(struct vip_key *key, const unsigned char addr16[16], __u16 port_host, __u8 proto)
+{
+    memset(key, 0, sizeof(*key));
+    memcpy(key->addr6, addr16, sizeof(key->addr6));
+    key->port = bpf_htons(port_host);
+    key->proto = proto;
+    key->family = AF_INET6;
+}
+
+static void vip_meta_init(struct vip_meta *meta, __u32 vip_num, __u32 flags)
+{
+    memset(meta, 0, sizeof(*meta));
+    meta->vip_num = vip_num;
+    meta->flags = flags;
+    memset(meta->hash_key, VIP_FIXTURE_HASH_KEY_BYTE, sizeof(meta->hash_key));
+}
+
+static void vip_seed4(__be32 addr, __u16 port_host, __u8 proto, __u32 vip_num, __u32 flags)
+{
+    struct vip_key key;
+    struct vip_meta meta;
+
+    vip_key4(&key, addr, port_host, proto);
+    vip_meta_init(&meta, vip_num, flags);
+    xdp_vip_add(&key, &meta);
+}
+
+static void vip_seed6(const unsigned char addr16[16], __u16 port_host, __u8 proto, __u32 vip_num, __u32 flags)
+{
+    struct vip_key key;
+    struct vip_meta meta;
+
+    vip_key6(&key, addr16, port_host, proto);
+    vip_meta_init(&meta, vip_num, flags);
+    xdp_vip_add(&key, &meta);
+}
+
+/*
+ * L2DSR with a stored MAC and MARLIN_BE_F_FIB clear returns MARLIN_OK_TX
+ * straight out of nexthop.c, without a FIB lookup. A case about something
+ * upstream of next-hop resolution uses this to observe "was forwarded" as a
+ * plain XDP_TX, with no route or neighbour to set up.
+ */
+static void backend_seed_l2dsr(__u32 id, const unsigned char *mac)
+{
+    struct backend be;
+
+    memset(&be, 0, sizeof(be));
+    be.flags = (__u8)(MARLIN_MODE_L2DSR | MARLIN_BE_F_STATE);
+    be.addr = NH_BACKEND_ADDR;
+    be.id = (__u16)id;
+
+    if(mac != NULL) {
+        memcpy(be.mac, mac, ETH_ALEN);
+    }
+
+    xdp_backend_write(id, &be);
+}
+
+/*
+ * The VIP the build_udp4()/build_udp6() frames land on, with a reachable
+ * backend behind it. Cases that would otherwise assert only "not dropped"
+ * need it: without a VIP every outcome collapses onto the XDP_PASS of a VIP
+ * miss, and an admitted packet becomes indistinguishable from one the step
+ * under test never ran for.
+ */
+static void udp_vip_seed(__u32 flags)
+{
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    vip_seed4(V4_DST, 53, IPPROTO_UDP, UDP_VIP_NUM, flags);
+    vip_seed6(DST6, 53, IPPROTO_UDP, UDP_VIP_NUM, flags);
+    xdp_fwd_fill(UDP_VIP_NUM, NH_BACKEND_ID);
+}
+
+static void udp_vip_clear(void)
+{
+    struct vip_key key;
+
+    vip_key4(&key, V4_DST, 53, IPPROTO_UDP);
+    xdp_vip_del(&key);
+    vip_key6(&key, DST6, 53, IPPROTO_UDP);
+    xdp_vip_del(&key);
+    xdp_fwd_clear(UDP_VIP_NUM);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
 MARLIN_TEST(ok_ipv4_tcp_is_pass_and_uncounted)
 {
     __u64 before = xdp_drop_stats_total(MARLIN_PASS_NOT_FORWARDED);
@@ -673,16 +803,42 @@ MARLIN_TEST(rl_disabled_does_not_meter)
 
     rl_addr4(addr16, ACL_ADDR4(10, 40, 40, 1));
     xdp_rl_clear();
+    udp_vip_seed(VIP_RATELIMIT);
     seed_rl_cfg(0, 0, 0); /* CFG_RL_ENABLE clear */
     xdp_rl_seed(AF_INET, addr16, 0); /* drained, were it read at all */
 
     build_udp4(ACL_ADDR4(10, 40, 40, 1), V4_DST);
     result = run_current_packet();
     CHECK_EQ(0, result.err);
-    CHECK_XDP(XDP_PASS, result.retval);
+    CHECK_XDP(XDP_TX, result.retval);
 
     CHECK_TRUE(xdp_rl_get(AF_INET, addr16, &after));
     CHECK_EQ(0, after); /* untouched: the gate returns before any map access */
+
+    udp_vip_clear();
+}
+
+MARLIN_TEST(rl_vip_without_ratelimit_flag_is_not_metered)
+{
+    unsigned char addr16[16];
+    __u64 after;
+    struct xdp_run_result result;
+
+    rl_addr4(addr16, ACL_ADDR4(10, 40, 40, 7));
+    xdp_rl_clear();
+    udp_vip_seed(0); /* VIP_RATELIMIT clear, config enabled */
+    seed_rl_cfg(CFG_RL_ENABLE, 0, 3 * RL_ONE_TOKEN);
+    xdp_rl_seed(AF_INET, addr16, 0);
+
+    build_udp4(ACL_ADDR4(10, 40, 40, 7), V4_DST);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval); /* a drained bucket would have dropped it */
+
+    CHECK_TRUE(xdp_rl_get(AF_INET, addr16, &after));
+    CHECK_EQ(0, after);
+
+    udp_vip_clear();
 }
 
 MARLIN_TEST(rl_first_packet_inserts_charged_bucket)
@@ -693,15 +849,18 @@ MARLIN_TEST(rl_first_packet_inserts_charged_bucket)
 
     rl_addr4(addr16, ACL_ADDR4(10, 40, 40, 2));
     xdp_rl_clear();
+    udp_vip_seed(VIP_RATELIMIT);
     seed_rl_cfg(CFG_RL_ENABLE, 0, 3 * RL_ONE_TOKEN);
 
     build_udp4(ACL_ADDR4(10, 40, 40, 2), V4_DST);
     result = run_current_packet();
     CHECK_EQ(0, result.err);
-    CHECK_XDP(XDP_PASS, result.retval);
+    CHECK_XDP(XDP_TX, result.retval);
 
     CHECK_TRUE(xdp_rl_get(AF_INET, addr16, &state));
     CHECK_EQ(2 * RL_ONE_TOKEN, state & 0xffffffffULL); /* burst less the one token this packet spent */
+
+    udp_vip_clear();
 }
 
 MARLIN_TEST(rl_fixed_budget_admits_n_then_drops)
@@ -713,6 +872,7 @@ MARLIN_TEST(rl_fixed_budget_admits_n_then_drops)
 
     rl_addr4(addr16, ACL_ADDR4(10, 40, 40, 3));
     xdp_rl_clear();
+    udp_vip_seed(VIP_RATELIMIT);
     /* refill 0: a fixed budget with no time dependence, so the Nth packet
      * always admits and the N+1th always drops regardless of how long the
      * case takes to run.
@@ -725,13 +885,15 @@ MARLIN_TEST(rl_fixed_budget_admits_n_then_drops)
     for(i = 0; i < 3; i++) {
         result = run_current_packet();
         CHECK_EQ(0, result.err);
-        CHECK_XDP(XDP_PASS, result.retval);
+        CHECK_XDP(XDP_TX, result.retval);
     }
 
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_DROP, result.retval);
     CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_RATELIMITED));
+
+    udp_vip_clear();
 }
 
 MARLIN_TEST(rl_refill_clamps_to_burst)
@@ -742,6 +904,7 @@ MARLIN_TEST(rl_refill_clamps_to_burst)
 
     rl_addr4(addr16, ACL_ADDR4(10, 40, 40, 4));
     xdp_rl_clear();
+    udp_vip_seed(VIP_RATELIMIT);
     /* A rate high enough that elapsed * rate overflows 32 bits after even a
      * handful of ticks; rl_spend()'s clamp before the add is what keeps
      * this exact rather than wrapping. Robust to the two ways a stale
@@ -755,10 +918,12 @@ MARLIN_TEST(rl_refill_clamps_to_burst)
     build_udp4(ACL_ADDR4(10, 40, 40, 4), V4_DST);
     result = run_current_packet();
     CHECK_EQ(0, result.err);
-    CHECK_XDP(XDP_PASS, result.retval);
+    CHECK_XDP(XDP_TX, result.retval);
 
     CHECK_TRUE(xdp_rl_get(AF_INET, addr16, &state));
     CHECK_EQ(4 * RL_ONE_TOKEN, state & 0xffffffffULL); /* clamped to burst, less the one token spent */
+
+    udp_vip_clear();
 }
 
 MARLIN_TEST(rl_future_timestamp_resyncs)
@@ -770,6 +935,7 @@ MARLIN_TEST(rl_future_timestamp_resyncs)
 
     rl_addr4(addr16, ACL_ADDR4(10, 40, 40, 5));
     xdp_rl_clear();
+    udp_vip_seed(VIP_RATELIMIT);
     seed_rl_cfg(CFG_RL_ENABLE, 0, 5 * RL_ONE_TOKEN);
 
     /*
@@ -786,10 +952,12 @@ MARLIN_TEST(rl_future_timestamp_resyncs)
     build_udp4(ACL_ADDR4(10, 40, 40, 5), V4_DST);
     result = run_current_packet();
     CHECK_EQ(0, result.err);
-    CHECK_XDP(XDP_PASS, result.retval);
+    CHECK_XDP(XDP_TX, result.retval);
 
     CHECK_TRUE(xdp_rl_get(AF_INET, addr16, &state));
     CHECK_EQ(4 * RL_ONE_TOKEN, state & 0xffffffffULL);
+
+    udp_vip_clear();
 }
 
 MARLIN_TEST(rl_v4_and_v6_same_bytes_are_distinct_buckets)
@@ -798,6 +966,7 @@ MARLIN_TEST(rl_v4_and_v6_same_bytes_are_distinct_buckets)
     struct xdp_run_result result;
 
     xdp_rl_clear();
+    udp_vip_seed(VIP_RATELIMIT);
     seed_rl_cfg(CFG_RL_ENABLE, 0, 3 * RL_ONE_TOKEN);
 
     /* 10.1.2.3 and the IPv6 address 0a01:0203:: share these exact 16 bytes
@@ -815,7 +984,9 @@ MARLIN_TEST(rl_v4_and_v6_same_bytes_are_distinct_buckets)
     build_udp6(addr16, DST6);
     result = run_current_packet();
     CHECK_EQ(0, result.err);
-    CHECK_XDP(XDP_PASS, result.retval); /* the v6 bucket, same bytes, is full */
+    CHECK_XDP(XDP_TX, result.retval); /* the v6 bucket, same bytes, is full */
+
+    udp_vip_clear();
 }
 
 MARLIN_TEST(rl_allow_verdict_survives_rate_limiter)
@@ -831,6 +1002,7 @@ MARLIN_TEST(rl_allow_verdict_survives_rate_limiter)
     xdp_acl_add4("acl_allow_v4", 32, ACL_ADDR4(10, 40, 40, 6), 1);
     xdp_rl_clear();
     xdp_rl_seed(AF_INET, addr16, 0); /* drained: any further packet would ratelimit if metered at all */
+    udp_vip_seed(VIP_ACL | VIP_RATELIMIT);
 
     memset(&cfg, 0, sizeof(cfg));
     cfg.flags = CFG_ACL_ENABLE | CFG_RL_ENABLE;
@@ -842,10 +1014,12 @@ MARLIN_TEST(rl_allow_verdict_survives_rate_limiter)
     build_udp4(ACL_ADDR4(10, 40, 40, 6), V4_DST);
     result = run_current_packet();
     CHECK_EQ(0, result.err);
-    CHECK_XDP(XDP_PASS, result.retval); /* the allow verdict, not an empty bucket, is why */
+    CHECK_XDP(XDP_TX, result.retval); /* the allow verdict, not an empty bucket, is why */
 
     CHECK_TRUE(xdp_rl_get(AF_INET, addr16, &after));
     CHECK_EQ(0, after); /* untouched: an allow verdict returns before any map access */
+
+    udp_vip_clear();
 
     /*
      * config is process-global and outlives a case (seed_encap_cfg's
@@ -861,77 +1035,37 @@ MARLIN_TEST(rl_allow_verdict_survives_rate_limiter)
     xdp_seed_config(&cfg);
 }
 
-MARLIN_TEST(pending_phase3_acl_placement_blocked_source_non_vip_dest)
+/* ---- Next hop, FIB and encapsulation ---------------------------------- */
+
+/*
+ * Every case in this section sends the frame nh_build_frame() or
+ * nh_build_frame_v6() builds, so the VIP and forwarding-table entries those
+ * frames need are seeded and torn down by nh_backend_seed()/nh_backend_clear()
+ * rather than repeated in forty case bodies. The whole forwarding block is
+ * filled with the one backend id, which is what lets these cases assert
+ * selection without knowing which row SipHash picked.
+ */
+static void nh_vip_seed(__u32 flags)
 {
-    MARLIN_SKIP("docs/PHASES.md:329-332 -- needs the VIP lookup xdp_main does not have yet");
+    vip_seed4(V4_DST, 80, IPPROTO_TCP, NH_VIP_NUM, flags);
+    vip_seed6(DST6, 80, IPPROTO_TCP, NH_VIP_NUM, flags);
+    xdp_fwd_fill(NH_VIP_NUM, NH_BACKEND_ID);
 }
 
-MARLIN_TEST(pending_phase2_ok_tx_returns_xdp_tx)
+static void nh_vip_clear(void)
 {
-    MARLIN_SKIP("docs/PHASES.md:142-144 -- needs VIP forwarding xdp_main does not have yet");
+    struct vip_key key;
+
+    vip_key4(&key, V4_DST, 80, IPPROTO_TCP);
+    xdp_vip_del(&key);
+    vip_key6(&key, DST6, 80, IPPROTO_TCP);
+    xdp_vip_del(&key);
+    xdp_fwd_clear(NH_VIP_NUM);
 }
-
-MARLIN_TEST(pending_phase2_ok_redirect_returns_xdp_redirect)
-{
-    /* MARLIN_OK_REDIRECT is unreachable for the same reason. */
-    MARLIN_SKIP("docs/PHASES.md:142-144 -- needs VIP forwarding xdp_main does not have yet");
-}
-
-MARLIN_TEST(pending_phase1_criterion2_vip_miss_is_pass_and_counted)
-{
-    /* docs/PHASES.md:143 -- "a miss returning XDP_PASS counting vip_miss". */
-    MARLIN_SKIP("docs/PHASES.md:143 -- needs the VIP lookup xdp_main does not have yet");
-}
-
-MARLIN_TEST(pending_phase1_criterion2_no_backend_is_drop)
-{
-    /* docs/PHASES.md:143-144 -- "backend_id == 0 dropping no_backend". */
-    MARLIN_SKIP("docs/PHASES.md:143-144 -- needs the VIP lookup xdp_main does not have yet");
-}
-
-MARLIN_TEST(pending_phase1_criterion2_backend_down_is_drop)
-{
-    /* docs/PHASES.md:144 -- "state != MARLIN_UP dropping backend_down". */
-    MARLIN_SKIP("docs/PHASES.md:144 -- needs the VIP lookup xdp_main does not have yet");
-}
-
-MARLIN_TEST(pending_phase2b_vip_stats_written_at_selection)
-{
-    /* docs/design/22-observability.md -- packets+bytes per VIP, keyed by
-     * vip_num, which only balancer.c's VIP lookup derives.
-     */
-    MARLIN_SKIP("docs/design/22-observability.md -- needs balancer.c's VIP lookup xdp_main does not have yet");
-}
-
-MARLIN_TEST(pending_phase2b_backend_stats_written_at_selection)
-{
-    /* docs/design/22-observability.md -- packets+bytes per backend, keyed by
-     * backend_id, bumped at selection so a later drop still counts here.
-     */
-    MARLIN_SKIP("docs/design/22-observability.md -- needs balancer.c's backend selection xdp_main does not have yet");
-}
-
-#define NH_INGRESS_IFINDEX 1U
-
-#define NH_BACKEND_ADDR 0x0c0c0c0cU /* 12.12.12.12 */
-
-static const unsigned char NH_MARLIN_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
-static const unsigned char NH_ROUTER_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
-static const unsigned char NH_BACKEND_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
-
-static const unsigned char NH_DECOY_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x0b};
-
-static const unsigned char VXLAN_INNER_MAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x04};
 
 static void nh_backend_write(const struct backend *be)
 {
-    __u32 key = 0;
-    int fd = xdp_map_fd("backends");
-
-    if(bpf_map_update_elem(fd, &key, be, BPF_ANY) != 0) {
-        fprintf(stderr, "packet-tests: failed to seed backends[0]: %s\n", strerror(errno));
-        exit(1);
-    }
+    xdp_backend_write(NH_BACKEND_ID, be);
 }
 
 static void nh_backend_clear(void)
@@ -940,6 +1074,7 @@ static void nh_backend_clear(void)
 
     memset(&be, 0, sizeof(be));
     nh_backend_write(&be);
+    nh_vip_clear();
 }
 
 static void nh_backend_seed(__u8 mode_and_flags, __be32 addr, const unsigned char *mac, __u32 egress_ifindex, __u32 vni,
@@ -952,6 +1087,7 @@ static void nh_backend_seed(__u8 mode_and_flags, __be32 addr, const unsigned cha
     be.addr = addr;
     be.egress_ifindex = egress_ifindex;
     be.vni = vni;
+    be.id = (__u16)NH_BACKEND_ID;
 
     if(mac != NULL) {
         memcpy(be.mac, mac, ETH_ALEN);
@@ -962,6 +1098,7 @@ static void nh_backend_seed(__u8 mode_and_flags, __be32 addr, const unsigned cha
     }
 
     nh_backend_write(&be);
+    nh_vip_seed(VIP_HASH_5TUPLE);
 }
 
 static void nh_build_frame(void)
@@ -1212,7 +1349,7 @@ static void vxlan_check_frame(const unsigned char *expect_dst, const unsigned ch
     CHECK_MEM(pb_arena + ETH_HLEN, out_buf + MARLIN_OVERHEAD_VXLAN + ETH_HLEN, pb_len - ETH_HLEN);
 }
 
-MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback)
+MARLIN_TEST(fib_no_neigh_onlink_ingress_is_neigh_fallback)
 {
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK);
     __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
@@ -1235,7 +1372,7 @@ MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_is_neigh_fallback)
     fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
 }
 
-MARLIN_TEST(pending_phase2b_no_neigh_onlink_other_egress_is_drop)
+MARLIN_TEST(fib_no_neigh_onlink_other_egress_is_drop)
 {
     /*
      * docs/design/24-testing.md:63-64 -- on-link but FIB returns another
@@ -1262,7 +1399,7 @@ MARLIN_TEST(pending_phase2b_no_neigh_onlink_other_egress_is_drop)
     fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
 }
 
-MARLIN_TEST(pending_phase2b_no_neigh_gatewayed_ingress_is_drop)
+MARLIN_TEST(fib_no_neigh_gatewayed_ingress_is_drop)
 {
     __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_NEIGH_FALLBACK);
@@ -1287,7 +1424,7 @@ MARLIN_TEST(pending_phase2b_no_neigh_gatewayed_ingress_is_drop)
     fib_route_del(FIB_ADDR_GATEWAYED);
 }
 
-MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_zero_mac_is_drop)
+MARLIN_TEST(fib_no_neigh_onlink_ingress_zero_mac_is_drop)
 {
     /*
      * docs/design/24-testing.md:66-67 -- the on-link ingress case again
@@ -1314,7 +1451,7 @@ MARLIN_TEST(pending_phase2b_no_neigh_onlink_ingress_zero_mac_is_drop)
     fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
 }
 
-MARLIN_TEST(pending_phase2b_no_neigh_under_ipip_is_drop)
+MARLIN_TEST(fib_no_neigh_under_ipip_is_drop)
 {
     __u64 no_neigh_before = xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH);
     struct xdp_run_result result;
@@ -1340,7 +1477,7 @@ MARLIN_TEST(pending_phase2b_no_neigh_under_ipip_is_drop)
     fib_neigh_del(FIB_ADDR_BACKEND_A, FIB_DEV_INGRESS);
 }
 
-MARLIN_TEST(pending_phase2b_fib_fallback_resolves_backend_not_vip)
+MARLIN_TEST(fib_fallback_resolves_backend_not_vip)
 {
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
     struct xdp_run_result result;
@@ -1366,7 +1503,7 @@ MARLIN_TEST(pending_phase2b_fib_fallback_resolves_backend_not_vip)
     fib_route_del(V4_DST);
 }
 
-MARLIN_TEST(pending_phase2b_fib_flag_beats_resolved_mac)
+MARLIN_TEST(fib_flag_beats_resolved_mac)
 {
     __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
     struct xdp_run_result result;
@@ -1397,7 +1534,7 @@ MARLIN_TEST(pending_phase2b_fib_flag_beats_resolved_mac)
     fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
 }
 
-MARLIN_TEST(pending_phase2b_l2dsr_refuses_gatewayed_ipip_forwards)
+MARLIN_TEST(fib_l2dsr_refuses_gatewayed_ipip_forwards)
 {
     __u64 gatewayed_before;
     struct xdp_run_result result;
@@ -1435,7 +1572,7 @@ MARLIN_TEST(pending_phase2b_l2dsr_refuses_gatewayed_ipip_forwards)
     fib_route_del(FIB_ADDR_GATEWAYED);
 }
 
-MARLIN_TEST(pending_phase2b_egress_mismatch_counts_verdict_unchanged)
+MARLIN_TEST(fib_egress_mismatch_counts_verdict_unchanged)
 {
     __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
     struct xdp_run_result result;
@@ -1460,7 +1597,7 @@ MARLIN_TEST(pending_phase2b_egress_mismatch_counts_verdict_unchanged)
     fib_neigh_del(FIB_ADDR_BACKEND_B, FIB_DEV_EGRESS);
 }
 
-MARLIN_TEST(pending_phase2b_egress_mismatch_plus_no_tx_port_is_drop)
+MARLIN_TEST(fib_egress_mismatch_plus_no_tx_port_is_drop)
 {
     __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
     __u64 no_tx_port_before = xdp_drop_stats_total(MARLIN_DROP_NO_TX_PORT);
@@ -1610,7 +1747,7 @@ MARLIN_TEST(fib_ingress_forwarding_disabled_is_drop)
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_l2dsr_stored_mac_is_tx_on_backend_mac)
+MARLIN_TEST(l2dsr_stored_mac_is_tx_on_backend_mac)
 {
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
     __u64 mismatch_before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
@@ -1630,7 +1767,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_stored_mac_is_tx_on_backend_mac)
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_l2dsr_egress_mismatch_counts_verdict_unchanged)
+MARLIN_TEST(l2dsr_egress_mismatch_counts_verdict_unchanged)
 {
     __u64 before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
     struct xdp_run_result result;
@@ -1647,7 +1784,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_egress_mismatch_counts_verdict_unchanged)
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_l2dsr_egress_match_does_not_count)
+MARLIN_TEST(l2dsr_egress_match_does_not_count)
 {
     __u64 before = xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH);
     struct xdp_run_result result;
@@ -1664,7 +1801,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_egress_match_does_not_count)
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_l2dsr_zero_mac_zero_addr_is_backend_unresolved)
+MARLIN_TEST(l2dsr_zero_mac_zero_addr_is_backend_unresolved)
 {
     __u64 unresolved_before = xdp_drop_stats_total(MARLIN_DROP_BACKEND_UNRESOLVED);
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
@@ -1683,7 +1820,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_zero_mac_zero_addr_is_backend_unresolved)
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_l2dsr_zero_mac_resolvable_addr_counts_mac_fallback)
+MARLIN_TEST(l2dsr_zero_mac_resolvable_addr_counts_mac_fallback)
 {
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
     __u64 fwd_disabled_before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
@@ -1702,7 +1839,7 @@ MARLIN_TEST(nexthop_interim_l2dsr_zero_mac_resolvable_addr_counts_mac_fallback)
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_l2dsr_fib_flag_does_not_use_stored_mac)
+MARLIN_TEST(l2dsr_fib_flag_does_not_use_stored_mac)
 {
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
     __u64 fwd_disabled_before = xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED);
@@ -1916,14 +2053,11 @@ MARLIN_TEST(gue_encap_entropy_source_port_differs_for_different_inner_ports)
 MARLIN_TEST(vxlan_encap_zero_lookup_writes_outer_and_inner_ethernet_headers)
 {
     /*
-     * Formerly nexthop_interim_encap_vxlan_leaves_ethernet_addresses_alone:
-     * before vxlan.c existed, MARLIN_MODE_VXLAN fell through main.c's switch
-     * untouched and nexthop.c's early return (nexthop.c:179-181) skipped the
-     * swap, so the frame passed through byte-for-byte unchanged. Now vxlan.c
-     * runs first and builds the 50-byte-larger frame itself -- from the same
-     * saved addresses the swap would have used
-     * (docs/design/14-forwarding-modes.md SS7.4), so the outer header ends
-     * up identical to what a swap-then-relocate would have produced.
+     * nexthop.c:179-181 returns before the Ethernet swap for VXLAN, so the
+     * outer addresses here are the ones vxlan.c wrote, not swapped ones. It
+     * builds them from the same saved addresses the swap would have used
+     * (docs/design/14-forwarding-modes.md SS7.4), which is why the expected
+     * outer header below is still ingress-destination-then-ingress-source.
      */
     struct xdp_run_result result;
 
@@ -1940,7 +2074,7 @@ MARLIN_TEST(vxlan_encap_zero_lookup_writes_outer_and_inner_ethernet_headers)
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_encap_fib_flag_beats_the_vxlan_no_swap_test)
+MARLIN_TEST(encap_fib_flag_beats_the_vxlan_no_swap)
 {
     /*
      * The FIB path is unaffected by vxlan.c's exception
@@ -2078,22 +2212,6 @@ MARLIN_TEST(vxlan_encap_entropy_source_port_differs_for_different_inner_ports)
     nh_backend_clear();
 }
 
-MARLIN_TEST(nexthop_interim_gate_closed_leaves_every_other_case_alone)
-{
-    struct xdp_run_result result;
-
-    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
-    nh_backend_clear();
-    nh_build_frame();
-
-    result = run_current_packet();
-    CHECK_EQ(0, result.err);
-    CHECK_XDP(XDP_PASS, result.retval);
-    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
-}
-
-/* ---- end interim nexthop.c coverage ------------------------------------- */
-
 MARLIN_TEST(fib_cases_leave_no_route_or_neigh_state)
 {
     __u64 unspec_before = xdp_drop_stats_total(MARLIN_DROP_FIB_UNSPEC);
@@ -2116,6 +2234,774 @@ MARLIN_TEST(fib_cases_leave_no_route_or_neigh_state)
     CHECK_EQ(no_neigh_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH));
 
     nh_backend_clear();
+}
+
+/* ---- VIP admission, backend selection and QUIC steering ---------------- */
+
+#define QUIC_VIP_NUM  3U
+#define QUIC_VIP_PORT 443U
+#define QUIC_CID_LEN  8U
+
+/* Short header: MARLIN_QUIC_LONG_HEADER clear, fixed bit set (RFC 9000 SS17.3). */
+#define QUIC_SHORT_FORM ((__u8)0x40)
+
+/*
+ * Distinct from every fixture backends[] index, so a counter keyed on the map
+ * index cannot pass for one keyed on backend.id.
+ */
+#define BAL_ABI_BACKEND_ID 7U
+
+/*
+ * marlin_siphash() cannot be reused here: siphash.h pulls in the real
+ * <bpf/bpf_helpers.h>, which cannot coexist with the userspace <bpf/bpf.h>
+ * that maps.h and fib.h need, and this tier has no stubs/bpf shadow to fall
+ * back on. Same constraint, and same remedy, as test_ipv4_csum() above.
+ * siphash_matches_published_vectors below is what makes the transcription
+ * trustworthy; without it every QUIC assertion is asserting against itself.
+ */
+static __u64 sip_le64(const __u8 *buf)
+{
+    return (__u64)buf[0] | ((__u64)buf[1] << 8) | ((__u64)buf[2] << 16) | ((__u64)buf[3] << 24) | ((__u64)buf[4] << 32) |
+           ((__u64)buf[5] << 40) | ((__u64)buf[6] << 48) | ((__u64)buf[7] << 56);
+}
+
+#define SIP_ROTL(x, b) (((x) << (b)) | ((x) >> (64 - (b))))
+
+#define SIP_ROUND(v0, v1, v2, v3)  \
+    do {                           \
+        (v0) += (v1);              \
+        (v1) = SIP_ROTL((v1), 13); \
+        (v1) ^= (v0);              \
+        (v0) = SIP_ROTL((v0), 32); \
+        (v2) += (v3);              \
+        (v3) = SIP_ROTL((v3), 16); \
+        (v3) ^= (v2);              \
+        (v0) += (v3);              \
+        (v3) = SIP_ROTL((v3), 21); \
+        (v3) ^= (v0);              \
+        (v2) += (v1);              \
+        (v1) = SIP_ROTL((v1), 17); \
+        (v1) ^= (v2);              \
+        (v2) = SIP_ROTL((v2), 32); \
+    } while(0)
+
+/* Whole 8-byte blocks only, matching marlin_siphash()'s length contract. */
+static __u64 sip_hash64(const void *data, __u32 len, const __u8 key[16])
+{
+    const __u8 *msg = (const __u8 *)data;
+    __u64 v0, v1, v2, v3;
+    __u64 k0, k1, word, tail;
+    __u32 i;
+
+    k0 = sip_le64(key);
+    k1 = sip_le64(key + 8);
+
+    v0 = k0 ^ 0x736f6d6570736575ULL;
+    v1 = k1 ^ 0x646f72616e646f6dULL;
+    v2 = k0 ^ 0x6c7967656e657261ULL;
+    v3 = k1 ^ 0x7465646279746573ULL;
+
+    for(i = 0; i < len / 8; i++) {
+        word = sip_le64(msg + i * 8);
+
+        v3 ^= word;
+        SIP_ROUND(v0, v1, v2, v3);
+        SIP_ROUND(v0, v1, v2, v3);
+        v0 ^= word;
+    }
+
+    tail = (__u64)len << 56;
+
+    v3 ^= tail;
+    SIP_ROUND(v0, v1, v2, v3);
+    SIP_ROUND(v0, v1, v2, v3);
+    v0 ^= tail;
+
+    v2 ^= 0xff;
+    SIP_ROUND(v0, v1, v2, v3);
+    SIP_ROUND(v0, v1, v2, v3);
+    SIP_ROUND(v0, v1, v2, v3);
+    SIP_ROUND(v0, v1, v2, v3);
+
+    return v0 ^ v1 ^ v2 ^ v3;
+}
+
+MARLIN_TEST(siphash_matches_published_vectors)
+{
+    __u8 key[16];
+    __u8 in[24];
+    int i;
+
+    for(i = 0; i < 16; i++) {
+        key[i] = (__u8)i;
+    }
+
+    for(i = 0; i < 24; i++) {
+        in[i] = (__u8)i;
+    }
+
+    CHECK_EQ(0x726fdb47dd0e0e31ULL, sip_hash64(NULL, 0, key));
+    CHECK_EQ(0x93f5f5799a932462ULL, sip_hash64(in, 8, key));
+    CHECK_EQ(0x3f2acc7f57c29bdbULL, sip_hash64(in, 16, key));
+
+    /* 24 bytes is sizeof(struct marlin_quic_input), the length forged below. */
+    CHECK_EQ(0xb8ad50c6f649af94ULL, sip_hash64(in, 24, key));
+}
+
+/*
+ * config is process-global and outlives a case (seed_acl_cfg, seed_encap_cfg
+ * above). None of the cases below turn on the ACL or the rate limiter, so they
+ * must clear what an earlier case enabled rather than inherit it.
+ */
+static void bal_setup(void)
+{
+    struct marlin_config cfg;
+
+    memset(&cfg, 0, sizeof(cfg));
+    xdp_seed_config(&cfg);
+    xdp_vip_clear();
+}
+
+/*
+ * The VIP nh_build_frame()'s frame lands on, seeded one element at a time
+ * rather than through nh_backend_seed(): each case below varies exactly one of
+ * the VIP flags, the forwarding-table contents or the backend entry, and needs
+ * the rest held fixed.
+ */
+static void bal_vip_seed(__u32 vip_num, __u16 port_host, __u32 flags, __u32 fwd_id)
+{
+    vip_seed4(V4_DST, port_host, IPPROTO_TCP, vip_num, flags);
+    xdp_fwd_fill(vip_num, fwd_id);
+}
+
+static void bal_vip_clear(__u32 vip_num, __u16 port_host)
+{
+    struct vip_key key;
+
+    vip_key4(&key, V4_DST, port_host, IPPROTO_TCP);
+    xdp_vip_del(&key);
+    xdp_fwd_clear(vip_num);
+}
+
+static void bal_build_frame_sport(__u16 sport_host)
+{
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(sport_host, 80);
+}
+
+/*
+ * Sweeps the source port against a forwarding block striped between two
+ * backends and reports whether the emitted destination MAC ever changed: 1 if
+ * the source port can move the selection, 0 if it never did, -1 if a packet
+ * did not forward at all. Which row any one packet lands on stays unknown,
+ * which is the point -- no hash is recomputed here.
+ */
+static int bal_sport_moves_selection(__u16 count)
+{
+    unsigned char first[ETH_ALEN] = {0};
+    struct xdp_run_result result;
+    __u16 i;
+
+    for(i = 0; i < count; i++) {
+        bal_build_frame_sport((__u16)(40000U + i));
+        result = run_current_packet();
+
+        if(result.err != 0 || result.retval != XDP_TX) {
+            return -1;
+        }
+
+        if(i == 0) {
+            memcpy(first, out_buf, ETH_ALEN);
+        } else if(memcmp(first, out_buf, ETH_ALEN) != 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+MARLIN_TEST(vip_miss_is_pass_and_counted)
+{
+    __u64 before;
+    struct xdp_run_result result;
+
+    bal_setup();
+    before = xdp_drop_stats_total(MARLIN_PASS_VIP_MISS);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_PASS, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_PASS_VIP_MISS));
+}
+
+MARLIN_TEST(port_agnostic_vip_matches_any_dport)
+{
+    struct xdp_run_result result;
+
+    bal_setup();
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    bal_vip_seed(NH_VIP_NUM, 0, VIP_HASH_5TUPLE, NH_BACKEND_ID);
+    nh_build_frame(); /* dport 80, which no vip_map key names */
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+
+    bal_vip_clear(NH_VIP_NUM, 0);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
+MARLIN_TEST(exact_port_vip_wins_over_port_agnostic)
+{
+    struct stats exact_before, any_before;
+    struct xdp_run_result result;
+
+    bal_setup();
+    exact_before = xdp_vip_stats_total(NH_VIP_NUM);
+    any_before = xdp_vip_stats_total(ALT_VIP_NUM);
+
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    bal_vip_seed(NH_VIP_NUM, 80, VIP_HASH_5TUPLE, NH_BACKEND_ID);
+    bal_vip_seed(ALT_VIP_NUM, 0, VIP_HASH_5TUPLE, NH_BACKEND_ID);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    CHECK_EQ(exact_before.packets + 1, xdp_vip_stats_total(NH_VIP_NUM).packets);
+    CHECK_EQ(any_before.packets, xdp_vip_stats_total(ALT_VIP_NUM).packets);
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    bal_vip_clear(ALT_VIP_NUM, 0);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
+MARLIN_TEST(vip_stats_counts_the_ingress_frame_at_admission)
+{
+    struct stats before, after;
+    struct xdp_run_result result;
+
+    bal_setup();
+    before = xdp_vip_stats_total(NH_VIP_NUM);
+
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    bal_vip_seed(NH_VIP_NUM, 80, VIP_HASH_5TUPLE, NH_BACKEND_ID);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+
+    after = xdp_vip_stats_total(NH_VIP_NUM);
+    CHECK_EQ(before.packets + 1, after.packets);
+    CHECK_EQ(before.bytes + pb_len, after.bytes);
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
+MARLIN_TEST(vip_num_out_of_range_is_drop)
+{
+    __u64 before;
+    struct xdp_run_result result;
+
+    bal_setup();
+    before = xdp_drop_stats_total(MARLIN_DROP_MAP_BOUNDS);
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+
+    /*
+     * No forwarding block is seeded for it: MAX_VIPS owns none, which is the
+     * reason admission refuses the entry in the first place.
+     */
+    vip_seed4(V4_DST, 80, IPPROTO_TCP, MAX_VIPS, VIP_HASH_5TUPLE);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_MAP_BOUNDS));
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
+MARLIN_TEST(empty_fwd_slot_is_no_backend)
+{
+    __u64 before;
+    struct xdp_run_result result;
+
+    bal_setup();
+    before = xdp_drop_stats_total(MARLIN_DROP_NO_BACKEND);
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    bal_vip_seed(NH_VIP_NUM, 80, VIP_HASH_5TUPLE, 0);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_NO_BACKEND));
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
+MARLIN_TEST(out_of_range_fwd_slot_is_no_backend)
+{
+    __u64 before;
+    struct xdp_run_result result;
+
+    bal_setup();
+    before = xdp_drop_stats_total(MARLIN_DROP_NO_BACKEND);
+    bal_vip_seed(NH_VIP_NUM, 80, VIP_HASH_5TUPLE, MAX_BACKENDS);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_NO_BACKEND));
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+}
+
+MARLIN_TEST(unseeded_backend_is_backend_down)
+{
+    __u64 before;
+    struct xdp_run_result result;
+
+    bal_setup();
+    before = xdp_drop_stats_total(MARLIN_DROP_BACKEND_DOWN);
+
+    /* backends is an ARRAY, so the slot resolves; MARLIN_BE_F_STATE is what is missing. */
+    xdp_backend_clear(NH_BACKEND_ID);
+    bal_vip_seed(NH_VIP_NUM, 80, VIP_HASH_5TUPLE, NH_BACKEND_ID);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_BACKEND_DOWN));
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+}
+
+MARLIN_TEST(backend_stats_counts_a_down_backend_and_keys_on_its_abi_id)
+{
+    struct stats abi_before, index_before;
+    struct backend be;
+    struct xdp_run_result result;
+
+    bal_setup();
+    abi_before = xdp_backend_stats_total(BAL_ABI_BACKEND_ID);
+    index_before = xdp_backend_stats_total(NH_BACKEND_ID);
+
+    memset(&be, 0, sizeof(be));
+    be.flags = MARLIN_MODE_L2DSR; /* no MARLIN_BE_F_STATE */
+    be.addr = NH_BACKEND_ADDR;
+    be.id = (__u16)BAL_ABI_BACKEND_ID;
+    memcpy(be.mac, NH_BACKEND_MAC, ETH_ALEN);
+    xdp_backend_write(NH_BACKEND_ID, &be);
+
+    bal_vip_seed(NH_VIP_NUM, 80, VIP_HASH_5TUPLE, NH_BACKEND_ID);
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+
+    /* Metered on the way in, before the state check rejects the backend. */
+    CHECK_EQ(abi_before.packets + 1, xdp_backend_stats_total(BAL_ABI_BACKEND_ID).packets);
+    CHECK_EQ(index_before.packets, xdp_backend_stats_total(NH_BACKEND_ID).packets);
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
+MARLIN_TEST(five_tuple_hash_varies_with_source_port)
+{
+    bal_setup();
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    backend_seed_l2dsr(ALT_BACKEND_ID, ALT_BACKEND_MAC);
+    vip_seed4(V4_DST, 80, IPPROTO_TCP, NH_VIP_NUM, VIP_HASH_5TUPLE);
+    xdp_fwd_fill_striped(NH_VIP_NUM, NH_BACKEND_ID, ALT_BACKEND_ID);
+
+    CHECK_EQ(1, bal_sport_moves_selection(32));
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    xdp_backend_clear(NH_BACKEND_ID);
+    xdp_backend_clear(ALT_BACKEND_ID);
+}
+
+MARLIN_TEST(src_only_hash_ignores_source_port)
+{
+    bal_setup();
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    backend_seed_l2dsr(ALT_BACKEND_ID, ALT_BACKEND_MAC);
+    vip_seed4(V4_DST, 80, IPPROTO_TCP, NH_VIP_NUM, 0);
+    xdp_fwd_fill_striped(NH_VIP_NUM, NH_BACKEND_ID, ALT_BACKEND_ID);
+
+    CHECK_EQ(0, bal_sport_moves_selection(32));
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    xdp_backend_clear(NH_BACKEND_ID);
+    xdp_backend_clear(ALT_BACKEND_ID);
+}
+
+/*
+ * A first fragment, not a later one: the ports a later fragment lacks are what
+ * the exact-port VIP key is built from, so only a first fragment reaches
+ * admission carrying dport 80.
+ */
+static void bal_build_first_fragment(void)
+{
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, IP_MF, V4_SRC, V4_DST);
+    pb_ports(11111, 80);
+}
+
+MARLIN_TEST(fragment_on_five_tuple_vip_is_drop)
+{
+    __u64 before;
+    struct xdp_run_result result;
+
+    bal_setup();
+    before = xdp_drop_stats_total(MARLIN_DROP_FRAG_UNSUPPORTED);
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    bal_vip_seed(NH_VIP_NUM, 80, VIP_HASH_5TUPLE, NH_BACKEND_ID);
+    bal_build_first_fragment();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_FRAG_UNSUPPORTED));
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
+MARLIN_TEST(fragment_on_src_hash_vip_forwards)
+{
+    __u64 before;
+    struct xdp_run_result result;
+
+    bal_setup();
+    before = xdp_drop_stats_total(MARLIN_DROP_FRAG_UNSUPPORTED);
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    bal_vip_seed(NH_VIP_NUM, 80, 0, NH_BACKEND_ID);
+    bal_build_first_fragment();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(before, xdp_drop_stats_total(MARLIN_DROP_FRAG_UNSUPPORTED));
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
+/*
+ * Where the ACL verdict is applied, not whether it is computed: the verdict is
+ * taken before the VIP lookup and enforced after it, so one blocked source has
+ * three outcomes depending on what it was addressed to
+ * (docs/design/27-source-filtering.md).
+ */
+static void acl_placement_setup(__be32 blocked)
+{
+    xdp_vip_clear();
+    xdp_acl_clear("acl_allow_v4");
+    xdp_acl_clear("acl_block_v4");
+    xdp_acl_add4("acl_block_v4", 32, blocked, 1);
+    seed_acl_cfg(CFG_ACL_ENABLE, ACL_LISTS_BIT(ACL_LIST_BLOCK, ACL_FAMILY_V4));
+}
+
+static void acl_placement_teardown(void)
+{
+    struct marlin_config cfg;
+
+    udp_vip_clear();
+    xdp_acl_clear("acl_block_v4");
+
+    memset(&cfg, 0, sizeof(cfg));
+    xdp_seed_config(&cfg);
+}
+
+MARLIN_TEST(blocked_source_to_non_vip_dest_is_dropped)
+{
+    __u64 before;
+    struct xdp_run_result result;
+
+    acl_placement_setup(ACL_ADDR4(10, 60, 60, 1));
+    before = xdp_drop_stats_total(MARLIN_DROP_ACL_BLOCKED);
+
+    build_udp4(ACL_ADDR4(10, 60, 60, 1), V4_DST);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_ACL_BLOCKED));
+
+    acl_placement_teardown();
+}
+
+MARLIN_TEST(blocked_source_to_vip_without_acl_flag_is_forwarded)
+{
+    __u64 before;
+    struct xdp_run_result result;
+
+    acl_placement_setup(ACL_ADDR4(10, 60, 60, 2));
+    udp_vip_seed(0); /* the VIP opts out of the block list */
+    before = xdp_drop_stats_total(MARLIN_DROP_ACL_BLOCKED);
+
+    build_udp4(ACL_ADDR4(10, 60, 60, 2), V4_DST);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    CHECK_EQ(before, xdp_drop_stats_total(MARLIN_DROP_ACL_BLOCKED));
+
+    acl_placement_teardown();
+}
+
+MARLIN_TEST(blocked_source_to_vip_with_acl_flag_is_dropped)
+{
+    __u64 before;
+    struct xdp_run_result result;
+
+    acl_placement_setup(ACL_ADDR4(10, 60, 60, 3));
+    udp_vip_seed(VIP_ACL);
+    before = xdp_drop_stats_total(MARLIN_DROP_ACL_BLOCKED);
+
+    build_udp4(ACL_ADDR4(10, 60, 60, 3), V4_DST);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_ACL_BLOCKED));
+
+    acl_placement_teardown();
+}
+
+static void quic_vip_seed(__u32 cid_len, __u32 extra_flags)
+{
+    bal_setup();
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    backend_seed_l2dsr(ALT_BACKEND_ID, ALT_BACKEND_MAC);
+    vip_seed4(V4_DST, QUIC_VIP_PORT, IPPROTO_UDP, QUIC_VIP_NUM,
+              VIP_HASH_5TUPLE | extra_flags | ((cid_len << VIP_QUIC_CID_LEN_SHIFT) & VIP_QUIC_CID_LEN_MASK));
+
+    /*
+     * The hash path answers with NH_BACKEND_ID for every row, so a packet that
+     * comes out on ALT_BACKEND_MAC can only have been steered.
+     */
+    xdp_fwd_fill(QUIC_VIP_NUM, NH_BACKEND_ID);
+}
+
+static void quic_vip_clear(void)
+{
+    struct vip_key key;
+
+    vip_key4(&key, V4_DST, QUIC_VIP_PORT, IPPROTO_UDP);
+    xdp_vip_del(&key);
+    xdp_fwd_clear(QUIC_VIP_NUM);
+    xdp_backend_clear(NH_BACKEND_ID);
+    xdp_backend_clear(ALT_BACKEND_ID);
+}
+
+/*
+ * Reproduces the decoder's arithmetic, not its struct layout: the hash input is
+ * struct marlin_quic_input straight from proto.h, so a field moving there
+ * breaks this as loudly as it breaks balancer.c.
+ */
+static void quic_forge_cid(__u8 *cid, __u32 cid_len, __u32 backend_id)
+{
+    struct marlin_quic_input in;
+    struct vip_meta meta;
+    __u32 i, ent_len, obfuscated;
+    __u64 mask;
+
+    ent_len = cid_len - MARLIN_QUIC_CID_ENTROPY_OFF;
+
+    for(i = 0; i < ent_len; i++) {
+        cid[MARLIN_QUIC_CID_ENTROPY_OFF + i] = (__u8)(0xa0U + i);
+    }
+
+    memset(&in, 0, sizeof(in));
+    in.domain = MARLIN_QUIC_SIPHASH_DOMAIN;
+    memcpy(in.entropy, cid + MARLIN_QUIC_CID_ENTROPY_OFF, ent_len);
+
+    vip_meta_init(&meta, QUIC_VIP_NUM, 0);
+    mask = sip_hash64(&in, sizeof(in), meta.hash_key);
+
+    obfuscated = backend_id ^ (__u32)(mask & 0xffffU);
+
+    cid[0] = (__u8)((mask >> 16) & MARLIN_QUIC_CID_CHECK_MASK);
+    cid[1] = (__u8)((obfuscated >> 8) & 0xffU);
+    cid[2] = (__u8)(obfuscated & 0xffU);
+}
+
+/*
+ * pb_udp rather than pb_ports: the decoder reads the connection ID at
+ * l4_off + MARLIN_UDP_HLEN + 1, so the full eight-byte UDP header has to be on
+ * the wire for those offsets to line up.
+ */
+static void quic_build_frame(__u8 form_byte, const __u8 *cid, __u32 cid_len)
+{
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_UDP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_udp(33333, (__u16)QUIC_VIP_PORT, (__u16)(MARLIN_UDP_HLEN + 1 + cid_len));
+    pb_quic_cid(form_byte, cid, cid_len);
+}
+
+MARLIN_TEST(quic_valid_cid_routes_to_encoded_backend)
+{
+    __u64 routed_before;
+    __u8 cid[QUIC_CID_LEN];
+    struct xdp_run_result result;
+
+    quic_vip_seed(QUIC_CID_LEN, VIP_QUIC);
+    routed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED);
+
+    quic_forge_cid(cid, QUIC_CID_LEN, ALT_BACKEND_ID);
+    quic_build_frame(QUIC_SHORT_FORM, cid, QUIC_CID_LEN);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(ALT_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(routed_before + 1, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
+
+    quic_vip_clear();
+}
+
+MARLIN_TEST(quic_bad_check_falls_back_to_hash)
+{
+    __u64 failed_before, routed_before;
+    __u8 cid[QUIC_CID_LEN];
+    struct xdp_run_result result;
+
+    quic_vip_seed(QUIC_CID_LEN, VIP_QUIC);
+    failed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
+    routed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED);
+
+    quic_forge_cid(cid, QUIC_CID_LEN, ALT_BACKEND_ID);
+    cid[0] ^= 0x01; /* one check bit; the generation bits stay clear */
+    quic_build_frame(QUIC_SHORT_FORM, cid, QUIC_CID_LEN);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(failed_before + 1, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED));
+    CHECK_EQ(routed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
+
+    quic_vip_clear();
+}
+
+MARLIN_TEST(quic_nonzero_generation_bits_fall_back_to_hash)
+{
+    __u64 failed_before, routed_before;
+    __u8 cid[QUIC_CID_LEN];
+    struct xdp_run_result result;
+
+    quic_vip_seed(QUIC_CID_LEN, VIP_QUIC);
+    failed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
+    routed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED);
+
+    quic_forge_cid(cid, QUIC_CID_LEN, ALT_BACKEND_ID);
+    cid[0] |= MARLIN_QUIC_CID_GEN_MASK; /* an ID this instance did not issue */
+    quic_build_frame(QUIC_SHORT_FORM, cid, QUIC_CID_LEN);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(failed_before + 1, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED));
+    CHECK_EQ(routed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
+
+    quic_vip_clear();
+}
+
+MARLIN_TEST(quic_long_header_is_not_steered)
+{
+    __u64 failed_before, routed_before;
+    __u8 cid[QUIC_CID_LEN];
+    struct xdp_run_result result;
+
+    quic_vip_seed(QUIC_CID_LEN, VIP_QUIC);
+    failed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
+    routed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED);
+
+    quic_forge_cid(cid, QUIC_CID_LEN, ALT_BACKEND_ID);
+    quic_build_frame((__u8)(QUIC_SHORT_FORM | MARLIN_QUIC_LONG_HEADER), cid, QUIC_CID_LEN);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+
+    /* The decoder never ran, so neither of its counters moved. */
+    CHECK_EQ(failed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED));
+    CHECK_EQ(routed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
+
+    quic_vip_clear();
+}
+
+MARLIN_TEST(quic_without_vip_quic_flag_is_not_steered)
+{
+    __u64 failed_before, routed_before;
+    __u8 cid[QUIC_CID_LEN];
+    struct xdp_run_result result;
+
+    quic_vip_seed(QUIC_CID_LEN, 0);
+    failed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
+    routed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED);
+
+    quic_forge_cid(cid, QUIC_CID_LEN, ALT_BACKEND_ID);
+    quic_build_frame(QUIC_SHORT_FORM, cid, QUIC_CID_LEN);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+    CHECK_EQ(failed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED));
+    CHECK_EQ(routed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
+
+    quic_vip_clear();
+}
+
+MARLIN_TEST(quic_cid_len_out_of_range_falls_back_to_hash)
+{
+    __u64 failed_before, routed_before;
+    __u8 cid[QUIC_CID_LEN];
+    struct xdp_run_result result;
+
+    quic_vip_seed(MARLIN_QUIC_CID_MIN - 1, VIP_QUIC);
+    failed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
+    routed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED);
+
+    quic_forge_cid(cid, QUIC_CID_LEN, ALT_BACKEND_ID);
+    quic_build_frame(QUIC_SHORT_FORM, cid, QUIC_CID_LEN);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+
+    /* Refused before the format byte is read, so nothing is counted. */
+    CHECK_EQ(failed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED));
+    CHECK_EQ(routed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
+
+    quic_vip_clear();
 }
 
 int main(int argc, char **argv)
