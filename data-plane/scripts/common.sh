@@ -787,6 +787,13 @@ verify_capture() {
 		[[ -s ${pcap} ]] && break
 		sleep 0.1
 	done
+	# The pcap header only proves the file is open, not that the capture
+	# socket is already receiving: promiscuous mode on a veth takes a moment
+	# to take effect after pcap_activate(), and this rig's whole SYN-to-FIN
+	# exchange is a loopback path that completes in single-digit milliseconds
+	# -- fast enough to run entirely inside that gap and leave the pcap with
+	# nothing but its own header.
+	sleep 0.3
 
 	test_http_get >/dev/null 2>&1 || rc=$?
 	sleep 0.2 # let tcpdump flush the last packet of the run

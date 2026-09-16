@@ -380,7 +380,7 @@ up() {
 	# (docs/design/14-forwarding-modes.md §7.4). dstport must be explicit --
 	# the vxlan netdev's own default is 8472, not the IANA 4789 Marlin uses.
 	ip netns exec mbe4 ip link add vxlan-m type vxlan \
-		id "${VNI}" dstport "${VXLAN_PORT}" local "${BE4_IP}" remote any
+		id "${VNI}" dstport "${VXLAN_PORT}" local "${BE4_IP}"
 	ip netns exec mbe4 ip link set vxlan-m address "${VXLAN_INNER_MAC}"
 	ip netns exec mbe4 ip link set vxlan-m up
 

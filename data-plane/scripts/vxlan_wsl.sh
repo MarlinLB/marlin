@@ -28,7 +28,7 @@
 #                        │                      │      ns mvxbe
 #                        │ mvxrt-b ─────────────┼────── mvxbe0 198.19.9.22/24
 #                        │ 198.19.9.1/24        │       mvxbr0 vxlan id 100 dstport 4789
-#                        └──────────────────────┘              local .22 remote any
+#                        └──────────────────────┘              local .22
 #                                                        lo     198.18.4.1/32
 #
 # Point-to-point veths, no bridge, and a real router namespace. VXLAN writes
@@ -274,10 +274,11 @@ up() {
 	# second receive device to add.
 	#
 	# dstport must be explicit: the vxlan netdev's own default is 8472, not the
-	# IANA 4789 Marlin uses, and remote/local pinned so a config.tunnel_src
-	# that does not match fails the tunnel lookup here, visibly.
+	# IANA 4789 Marlin uses, and a device left at that default silently never
+	# matches. `remote` takes an IP_ADDRESS, not `any` -- unlike ipip/sit, a
+	# vxlan device omits it outright when there is no default FDB entry to give.
 	nsx "${NS_BE}" ip link add "${BE_VXDEV}" type vxlan \
-		id "${VNI}" dstport "${port}" local "${BE_IP}" remote any
+		id "${VNI}" dstport "${port}" local "${BE_IP}"
 	nsx "${NS_BE}" ip link set "${BE_VXDEV}" address "${INNER_MAC}"
 	nsx "${NS_BE}" ip link set "${BE_VXDEV}" up
 

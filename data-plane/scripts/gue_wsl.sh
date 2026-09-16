@@ -282,9 +282,9 @@ up() {
 	# device to match -- GUE removes the second listener, not the second device
 	# (docs/design/14-forwarding-modes.md §7.3).
 	#
-	# local/remote are pinned rather than `remote any` so a config.tunnel_src
-	# that does not match fails the tunnel lookup here, visibly, instead of
-	# being decapsulated anyway by a wildcard device.
+	# local/remote are both pinned so a config.tunnel_src that does not match
+	# fails the tunnel lookup here, visibly, instead of being decapsulated
+	# anyway by a wildcard device.
 	nsx "${NS_BE}" ip link add "${BE_RX4}" type ipip \
 		local "${BE_IP}" remote "${MARLIN_IP}" ttl 64
 	nsx "${NS_BE}" ip link set "${BE_RX4}" up
