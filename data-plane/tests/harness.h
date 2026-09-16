@@ -2,9 +2,10 @@
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
  * Minimal test runner shared by the native (parser_test.c) and
- * bpf_prog_test_run (tests/packet/xdp_test.c) tiers. Each includes this
- * header into its own translation unit, so the storage below is file-static
- * rather than extern -- there is no sharing across TUs, only duplication.
+ * bpf_prog_test_run (tests/packet/xdp_*.c) tiers. Declarations only -- the
+ * registry and the runner are defined once, in tests/support/harness.c, and
+ * linked into both tiers' binaries (data-plane/Makefile), so a case
+ * registered from any translation unit is one every tier's runner sees.
  */
 
 #pragma once
@@ -27,10 +28,10 @@ struct marlin_test_case {
     marlin_test_fn fn;
 };
 
-static struct marlin_test_case marlin_tests[MARLIN_TEST_MAX];
-static int marlin_test_count;
-static int marlin_case_failures;
-static const char *marlin_case_skip_reason;
+extern struct marlin_test_case marlin_tests[MARLIN_TEST_MAX];
+extern int marlin_test_count;
+extern int marlin_case_failures;
+extern const char *marlin_case_skip_reason;
 
 /*
  * enum marlin_ret -> name, so a failure reads "expected MARLIN_DROP_..., got
@@ -40,78 +41,17 @@ static const char *marlin_case_skip_reason;
  * which never sees marlin_parse's raw rc -- only the xdp_action it maps to
  * and the drop_stats it increments.
  */
-static __attribute__((unused)) const char *marlin_ret_name(int ret)
-{
-    switch(ret) {
-        case MARLIN_OK:
-            return "MARLIN_OK";
-        case MARLIN_OK_TX:
-            return "MARLIN_OK_TX";
-        case MARLIN_OK_REDIRECT:
-            return "MARLIN_OK_REDIRECT";
-        case MARLIN_PASS_VIP_MISS:
-            return "MARLIN_PASS_VIP_MISS";
-        case MARLIN_PASS_ICMP_ECHO:
-            return "MARLIN_PASS_ICMP_ECHO";
-        case MARLIN_DROP_PARSE_ERROR:
-            return "MARLIN_DROP_PARSE_ERROR";
-        case MARLIN_DROP_UNSUPPORTED_PROTO:
-            return "MARLIN_DROP_UNSUPPORTED_PROTO";
-        case MARLIN_DROP_EXT_HDR_LIMIT:
-            return "MARLIN_DROP_EXT_HDR_LIMIT";
-        case MARLIN_DROP_ICMP_UNPARSEABLE:
-            return "MARLIN_DROP_ICMP_UNPARSEABLE";
-        case MARLIN_DROP_FRAG_UNSUPPORTED:
-            return "MARLIN_DROP_FRAG_UNSUPPORTED";
-        case MARLIN_PASS_NOT_FORWARDED:
-            return "MARLIN_PASS_NOT_FORWARDED";
-        case MARLIN_DROP_ACL_BLOCKED:
-            return "MARLIN_DROP_ACL_BLOCKED";
-        case MARLIN_DROP_ADJUST_HEAD:
-            return "MARLIN_DROP_ADJUST_HEAD";
-        case MARLIN_DROP_ENCAP_LENGTH:
-            return "MARLIN_DROP_ENCAP_LENGTH";
-        case MARLIN_DROP_FRAME_TOO_BIG:
-            return "MARLIN_DROP_FRAME_TOO_BIG";
-        case MARLIN_ABORT_NULLREF:
-            return "MARLIN_ABORT_NULLREF";
-        default:
-            return "<unknown enum marlin_ret>";
-    }
-}
+const char *marlin_ret_name(int ret);
 
 /*
  * enum xdp_action -> name, for the bpf_prog_test_run tier's verdict
- * assertions (tests/packet/xdp_test.c). linux/bpf.h defines the enum;
- * nothing here depends on marlin.h. Unused in the native tier, which asserts
- * enum marlin_ret directly and never runs a program through the kernel.
+ * assertions (tests/packet/xdp_*.c). linux/bpf.h defines the enum; nothing
+ * here depends on marlin.h. Unused in the native tier, which asserts enum
+ * marlin_ret directly and never runs a program through the kernel.
  */
-static __attribute__((unused)) const char *xdp_action_name(int action)
-{
-    switch(action) {
-        case XDP_ABORTED:
-            return "XDP_ABORTED";
-        case XDP_DROP:
-            return "XDP_DROP";
-        case XDP_PASS:
-            return "XDP_PASS";
-        case XDP_TX:
-            return "XDP_TX";
-        case XDP_REDIRECT:
-            return "XDP_REDIRECT";
-        default:
-            return "<unknown xdp_action>";
-    }
-}
+const char *xdp_action_name(int action);
 
-static void marlin_test_register(const char *name, marlin_test_fn fn)
-{
-    if(marlin_test_count < MARLIN_TEST_MAX) {
-        marlin_tests[marlin_test_count].name = name;
-        marlin_tests[marlin_test_count].fn = fn;
-        marlin_test_count++;
-    }
-}
+void marlin_test_register(const char *name, marlin_test_fn fn);
 
 /*
  * Registers `test_name` via a constructor, so listing every case in a table
@@ -193,40 +133,4 @@ static void marlin_test_register(const char *name, marlin_test_fn fn)
         }                                                                                                            \
     } while(0)
 
-static int marlin_tests_main(void)
-{
-    int failed = 0;
-    int skipped = 0;
-    int i;
-
-    for(i = 0; i < marlin_test_count; i++) {
-        marlin_case_failures = 0;
-        marlin_case_skip_reason = NULL;
-        marlin_tests[i].fn();
-
-        if(marlin_case_skip_reason != NULL) {
-            /*
-             * Checked ahead of failures: MARLIN_SKIP returns before any
-             * CHECK_* in the case body can run, so a skip is never also a
-             * failure -- reporting both would double-count the same case.
-             */
-            printf("skip %s (%s)\n", marlin_tests[i].name, marlin_case_skip_reason);
-            skipped++;
-        } else if(marlin_case_failures == 0) {
-            printf("ok   %s\n", marlin_tests[i].name);
-        } else {
-            printf("FAIL %s (%d check%s failed)\n", marlin_tests[i].name, marlin_case_failures,
-                   marlin_case_failures == 1 ? "" : "s");
-            failed++;
-        }
-    }
-
-    if(skipped == 0) {
-        printf("%d passed, %d failed, %d total\n", marlin_test_count - failed, failed, marlin_test_count);
-    } else {
-        printf("%d passed, %d failed, %d skipped, %d total\n", marlin_test_count - failed - skipped, failed, skipped,
-               marlin_test_count);
-    }
-
-    return failed == 0 ? 0 : 1;
-}
+int marlin_tests_main(void);

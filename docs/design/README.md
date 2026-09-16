@@ -1,8 +1,12 @@
 # Marlin — Design
 
 **Status:** design settled, pre-implementation
-**Last updated:** 2026-09-13
-**Revision:** 11 — `struct backend` gained `id` at bytes 30-31 (`08-types.md`), replacing
+**Last updated:** 2026-09-16
+**Revision:** 12 — `balancer.c`'s step-7 frame-length invariant check (`marlin_balancer_validate()`,
+`pkt_len >= ETH_HLEN` and `bpf_xdp_get_buff_len() == pkt_len`) is now part of the design,
+distinct from `marlin_frame_fits()`'s MTU check. `23-mtu.md` and `11-pipeline.md` follow the
+consequence.
+Revision 11 — `struct backend` gained `id` at bytes 30-31 (`08-types.md`), replacing
 `pad_end[2]`; `sizeof` stays 32 and `marlin_ctx` stays 104. It records the backend's own index in
 `backends`, removing the output-parameter chain selection would otherwise thread the index
 through alongside the pointer that already identifies it. `07-maps.md`, `04-calling-convention.md`,

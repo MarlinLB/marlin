@@ -37,10 +37,10 @@
  * Byte-wise little-endian load, so the digest is identical on every
  * architecture — every instance serving a VIP must compute the same row.
  */
-static __always_inline __u64 marlin_siphash_le64(const __u8 *p)
+static __always_inline __u64 marlin_siphash_le64(const __u8 *buf)
 {
-    return (__u64)p[0] | ((__u64)p[1] << 8) | ((__u64)p[2] << 16) | ((__u64)p[3] << 24) | ((__u64)p[4] << 32) | ((__u64)p[5] << 40) |
-           ((__u64)p[6] << 48) | ((__u64)p[7] << 56);
+    return (__u64)buf[0] | ((__u64)buf[1] << 8) | ((__u64)buf[2] << 16) | ((__u64)buf[3] << 24) | ((__u64)buf[4] << 32) |
+           ((__u64)buf[5] << 40) | ((__u64)buf[6] << 48) | ((__u64)buf[7] << 56);
 }
 
 /*
@@ -50,12 +50,12 @@ static __always_inline __u64 marlin_siphash_le64(const __u8 *p)
  * switch, deliberately absent here. Callers with a ragged input pack it
  * into a zero-filled buffer of a constant multiple-of-8 size first.
  */
+// NOLINTNEXTLINE(readability-function-size) -- 150 statements are eight MARLIN_SIPROUND expansions, not written code
 static __always_inline __u64 marlin_siphash_blocks(const void *data, __u32 len, const __u8 key[16])
 {
-    const __u8 *m = (const __u8 *)data;
+    const __u8 *msg = (const __u8 *)data;
     __u64 v0, v1, v2, v3;
-    __u64 k0, k1, w, b;
-    __u32 i;
+    __u64 k0, k1, word, tail;
 
     k0 = marlin_siphash_le64(key);
     k1 = marlin_siphash_le64(key + 8);
@@ -66,25 +66,25 @@ static __always_inline __u64 marlin_siphash_blocks(const void *data, __u32 len, 
     v3 = k1 ^ 0x7465646279746573ULL;
 
 #pragma clang loop unroll(full)
-    for(i = 0; i < len / 8; i++) {
-        w = marlin_siphash_le64(m + i * 8);
+    for(__u64 i = 0; i < len / 8; i++) {
+        word = marlin_siphash_le64(msg + i * 8);
 
-        v3 ^= w;
+        v3 ^= word;
         MARLIN_SIPROUND(v0, v1, v2, v3);
         MARLIN_SIPROUND(v0, v1, v2, v3);
-        v0 ^= w;
+        v0 ^= word;
     }
 
     /*
      * Tail block: with len a multiple of 8 there are no leftover bytes,
      * so it carries the length alone.
      */
-    b = (__u64)len << 56;
+    tail = (__u64)len << 56;
 
-    v3 ^= b;
+    v3 ^= tail;
     MARLIN_SIPROUND(v0, v1, v2, v3);
     MARLIN_SIPROUND(v0, v1, v2, v3);
-    v0 ^= b;
+    v0 ^= tail;
 
     v2 ^= 0xff;
     MARLIN_SIPROUND(v0, v1, v2, v3);
@@ -105,10 +105,11 @@ static __always_inline __u64 marlin_siphash_blocks(const void *data, __u32 len, 
  * above, and the BPF build carries no -Werror to turn either into a build
  * failure on its own.
  */
+// NOLINTNEXTLINE(readability-identifier-naming) -- wraps a function, keeps its name
 #define marlin_siphash(data, len, key)                                                                      \
     ({                                                                                                      \
         _Static_assert(__builtin_constant_p(len), "marlin_siphash() needs a constant len to unroll");       \
         _Static_assert((len) % 8U == 0U, "marlin_siphash() hashes whole 8-byte blocks");                    \
         _Static_assert((len) <= MARLIN_SIPHASH_MAX_LEN, "marlin_siphash() input exceeds its unroll bound"); \
         marlin_siphash_blocks((data), (len), (key));                                                        \
-    }) // NOLINT(readability-identifier-naming) -- wraps a function, keeps its name
+    })

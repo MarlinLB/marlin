@@ -131,7 +131,7 @@ MARLIN_TEST(acl_v4_allow_miss_block_hit_is_block)
     struct marlin_ctx m;
 
     /*
-     * Mirrors xdp_test.c's acl_v4_block_matched_is_drop_and_counted, but
+     * Mirrors xdp_20_acl.c's acl_v4_block_matched_is_drop_and_counted, but
      * with the allow bit also set and no allow rule seeded -- the packet
      * tier's block cases all run with the allow bit clear, so this is the
      * only case where a broken allow-lookup could accidentally suppress a

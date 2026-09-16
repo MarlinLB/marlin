@@ -37,11 +37,10 @@ struct marlin_ctx {            /* 104 bytes */
     __u16 l4_off;              /*  2 */
     __u16 pkt_len;             /*  2 — emitted length once an encap unit has run */
     __u8 acl_verdict;          /*  1 — enum marlin_acl_verdict (acl.h) */
-    __u8 pad;                  /*  1 */
+    __u8 udp_payload_len;      /*  1 */
 };
 
-_Static_assert(sizeof(struct marlin_ctx) <= 108,
-               "marlin_ctx exceeds its mctx_scratch per-CPU map-value budget"); /* maps.h; docs/design/05-budgets.md */
+_Static_assert(sizeof(struct marlin_ctx) <= 108, "marlin_ctx exceeds its mctx_scratch per-CPU map-value budget");
 
 enum marlin_ret {
     /* terminal outcomes, not counted here */

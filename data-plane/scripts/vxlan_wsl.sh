@@ -478,7 +478,7 @@ EOF
 #     the shortfall. It belongs to the packet tier or a native-driver rig.
 #   - inner EtherType distinguishing IPv4 from IPv6 on one device: this rig's
 #     client is IPv4-only. Already covered at the packet tier
-#     (tests/packet/xdp_test.c); a v6 client leg is a follow-up, not this rig.
+#     (tests/packet/xdp_45_encap.c); a v6 client leg is a follow-up, not this rig.
 verify() {
 	need_root
 	need_cmd tcpdump python3

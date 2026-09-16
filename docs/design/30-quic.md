@@ -143,27 +143,45 @@ and `docs/design/05-budgets.md`'s stated admission test for a shared field — r
 other than the one that writes it — is satisfied: the flag is written by `parser.c` and read by
 `balancer.c`.
 
+`marlin_ctx.udp_payload_len` (`__u8`, replacing what was a pad byte) is the same shape: the UDP
+datagram's declared payload length, clamped to 255, written only by `marlin_parse_quic()` and
+read only by `marlin_balancer_quic_decode()`. It exists because `data_end` bounds the *frame*,
+not the datagram — see "How the two halves divide" below — and it is written on the same path
+that sets the flag so the two can never disagree.
+
 ## How the two halves divide
 
-**Classification is `parser.c`'s.** `marlin_parse_quic()` reads the first UDP-payload byte once
-a UDP header is present and sets `MARLIN_CTX_F_QUIC` when the QUIC header-form bit
-(RFC 8999 §4.1) is clear. It never fails on its own; a packet too short to classify, or on a
-protocol other than UDP, simply carries no flag. `parser.c` reads no map and calls no `bpf_*`
-helper either way, so the property `data-plane/tests/parser_test.c`'s native tier depends on
-(`docs/design/24-testing.md`) is unaffected.
+**Classification is `parser.c`'s.** `marlin_parse_quic()` reads the full UDP header once it is
+physically present, and sets `MARLIN_CTX_F_QUIC` only when the datagram's own declared length —
+`udp->len`, not `data_end` — leaves at least one payload byte and that byte's QUIC header-form
+bit (RFC 8999 §4.1) is clear. Bounding against `data_end` alone is not enough: a datagram
+shorter than the Ethernet minimum frame is padded by the sender or NIC, and that padding sits
+inside `data_end` without being part of the datagram at all, so a header-only UDP packet
+(`udp->len == 8`) must never be classified from its trailing pad. The declared payload length is
+stashed in `marlin_ctx.udp_payload_len` (see "ABI" above) for `balancer.c` to bound its own read
+against. It never fails on its own; a packet too short to classify, on a protocol other than
+UDP, or whose declared length is malformed (shorter than the UDP header itself) simply carries no
+flag and a zeroed length. `parser.c` reads no map and calls no `bpf_*` helper either way — the
+endianness swap is a compiler builtin, not a helper call — so the property
+`data-plane/tests/parser_test.c`'s native tier depends on (`docs/design/24-testing.md`) is
+unaffected.
 
 **Steering is `balancer.c`'s**, because it reads `vip_map`, which `parser.c` has no access to:
 
 - Gate on `VIP_QUIC`, so the step follows the VIP lookup (`docs/design/11-pipeline.md`).
-- Bounds-check the connection ID against the configured length, decode per the formula above,
-  and index `backends[]` directly — bypassing `fwd_table` for the packets it steers
-  (`docs/design/12-selection.md`).
-- Fall through to the hash path on every failure: check mismatch, `backend_id == 0` or
-  `>= MAX_BACKENDS`, or a row that is down or unpopulated. **No new drop reason** — a QUIC
-  packet Marlin cannot steer is handled as any other packet is.
+- Bounds-check the connection ID against the configured length **and** against
+  `mctx.udp_payload_len` — the declared UDP datagram must contain the form byte and the whole
+  configured CID, not merely fall inside the frame that `bpf_xdp_load_bytes()` bounds against —
+  then decode per the formula above and index `backends[]` directly, bypassing `fwd_table` for
+  the packets it steers (`docs/design/12-selection.md`).
+- Fall through to the hash path on every failure: check mismatch, a declared length too short for
+  the configured CID, `backend_id == 0` or `>= MAX_BACKENDS`, or a row that is down or
+  unpopulated. **No new drop reason** — a QUIC packet Marlin cannot steer is handled as any other
+  packet is.
 - Two `MARLIN_COUNT_*` counters, `quic_cid_routed` and `quic_cid_check_failed`
-  (`docs/design/22-observability.md`). The remaining fall-through paths are uncounted, for the
-  reason that document gives.
+  (`docs/design/22-observability.md`). The remaining fall-through paths — including the declared-
+  length check above — are uncounted, for the reason that document gives: they are not a
+  connection ID that failed to verify, they are one that was never read.
 
 **Distribution is the control plane's:** `backend_id`, `hash_key` and the connection-ID length
 to each backend's QUIC server, and the rotation story (`DEPLOYMENT.md` §1.7.2).

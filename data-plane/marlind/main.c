@@ -19,6 +19,11 @@
  * There is no --detach: the attach is bpf_link-owned and held for the
  * process's lifetime, so SIGTERM is the only way to end it.
  *
+ * Single-threaded by construction: cmd_attach()'s wait is one epoll_wait
+ * loop over a signalfd and a netlink socket, not a thread pool, and no
+ * marlind source spawns a thread or forks. Nothing here needs to be
+ * reentrant or async-signal-safe beyond that.
+ *
  * Env: IFACE (required), MARLIN_OBJ, MARLIN_PIN_DIR (see load_config()).
  */
 
@@ -42,8 +47,8 @@ enum mode {
 
 static void usage(FILE *out, const char *argv0)
 {
-    fprintf(out, "usage: %s --attach|--status|--unpin\n", argv0);
-    fprintf(out, "       %s --help|--version\n", argv0);
+    (void)fprintf(out, "usage: %s --attach|--status|--unpin\n", argv0);
+    (void)fprintf(out, "       %s --help|--version\n", argv0);
 }
 
 /*
@@ -92,15 +97,11 @@ static void print_version(void)
 int main(int argc, char **argv)
 {
     static const struct option opts[] = {
-        {"attach",  no_argument, NULL, 'a'},
-        {"status",  no_argument, NULL, 's'},
-        {"unpin",   no_argument, NULL, 'u'},
-        {"help",    no_argument, NULL, 'h'},
-        {"version", no_argument, NULL, 'V'},
-        {NULL,      0,           NULL, 0  },
+        { "attach", no_argument, NULL, 'a' }, { "status", no_argument, NULL, 's' },  { "unpin", no_argument, NULL, 'u' },
+        { "help", no_argument, NULL, 'h' },   { "version", no_argument, NULL, 'V' }, { NULL, 0, NULL, 0 },
     };
     enum mode mode = MODE_NONE;
-    int c;
+    int opt;
 
     /*
      * Leading '+' stops getopt from permuting argv: there are no operands
@@ -108,8 +109,8 @@ int main(int argc, char **argv)
      * exact "was there a leftover argument" test rather than one a
      * permuted argv could dodge.
      */
-    while((c = getopt_long(argc, argv, "+hV", opts, NULL)) != -1) {
-        switch(c) {
+    while((opt = getopt_long(argc, argv, "+hV", opts, NULL)) != -1) {
+        switch(opt) {
         case 'a':
             if(mode != MODE_NONE) {
                 usage(stderr, argv[0]);

@@ -3,8 +3,6 @@
 A stateless eBPF/XDP layer-4 load balancer. The datapath is C, compiled with clang and
 attached as native-mode XDP; the control plane is a C#/.NET 10 service.
 
-**Status:** design settled, pre-implementation.
-
 ---
 
 ## What it does

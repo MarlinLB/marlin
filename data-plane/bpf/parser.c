@@ -10,6 +10,7 @@
 #include <linux/ipv6.h>
 #include <linux/in.h>
 #include <linux/icmpv6.h>
+#include <linux/udp.h>
 
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -203,13 +204,32 @@ static __always_inline int marlin_parse_ports(const void *data, const void *data
     return MARLIN_OK;
 }
 
-/*
- * Only short-header QUIC packets can migrate connections; long-header packets
- * share the ingress 4-tuple. This identifies short-header form only.
- */
-static __always_inline __u32 marlin_parse_quic(const void *data, const void *data_end, __u32 l4_off)
+static __always_inline __u32 marlin_parse_quic(const void *data, const void *data_end, __u32 l4_off, struct marlin_ctx *mctx)
 {
-    const __u8 *form = (const __u8 *)data + l4_off + MARLIN_UDP_HLEN;
+    const struct udphdr *udp = (const struct udphdr *)((const char *)data + l4_off);
+    const __u8 *form;
+    __u16 udp_len;
+
+    if((const void *)(udp + 1) > data_end) {
+        return 0;
+    }
+
+    udp_len = bpf_ntohs(udp->len);
+
+    if(udp_len < MARLIN_UDP_HLEN) {
+        /* Declared length shorter than the header itself: subtracting would underflow. */
+        mctx->udp_payload_len = 0;
+        return 0;
+    }
+
+    udp_len -= MARLIN_UDP_HLEN;
+    mctx->udp_payload_len = (udp_len > 0xff) ? 0xff : (__u8)udp_len;
+
+    if(mctx->udp_payload_len == 0) {
+        return 0;
+    }
+
+    form = (const __u8 *)udp + MARLIN_UDP_HLEN;
 
     if((const void *)(form + 1) > data_end) {
         return 0;
@@ -341,7 +361,7 @@ int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
     rc = marlin_parse_ports(data, data_end, l3.l4_off, l3.proto, &mctx->tuple.sport, &mctx->tuple.dport);
 
     if(rc == MARLIN_OK && l3.proto == IPPROTO_UDP) {
-        mctx->flags |= marlin_parse_quic(data, data_end, l3.l4_off);
+        mctx->flags |= marlin_parse_quic(data, data_end, l3.l4_off, mctx);
     }
 
     return rc;

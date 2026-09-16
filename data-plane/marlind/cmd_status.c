@@ -102,12 +102,12 @@ static void read_version(const char *pin_dir, char *out, size_t out_sz)
     char path[PATH_MAX];
     __u32 zero = 0;
     int map_fd;
-    int n;
+    int len;
 
     out[0] = '\0';
 
-    n = snprintf(path, sizeof(path), "%s/%s", pin_dir, MARLIN_VERSION_PIN);
-    if(n < 0 || (size_t)n >= sizeof(path)) {
+    len = snprintf(path, sizeof(path), "%s/%s", pin_dir, MARLIN_VERSION_PIN);
+    if(len < 0 || (size_t)len >= sizeof(path)) {
         return;
     }
 
@@ -117,7 +117,7 @@ static void read_version(const char *pin_dir, char *out, size_t out_sz)
     }
 
     if(bpf_map_lookup_elem(map_fd, &zero, &build) == 0) {
-        snprintf(out, out_sz, "%.*s", (int)sizeof(build.version), build.version);
+        (void)snprintf(out, out_sz, "%.*s", (int)sizeof(build.version), build.version);
     }
 
     close(map_fd);

@@ -103,9 +103,38 @@ static void check_bpffs_mounted(void)
  * ("large-receive-offload") -- those exist only in the CLI tool's own
  * display table, never on the wire.
  */
-static bool ethtool_feature_active(const char *iface, const char *feature, bool *found)
+
+/*
+ * ETHTOOL_GSSET_INFO round-trip: the ETH_SS_FEATURES string-set size for
+ * the interface named in ifr->ifr_name (already populated by the caller),
+ * or 0 if the kernel can't report one.
+ */
+static uint32_t ethtool_feature_count(int fd, struct ifreq *ifr)
 {
     struct ethtool_sset_info *sset;
+    uint32_t nstrings;
+
+    sset = calloc(1, sizeof(*sset) + sizeof(uint32_t));
+    if(sset == NULL) {
+        return 0;
+    }
+    sset->cmd = ETHTOOL_GSSET_INFO;
+    sset->reserved = 0;
+    sset->sset_mask = 1ULL << ETH_SS_FEATURES;
+    ifr->ifr_data = (void *)sset;
+
+    if(ioctl(fd, SIOCETHTOOL, ifr) != 0 || sset->sset_mask == 0) {
+        free(sset);
+        return 0;
+    }
+    nstrings = sset->data[0];
+    free(sset);
+
+    return nstrings;
+}
+
+static bool ethtool_feature_active(const char *iface, const char *feature, bool *found)
+{
     struct ethtool_gstrings *strings;
     struct ethtool_gfeatures *features;
     struct ifreq ifr;
@@ -113,7 +142,6 @@ static bool ethtool_feature_active(const char *iface, const char *feature, bool 
     uint32_t nblocks;
     bool active = false;
     int fd;
-    uint32_t i;
 
     *found = false;
 
@@ -122,27 +150,12 @@ static bool ethtool_feature_active(const char *iface, const char *feature, bool 
         return false;
     }
 
-    sset = calloc(1, sizeof(*sset) + sizeof(uint32_t));
-    if(sset == NULL) {
-        close(fd);
-        return false;
-    }
-    sset->cmd = ETHTOOL_GSSET_INFO;
-    sset->reserved = 0;
-    sset->sset_mask = 1ULL << ETH_SS_FEATURES;
-
     memset(&ifr, 0, sizeof(ifr));
-    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", iface);
-    ifr.ifr_data = (void *)sset;
+    /* iface was already validated by if_nametoindex() in load_config(), so
+     * truncation against IFNAMSIZ here is unreachable. */
+    (void)snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", iface);
 
-    if(ioctl(fd, SIOCETHTOOL, &ifr) != 0 || sset->sset_mask == 0) {
-        free(sset);
-        close(fd);
-        return false;
-    }
-    nstrings = sset->data[0];
-    free(sset);
-
+    nstrings = ethtool_feature_count(fd, &ifr);
     if(nstrings == 0) {
         close(fd);
         return false;
@@ -182,7 +195,7 @@ static bool ethtool_feature_active(const char *iface, const char *feature, bool 
         return false;
     }
 
-    for(i = 0; i < nstrings; i++) {
+    for(uint32_t i = 0; i < nstrings; i++) {
         const char *name = (const char *)&strings->data[(size_t)i * ETH_GSTRING_LEN];
 
         if(strncmp(name, feature, ETH_GSTRING_LEN) == 0) {
@@ -190,7 +203,7 @@ static bool ethtool_feature_active(const char *iface, const char *feature, bool 
             uint32_t bit = i % 32;
 
             *found = true;
-            active = (features->features[block].active & (1u << bit)) != 0;
+            active = (features->features[block].active & (1U << bit)) != 0;
             break;
         }
     }

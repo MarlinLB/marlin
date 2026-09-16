@@ -50,3 +50,15 @@ The check is per-instance rather than per-next-hop, so it catches the ordinary s
 case; an asymmetric-MTU fabric remains covered only by the FIB path. `max_frame == 0` disables
 it, so an instance whose control plane has not yet written `config` forwards rather than
 dropping every encapsulated packet — which is why `docs/design/20-configuration-validation.md` validates that it is set.
+
+**`balancer.c`'s frame-length check is not this one.** `marlin_balancer_validate()` runs once
+at pipeline step 7, ahead of all four modes, and is a `pkt_len` invariant check rather than an
+MTU check: `pkt_len >= ETH_HLEN`, and `bpf_xdp_get_buff_len() == pkt_len`, both failing
+`MARLIN_DROP_ENCAP_LENGTH`. `marlin_frame_fits()` remains the MTU check and keeps its own
+placement — per encapsulation unit, before `bpf_xdp_adjust_head()`, while `pkt_len` still holds
+the ingress length — unchanged by this. `bpf_xdp_get_buff_len()` is the only length that counts
+fragments, and no encapsulation unit consults it; the check is what enforces, rather than
+merely assumes, this document's claim that client-facing ingress never triggers XDP
+multi-buffer (`:8-11`). It does not replace the `pkt_len < ETH_HLEN` guards already in
+`ipip.c`, `gue.c` and `vxlan.c`: those units are also reachable from `main.c`'s interim
+pipeline and are unit-tested independently of `balancer.c`.

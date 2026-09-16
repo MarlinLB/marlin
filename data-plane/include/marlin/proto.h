@@ -102,7 +102,21 @@ _Static_assert(sizeof(struct marlin_vxlan_hdr) == 8, "VXLAN header must be 8 byt
  * RFC 8999 SS4.1: header-form bit at fixed offset. Short header (bit clear)
  * is 1-RTT, steerable by connection ID. Long header spans handshake, no steering.
  */
-#define MARLIN_QUIC_LONG_HEADER 0x80
+#define MARLIN_QUIC_LONG_HEADER     0x80
 
-#define MARLIN_QUIC_CID_MIN     7  /* 1 format byte + 2 backend_id bytes + >=4 entropy bytes */
-#define MARLIN_QUIC_CID_MAX     20 /* QUIC v1 limit, RFC 9000 SS17.2 */
+#define MARLIN_QUIC_CID_MIN         7  /* 1 format byte + 2 backend_id bytes + >=4 entropy bytes */
+#define MARLIN_QUIC_CID_MAX         20 /* QUIC v1 limit, RFC 9000 SS17.2 */
+#define MARLIN_QUIC_CID_GEN_MASK    ((__u8)0xc0)
+#define MARLIN_QUIC_CID_CHECK_MASK  ((__u8)0x3f)
+#define MARLIN_QUIC_CID_ENTROPY_OFF 3
+#define MARLIN_QUIC_CID_ENTROPY_MIN 4
+#define MARLIN_QUIC_SIPHASH_DOMAIN  ((__u8)0x51)
+
+struct marlin_quic_input { /* 24 bytes, no implicit padding */
+    __u8 domain;
+    __u8 entropy[MARLIN_QUIC_CID_MAX - MARLIN_QUIC_CID_ENTROPY_OFF];
+    __u8 pad[6];
+};
+
+_Static_assert(0xff >= MARLIN_QUIC_CID_MAX, "marlin_ctx.udp_payload_len (marlin.h) clamps to __u8; it must stay above the "
+                                            "longest configured connection ID it is compared against in balancer.c");

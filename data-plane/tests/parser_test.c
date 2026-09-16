@@ -49,7 +49,7 @@ static const unsigned char EMB6_DST[16] = {0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0
 static void mctx_init(struct marlin_ctx *mctx)
 {
     /*
-     * Poisoned rather than zeroed (unlike bpf/main.c:57) so a field the
+     * Poisoned rather than zeroed (unlike bpf/main.c:84) so a field the
      * parser is not supposed to touch on some path reads back as garbage,
      * not as a coincidentally-correct zero.
      */
@@ -2014,6 +2014,153 @@ MARLIN_TEST(parse_quic_payload_does_not_change_tuple_or_rc)
     CHECK_RET(rc_plain, rc_quic);
     CHECK_MEM(&plain.tuple, &quic.tuple, sizeof(plain.tuple));
     CHECK_EQ(MARLIN_CTX_F_QUIC, quic.flags ^ plain.flags);
+}
+
+/*
+ * A conforming udp.len==8 (no payload) datagram is a 42-byte IPv4 frame,
+ * below the 60-byte Ethernet minimum, so a real sender or NIC pads it and
+ * data_end lands well past the header. pb_pad() writes zero bytes, which is
+ * exactly the byte marlin_parse_quic() would misread as a short header
+ * (bit 7 clear) if it bounded only against data_end instead of udp->len.
+ */
+MARLIN_TEST(parse_quic_padded_zero_length_payload_no_flag)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+    pb_udp(51820, 443, 8); /* declares no payload */
+    pb_pad(18);            /* Ethernet-minimum-padding shape */
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
+}
+
+/*
+ * Same declared length as above, but the trailing bytes are a real
+ * short-header-shaped connection ID rather than zero padding -- proves the
+ * bound is the declared length, not "the pad happened to be zero".
+ */
+MARLIN_TEST(parse_quic_padded_short_declared_len_no_flag)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    static const __u8 cid[7] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07};
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+    pb_udp(51820, 443, 8); /* declares no payload */
+    pb_quic_cid(0x40, cid, sizeof(cid));
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
+}
+
+/*
+ * A datagram declaring exactly one payload byte still sets the flag, and
+ * bytes physically present past that declared payload -- a trailer, not
+ * part of this datagram -- must not suppress a legitimate classification.
+ */
+MARLIN_TEST(parse_quic_declared_one_byte_payload_sets_flag)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+    pb_udp(51820, 443, 9); /* declares exactly the form byte */
+    pb_quic_form(0x40);
+    pb_pad(18);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(MARLIN_CTX_F_QUIC, mctx.flags & MARLIN_CTX_F_QUIC);
+}
+
+/*
+ * A declared UDP length shorter than the fixed 8-byte header itself is
+ * malformed on the wire, but marlin_parse_quic() must not turn it into a
+ * new drop condition -- it stays a classification failure, and subtracting
+ * MARLIN_UDP_HLEN from it must not underflow.
+ */
+MARLIN_TEST(parse_quic_malformed_short_udp_len_no_flag)
+{
+    static const __u16 short_lens[] = {0, 7};
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    __u32 i;
+    int rc;
+
+    for(i = 0; i < sizeof(short_lens) / sizeof(short_lens[0]); i++) {
+        pb_reset();
+        pb_eth(ETH_P_IP);
+        pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+        pb_udp(51820, 443, short_lens[i]);
+        pb_quic_form(0x40);
+        pb_xdp(&md);
+        mctx_init(&mctx);
+        rc = marlin_parse(&md, &mctx);
+        CHECK_RET(MARLIN_OK, rc);
+        CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
+    }
+}
+
+/*
+ * mctx.udp_payload_len is balancer.c's bound for CID decoding
+ * (docs/design/30-quic.md), so its own contract needs a direct assertion:
+ * the value marlin_parse_quic() stashes on UDP, and mctx_init()'s 0xAA
+ * poison surviving untouched everywhere that function never runs -- TCP,
+ * where marlin_parse() never calls it, and a non-first fragment, which
+ * returns before the L4 step entirely.
+ */
+MARLIN_TEST(parse_quic_stashes_declared_payload_len)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0, V4_SRC, V4_DST);
+    pb_udp(51820, 443, 9); /* one declared payload byte */
+    pb_quic_form(0x40);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(1, mctx.udp_payload_len);
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_TCP, 5, 0, V4_SRC, V4_DST);
+    pb_ports(51820, 443);
+    pb_pad(4);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(0xAA, mctx.udp_payload_len);
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_UDP, 5, 0x0040 /* offset, MF clear: not-first, last fragment */, V4_SRC, V4_DST);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(0xAA, mctx.udp_payload_len);
 }
 
 int main(void)

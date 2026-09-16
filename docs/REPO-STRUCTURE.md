@@ -113,8 +113,12 @@ marlin/
 │   │   ├── mtu_test.c               # <marlin/mtu.h>, header-only
 │   │   ├── entropy_test.c           # <marlin/entropy.h>, header-only
 │   │   ├── compat_test.c            # <marlind/compat.h>, header-only -- marlind_version_cmp() and the version floor
-│   │   ├── packet.h                 # packet builder, shared with tests/packet/ below
-│   │   ├── harness.h                # shared with tests/packet/ below
+│   │   ├── packet.h                 # packet builder declarations, shared with tests/packet/ below -- defined in support/packet.c
+│   │   ├── harness.h                # test registry + CHECK_* macro declarations, shared with tests/packet/ below -- defined in support/harness.c
+│   │   ├── support/                 # definitions for harness.h/packet.h, built once per tier (native vs. packet) so a case
+│   │   │   │                        # registered from any tests/packet/*.c TU is one every tier's runner sees
+│   │   │   ├── harness.c            # the case registry and marlin_tests_main()
+│   │   │   └── packet.c             # the arena and every pb_* builder
 │   │   ├── stubs/                   # shadows <bpf/bpf_helpers.h> for the native tier only
 │   │   │   ├── map_stub.h           # host LPM trie answering bpf_map_lookup_elem
 │   │   │   ├── hash_stub.h          # host hash map (exact key, no eviction) for the ratelimit map
@@ -122,11 +126,26 @@ marlin/
 │   │   │   ├── time_stub.h          # settable clock answering bpf_ktime_get_ns
 │   │   │   └── bpf/
 │   │   │       └── bpf_helpers.h    # SEC/__uint/__type/__always_inline + the map/adjust_head/clock stubs
-│   │   └── packet/                  # bpf_prog_test_run, exact bytes — §7.2: landed here, not the repo root
-│   │       ├── xdp_test.c           # cases + main()
-│   │       ├── prog.h               # load/run wrapper over libbpf
-│   │       ├── maps.h               # map fd lookup, seeding, drop_stats reads
-│   │       └── fib.h                # veth + real routes/neighbours for nexthop.c's bpf_fib_lookup() cases
+│   │   └── packet/                  # bpf_prog_test_run, exact bytes — §7.2: landed here, not the repo root.
+│   │       │                        # Case files are numbered xdp_NN_theme.c; $(wildcard) sorts them, so the prefix
+│   │       │                        # order is the constructor-registration and execution order (some cases share
+│   │       │                        # process-global config state across files and depend on running in this order).
+│   │       ├── xdp_00_main.c        # main(): netns/FIB bring-up, program load, marlin_tests_main() -- no cases
+│   │       ├── xdp_10_verdict.c     # parse/verdict basics
+│   │       ├── xdp_20_acl.c         # source filtering / ACL
+│   │       ├── xdp_30_ratelimit.c   # rate limiting
+│   │       ├── xdp_40_fib.c         # FIB lookup / NO_NEIGH
+│   │       ├── xdp_45_encap.c       # L2DSR, IPIP, GUE, VXLAN
+│   │       ├── xdp_50_siphash.c     # SipHash-2-4 published-vector self-check
+│   │       ├── xdp_60_balancer.c    # VIP admission and backend selection
+│   │       ├── xdp_70_acl_placement.c # ACL verdict placement relative to VIP lookup
+│   │       ├── xdp_80_quic.c        # QUIC connection-ID steering
+│   │       ├── xdp_fixture.h/.c     # addresses, run wrappers, VIP/backend fixture shared by ≥2 case files above
+│   │       ├── xdp_encap.h/.c       # encap constants + frame checkers shared by xdp_40_fib.c and xdp_45_encap.c
+│   │       ├── xdp_siphash.h/.c     # the SipHash-2-4 transcription itself, shared by xdp_50/xdp_80
+│   │       ├── prog.h/.c            # load/run wrapper over libbpf
+│   │       ├── maps.h/.c            # map fd lookup, seeding, drop_stats reads
+│   │       └── fib.h/.c             # veth + real routes/neighbours for nexthop.c's bpf_fib_lookup() cases
 │   ├── tools/                       # dev-only, `make tools` — never installed
 │   │   └── verifier_stats.c        # loads marlin.bpf.o via libbpf; verifier insn/stack report
 │   └── marlind/                     # the loader; built by data-plane/Makefile's `marlind` target

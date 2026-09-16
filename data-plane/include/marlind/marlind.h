@@ -17,16 +17,16 @@
 #include <marlind/version.h> /* generated from data-plane/marlind/VERSION; defines MARLIND_VERSION */
 
 /* bpftool pins each program under its C function name, not its section name. */
-#define MARLIN_PROG_NAME       "xdp_main"
+#define MARLIN_PROG_NAME   "xdp_main"
 
 /* Pinned under <pin_dir>/version; the .rodata global marlin.bpf.o's own copy comes from. */
-#define MARLIN_VERSION_PIN     "version"
+#define MARLIN_VERSION_PIN "version"
 
-#define EXIT_ATTACHED          0
-#define EXIT_USAGE             1
-#define EXIT_NOT_ATTACHED      3
-#define EXIT_FOREIGN           4
-#define EXIT_INCOMPATIBLE      5
+#define EXIT_ATTACHED      0
+#define EXIT_USAGE         1
+#define EXIT_NOT_ATTACHED  3
+#define EXIT_FOREIGN       4
+#define EXIT_INCOMPATIBLE  5
 
 struct config {
     const char *iface;

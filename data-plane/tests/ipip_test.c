@@ -21,7 +21,7 @@
 #define IPIP_HEADROOM XDP_PACKET_HEADROOM
 
 /*
- * Palindromic under bpf_htonl(), like xdp_test.c's IPIP_TUNNEL_SRC and
+ * Palindromic under bpf_htonl(), like xdp_encap.h's IPIP_TUNNEL_SRC and
  * NH_BACKEND_ADDR, so the __be32 fields below can be set with the literal
  * directly. IPIP_BACKEND's last octet is deliberately non-zero: it lands on
  * the last byte diff_last() below checks, and a zero octet there would be
@@ -472,7 +472,7 @@ MARLIN_TEST(ipip_encap_builds_the_outer_ipv4_header_byte_for_byte)
 {
     /*
      * Mirrors ipip_encap_zero_lookup_swaps_ethernet_and_builds_outer_header
-     * (tests/packet/xdp_test.c:1319). The swapped MACs asserted there are
+     * (tests/packet/xdp_45_encap.c:147). The swapped MACs asserted there are
      * nexthop.c's contribution, not ipip.c's, so this checks only the
      * header ipip.c itself writes and that the arriving Ethernet header
      * relocated unchanged.
@@ -521,7 +521,7 @@ MARLIN_TEST(ipip_encap_builds_the_outer_ipv4_header_byte_for_byte)
 MARLIN_TEST(ipip_encap_ipv6_inner_sets_protocol_41)
 {
     /*
-     * Mirrors ipip_encap_ipv6_inner_sets_protocol_41 (tests/packet/xdp_test.c:1337).
+     * Mirrors ipip_encap_ipv6_inner_sets_protocol_41 (tests/packet/xdp_45_encap.c:165).
      * Also a regression test for the bug where the outer Ethernet header's
      * EtherType carried the arriving frame's ETH_P_IPV6 forward unchanged:
      * the arriving EtherType mirrors tuple.family exactly (parser.c), but
@@ -552,7 +552,7 @@ MARLIN_TEST(ipip_encap_frame_too_big_returns_before_the_helper)
 {
     /*
      * Mirrors ipip_encap_frame_too_big_drops_before_adjust_head
-     * (tests/packet/xdp_test.c:1353); the native-only half is that the
+     * (tests/packet/xdp_45_encap.c:181); the native-only half is that the
      * helper is never reached at all, asserted directly rather than
      * inferred from an unmodified frame.
      */
@@ -575,7 +575,7 @@ MARLIN_TEST(ipip_encap_frame_too_big_returns_before_the_helper)
 
 MARLIN_TEST(ipip_encap_max_frame_zero_disables_the_check)
 {
-    /* Mirrors ipip_encap_max_frame_zero_disables_the_check (tests/packet/xdp_test.c:1377). */
+    /* Mirrors ipip_encap_max_frame_zero_disables_the_check (tests/packet/xdp_45_encap.c:206). */
     struct marlin_ctx mctx;
     struct xdp_md ctx;
 

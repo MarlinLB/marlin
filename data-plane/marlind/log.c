@@ -19,19 +19,19 @@ void logmsg(const char *fmt, ...)
 {
     va_list ap;
 
-    fprintf(stderr, "marlind: ");
+    (void)fprintf(stderr, "marlind: ");
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    (void)vfprintf(stderr, fmt, ap);
     va_end(ap);
-    fprintf(stderr, "\n");
+    (void)fprintf(stderr, "\n");
 }
 
 static _Noreturn void vdie(int code, const char *fmt, va_list ap)
 {
-    fprintf(stderr, "marlind: ");
-    vfprintf(stderr, fmt, ap);
+    (void)fprintf(stderr, "marlind: ");
+    (void)vfprintf(stderr, fmt, ap);
     va_end(ap);
-    fprintf(stderr, "\n");
+    (void)fprintf(stderr, "\n");
     exit(code);
 }
 
@@ -70,7 +70,7 @@ void notify(const char *fmt, ...)
     }
 
     va_start(ap, fmt);
-    vsnprintf(msg, sizeof(msg), fmt, ap);
+    (void)vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
 
     fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);

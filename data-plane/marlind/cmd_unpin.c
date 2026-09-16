@@ -49,14 +49,14 @@ int cmd_unpin(void)
 
     while((entry = readdir(dir)) != NULL) {
         char path[PATH_MAX];
-        int n;
+        int len;
 
         if(strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
 
-        n = snprintf(path, sizeof(path), "%s/%s", cfg.pin_dir, entry->d_name);
-        if(n < 0 || (size_t)n >= sizeof(path)) {
+        len = snprintf(path, sizeof(path), "%s/%s", cfg.pin_dir, entry->d_name);
+        if(len < 0 || (size_t)len >= sizeof(path)) {
             continue;
         }
         (void)unlink(path);

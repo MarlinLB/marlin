@@ -94,7 +94,7 @@ static __attribute__((unused)) long bpf_xdp_adjust_head(struct xdp_md *ctx, int 
 
 /*
  * nexthop.c's FIB fallback and redirect path are the packet tier's job
- * (tests/packet/xdp_test.c's nexthop_interim_* section, a real kernel FIB):
+ * (tests/packet/xdp_40_fib.c's fib_no_neigh_* cases, a real kernel FIB):
  * unlike bpf_map_lookup_elem and bpf_xdp_adjust_head, there is no native
  * model of either helper here. These exist only so the translation unit
  * links; a native case that reaches past a NULL-argument check into either
@@ -116,5 +116,28 @@ static __attribute__((unused)) long bpf_redirect_map(void *map, __u64 key, __u64
     (void)key;
     (void)flags;
     fprintf(stderr, "tests: bpf_redirect_map() has no native stub; run the packet tier instead\n");
+    exit(1);
+}
+
+/*
+ * balancer.c's own two helpers, same as bpf_fib_lookup/bpf_redirect_map above:
+ * no native model exists (docs/PHASES.md), so these exist only so a
+ * translation unit that calls them links. A native case that reaches past a
+ * NULL-argument check into either needs the packet tier instead.
+ */
+static __attribute__((unused)) long bpf_xdp_load_bytes(struct xdp_md *xdp_md, __u32 offset, void *buf, __u32 len)
+{
+    (void)xdp_md;
+    (void)offset;
+    (void)buf;
+    (void)len;
+    fprintf(stderr, "tests: bpf_xdp_load_bytes() has no native stub; run the packet tier instead\n");
+    exit(1);
+}
+
+static __attribute__((unused)) __u64 bpf_xdp_get_buff_len(struct xdp_md *xdp_md)
+{
+    (void)xdp_md;
+    fprintf(stderr, "tests: bpf_xdp_get_buff_len() has no native stub; run the packet tier instead\n");
     exit(1);
 }

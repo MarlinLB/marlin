@@ -5,7 +5,7 @@
  * translation unit #includes the source directly, the same as acl_test.c.
  * Every other branch of marlin_nexthop_l2dsr()/marlin_nexthop_encapsulate()
  * needs a real FIB lookup or redirect, which is the packet tier's job
- * (tests/packet/xdp_test.c's nexthop_interim_* section) -- native coverage
+ * (tests/packet/xdp_40_fib.c's fib_no_neigh_* cases) -- native coverage
  * here stops at the two branches neither tier could otherwise reach.
  */
 

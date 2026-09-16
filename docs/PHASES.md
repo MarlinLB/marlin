@@ -150,7 +150,7 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 2. `bpf_prog_test_run` asserts exact output bytes for: a VIP hit rewriting the destination MAC
    and returning `XDP_TX`; a miss returning `XDP_PASS` counting `vip_miss`; `backend_id == 0`
    dropping `no_backend`; `state != MARLIN_UP` dropping `backend_down`. Each is registered in
-   `data-plane/tests/packet/xdp_test.c` and, for as long as the path it asserts is unreachable,
+   `data-plane/tests/packet/xdp_60_balancer.c` and, for as long as the path it asserts is unreachable,
    carries a `MARLIN_SKIP` naming this line — so `make packet-tests` reports it as `skip` rather
    than a pass.
 3. The C# service configures that VIP and backend from scratch on a running datapath, and the
@@ -297,7 +297,7 @@ configuration surface for either would resolve both.
    tier or a native-driver rig.
 3. An extension-header chain at `MAX_EXT_HDRS` and one beyond it are distinguishable —
    `ext_hdr_limit`, not `parse_error`
-   (`data-plane/tests/packet/xdp_test.c`,
+   (`data-plane/tests/packet/xdp_10_verdict.c`,
    `ext_hdr_limit_nine_headers_is_drop_and_distinct_from_parse_error`). Parsing does not depend
    on Phase 2b's forwarding code, so this criterion is that forwarding not regress it.
 4. A redirect to an ifindex absent from `tx_ports` is a countable `XDP_ABORTED`, not a silent
@@ -361,8 +361,8 @@ rate-limiter conversion.
 3. `backend.mac` freshness tested against neighbour churn, which needs its own netlink-level
    tests (`docs/design/24-testing.md`).
 4. `docs/design/24-testing.md`'s ACL coverage passes at both tiers — `make tests`'s
-   `data-plane/tests/acl_test.c` and `make packet-tests`'s `xdp_test.c` — **including the
-   placement assertions**, packet-tier-only since they depend on step ordering: a blocked source
+   `data-plane/tests/acl_test.c` and `make packet-tests`'s `xdp_20_acl.c` — **including the
+   placement assertions** (`xdp_70_acl_placement.c`), packet-tier-only since they depend on step ordering: a blocked source
    addressed to a destination that is not a VIP drops with `acl_blocked`, not `vip_miss`; the same
    source addressed to a `VIP_ACL` VIP drops `acl_blocked`; and addressed to a VIP with the bit
    clear, forwards. The first is the whole of `docs/design/11-pipeline.md`'s host-firewall property
@@ -387,7 +387,7 @@ rate-limiter conversion.
 
 The datapath token bucket is `ratelimit.c`'s, gated at its `balancer.c` call site by
 `VIP_RATELIMIT` and instance-wide by `CFG_RL_ENABLE`, and covered at both the native
-(`data-plane/tests/ratelimit_test.c`) and packet (`data-plane/tests/packet/xdp_test.c`'s `rl_*`
+(`data-plane/tests/ratelimit_test.c`) and packet (`data-plane/tests/packet/xdp_30_ratelimit.c`'s `rl_*`
 cases) tiers. What this phase adds is the measurement that decides whether it may be turned on,
 the control-plane conversion, and the concurrency evidence.
 
@@ -454,6 +454,7 @@ section it affects, not in a document of its own.
 | `nexthop.c` maps ten kernel `bpf_fib_lookup()` return codes onto seven named `drop_stats` reasons. `BPF_FIB_LKUP_RET_NOT_FWDED` (the ordinary no-route outcome), `UNSUPP_LWT` and `NO_SRC_ADDR` all fall to the `default:` arm, `MARLIN_DROP_FIB_UNSPEC` — so "no route" is indistinguishable from a helper contract violation in `drop_stats` | `docs/design/16-fib-lookup.md:56-66`, `nexthop.c:82-111` | 2b |
 | Whether `ipip.c`'s, `gue.c`'s and `vxlan.c`'s `tot_len`/`pkt_len` arithmetic needs a `__u32` guard against `__u16` wraparound when `cfg.max_frame == 0` disables `frame_fits()` — unreachable from the datapath today (`pkt_len` derives from `data_end - data`), covered by `ipip_test.c`, `gue_test.c` and `vxlan_test.c` only at the boundary that does not wrap; one guard for all three once decided, the same reasoning that makes them one boundary rather than three (`docs/PHASES.md:34-39`) | `ipip.c:77,85`, `gue.c:85,105`, `vxlan.c:120,143` | 2b |
 | `balancer.c`'s map-reading helpers (`vip_map`'s `HASH` lookup, `fwd_table`'s and `backends`' `ARRAY` lookups) and `marlin_balancer_quic_decode()`'s `bpf_xdp_load_bytes()` call have no native-tier stub — `data-plane/tests/stubs/hash_stub.h` is hardcoded to `rl_key`, and no `ARRAY` or `bpf_xdp_load_bytes()` stub exists — so these helpers stay packet-tier-only under `docs/design/24-testing.md`'s three-part test until stubs are written or the gap is accepted as permanent | `docs/design/24-testing.md:157-178`, `data-plane/bpf/balancer.c` | 2b |
+| `MARLIN_DROP_ENCAP_LENGTH`'s two branches inside `marlin_balancer_validate()` are now covered natively (`data-plane/tests/balancer_test.c`): the function takes `frame_len` as a plain argument and calls no helper itself, so it was never actually blocked by the missing `bpf_xdp_get_buff_len()` stub the row above used to cite — that citation was wrong and is corrected here. Still open: whether the check is reachable at the packet tier for a genuine multi-buffer frame, since `bpf_xdp_get_buff_len(ctx)` — called by the caller, `balancer.c:332`, not by `marlin_balancer_validate()` itself — and `mctx->pkt_len` (`parser.c:302`'s `data_end - data`) can only disagree for one, and `BPF_PROG_TEST_RUN` delivers a single linear buffer. Either an integration rig on an MTU that forces multi-buffer XDP covers it, or the reason is accepted as unreachable-by-construction and the check is a guard rather than a behaviour | `balancer.c:88-99`, `balancer.c:332`, `data-plane/tests/balancer_test.c` | 2b |
 | Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |
 | Backend ID allocation authority: the shared configuration store, or each instance's own control plane. `docs/design/21-active-active.md:5-7` lists five values that must be identical across instances and `backend_id` is not among them, yet `:26` presumes agreement on it and `DEPLOYMENT.md:288` tells the integrator to encode "the `backend_id` this instance assigns". The hash path tolerates divergence — two instances may hold the same backend at different indices and still route identically — but `VIP_QUIC` does not, because the ID is on the wire | `docs/design/21-active-active.md:5-7`, `docs/DEPLOYMENT.md:288` | 3 |
 | Whether the reconciler asserts `backends[i].id == i` on every write, or only on a full resync | `docs/design/20-configuration-validation.md` | 3 |

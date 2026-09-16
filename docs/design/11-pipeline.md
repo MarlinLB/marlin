@@ -22,8 +22,10 @@ clients, there is no reverse path and no classifier.
    zero and the VIP lookup falls to the port-agnostic retry below.
 
    A UDP payload opening with a QUIC short header is flagged `MARLIN_CTX_F_QUIC` here, for
-   step 6 to steer on. A long header is never flagged: RFC 9000 §9 forbids migrating before
-   the handshake completes, so every long-header packet is safe on the hash path
+   step 6 to steer on — but only once the datagram's own declared UDP length, not merely
+   `data_end`, leaves at least one payload byte; a header-only datagram's trailing frame padding
+   must never be read as that byte. A long header is never flagged: RFC 9000 §9 forbids
+   migrating before the handshake completes, so every long-header packet is safe on the hash path
    (`docs/design/30-quic.md`).
 3. **ACL evaluate** — `marlin_acl_check()`. Produces allow, block or no-match on
    `marlin_ctx.acl_verdict`. Nothing is dropped here. `docs/design/27-source-filtering.md`.
@@ -41,7 +43,8 @@ clients, there is no reverse path and no classifier.
    (`docs/design/30-quic.md`); every other packet, and any decode failure, falls through to
    hash, `fwd_table`, `backends`, in `balancer.c` (`docs/design/12-selection.md`).
 7. **Validity and state** — `backend_id == 0` → drop `no_backend`;
-   `MARLIN_BE_F_STATE` clear in `backend.flags` → drop `backend_down`.
+   `MARLIN_BE_F_STATE` clear in `backend.flags` → drop `backend_down`; a `pkt_len`/frame-length
+   invariant violation → drop `encap_length` (`docs/design/23-mtu.md`).
 8. **Dispatch** on `ENCAP_MODE(backend.flags)`:
    - `L2DSR` → rewrite destination MAC; `XDP_TX`, or `XDP_REDIRECT` where `docs/design/16-fib-lookup.md` resolves the
      backend out another interface

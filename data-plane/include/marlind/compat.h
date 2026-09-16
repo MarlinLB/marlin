@@ -59,18 +59,18 @@ struct marlind_semver {
  * version field with an absurd digit count (an object is untrusted input)
  * cannot overflow `unsigned long` before the check runs.
  */
-static inline bool marlind_parse_uint_field(const char **p, unsigned long *out)
+static inline bool marlind_parse_uint_field(const char **cur, unsigned long *out)
 {
-    const char *s = *p;
-    unsigned long v = 0;
+    const char *str = *cur;
+    unsigned long val = 0;
     int ndigits = 0;
 
-    while(*s >= '0' && *s <= '9') {
-        if(v > (0xffffffffUL - 9) / 10) {
+    while(*str >= '0' && *str <= '9') {
+        if(val > (0xffffffffUL - 9) / 10) {
             return false;
         }
-        v = v * 10 + (unsigned long)(*s - '0');
-        s++;
+        val = val * 10 + (unsigned long)(*str - '0');
+        str++;
         ndigits++;
     }
 
@@ -78,8 +78,8 @@ static inline bool marlind_parse_uint_field(const char **p, unsigned long *out)
         return false;
     }
 
-    *out = v;
-    *p = s;
+    *out = val;
+    *cur = str;
     return true;
 }
 
@@ -93,27 +93,27 @@ static inline bool marlind_parse_uint_field(const char **p, unsigned long *out)
  * here is a compatibility check that silently accepts what it should
  * refuse.
  */
-static inline bool marlind_parse_semver(const char *s, struct marlind_semver *out)
+static inline bool marlind_parse_semver(const char *str, struct marlind_semver *out)
 {
-    const char *p = s;
+    const char *cur = str;
 
-    if(!marlind_parse_uint_field(&p, &out->major) || *p != '.') {
+    if(!marlind_parse_uint_field(&cur, &out->major) || *cur != '.') {
         return false;
     }
-    p++;
+    cur++;
 
-    if(!marlind_parse_uint_field(&p, &out->minor) || *p != '.') {
+    if(!marlind_parse_uint_field(&cur, &out->minor) || *cur != '.') {
         return false;
     }
-    p++;
+    cur++;
 
-    if(!marlind_parse_uint_field(&p, &out->patch)) {
+    if(!marlind_parse_uint_field(&cur, &out->patch)) {
         return false;
     }
 
-    if(*p == '-') {
+    if(*cur == '-') {
         out->prerelease = true;
-    } else if(*p == '+' || *p == '\0') {
+    } else if(*cur == '+' || *cur == '\0') {
         out->prerelease = false;
     } else {
         return false;
@@ -132,12 +132,12 @@ static inline bool marlind_parse_semver(const char *s, struct marlind_semver *ou
  * is a third outcome, never coerced to LESS: a floor exists to refuse old
  * objects, not ones this comparator merely failed to read.
  */
-static inline enum marlind_vercmp marlind_version_cmp(const char *a, const char *b)
+static inline enum marlind_vercmp marlind_version_cmp(const char *lhs, const char *rhs)
 {
     struct marlind_semver va;
     struct marlind_semver vb;
 
-    if(!marlind_parse_semver(a, &va) || !marlind_parse_semver(b, &vb)) {
+    if(!marlind_parse_semver(lhs, &va) || !marlind_parse_semver(rhs, &vb)) {
         return MARLIND_VERCMP_UNPARSEABLE;
     }
 

@@ -36,7 +36,7 @@ const char *config_obj_path(void)
 void load_config(struct config *cfg)
 {
     const char *pindir;
-    int n;
+    int len;
 
     memset(cfg, 0, sizeof(*cfg));
 
@@ -52,13 +52,13 @@ void load_config(struct config *cfg)
         pindir = MARLIN_DEFAULT_PIN_DIR;
     }
 
-    n = snprintf(cfg->pin_dir, sizeof(cfg->pin_dir), "%s", pindir);
-    if(n < 0 || (size_t)n >= sizeof(cfg->pin_dir)) {
+    len = snprintf(cfg->pin_dir, sizeof(cfg->pin_dir), "%s", pindir);
+    if(len < 0 || (size_t)len >= sizeof(cfg->pin_dir)) {
         die("MARLIN_PIN_DIR too long");
     }
 
-    n = snprintf(cfg->prog_pin, sizeof(cfg->prog_pin), "%s/%s", cfg->pin_dir, MARLIN_PROG_NAME);
-    if(n < 0 || (size_t)n >= sizeof(cfg->prog_pin)) {
+    len = snprintf(cfg->prog_pin, sizeof(cfg->prog_pin), "%s/%s", cfg->pin_dir, MARLIN_PROG_NAME);
+    if(len < 0 || (size_t)len >= sizeof(cfg->prog_pin)) {
         die("MARLIN_PIN_DIR too long");
     }
 
