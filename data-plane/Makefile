@@ -27,6 +27,14 @@ TEST_CFLAGS   ?= -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer
 # carry sanitizers, this artefact must not.
 HOST_CFLAGS ?= -std=gnu11 -O2 -Wall -Wextra -Werror -fno-omit-frame-pointer
 
+# MARLIN_DEBUG=1 compiles in main.c's per-packet bpf_printk trace, read from
+# trace_pipe by the dev rigs' `trace` subcommand. Not tracked as a dependency:
+# toggling it needs `make clean` to take effect.
+BPF_CFLAGS ?= -target bpf -mcpu=v3 -g -O2 -Wall -Wextra
+ifeq ($(MARLIN_DEBUG),1)
+BPF_CFLAGS += -DMARLIN_DEBUG
+endif
+
 include mk/toolchain.mk
 
 .DEFAULT_GOAL := all
@@ -160,7 +168,7 @@ $(MARLIND_VERSION_H): $(MARLIND_VERSION_FILE)
 $(BUILD_DIR)/bpf/%.o: $(SRC_DIR)/%.c $(BPF_VERSION_H)
 	@mkdir -p $(BUILD_DIR)/bpf
 	@echo "compile $(notdir $<)"
-	@$(CLANG) -target bpf -mcpu=v3 -g -O2 -Wall -Wextra $(INCLUDES) -MJ $(BUILD_DIR)/bpf/$*.o.json -MMD -MP -c -o $@ $<
+	@$(CLANG) $(BPF_CFLAGS) $(INCLUDES) -MJ $(BUILD_DIR)/bpf/$*.o.json -MMD -MP -c -o $@ $<
 
 -include $(OBJS:.o=.d)
 
