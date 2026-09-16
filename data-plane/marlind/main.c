@@ -92,12 +92,8 @@ static void print_version(void)
 int main(int argc, char **argv)
 {
     static const struct option opts[] = {
-        {"attach",  no_argument, NULL, 'a'},
-        {"status",  no_argument, NULL, 's'},
-        {"unpin",   no_argument, NULL, 'u'},
-        {"help",    no_argument, NULL, 'h'},
-        {"version", no_argument, NULL, 'V'},
-        {NULL,      0,           NULL, 0  },
+        { "attach", no_argument, NULL, 'a' }, { "status", no_argument, NULL, 's' },  { "unpin", no_argument, NULL, 'u' },
+        { "help", no_argument, NULL, 'h' },   { "version", no_argument, NULL, 'V' }, { NULL, 0, NULL, 0 },
     };
     enum mode mode = MODE_NONE;
     int c;

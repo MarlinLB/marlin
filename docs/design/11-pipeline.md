@@ -41,7 +41,8 @@ clients, there is no reverse path and no classifier.
    (`docs/design/30-quic.md`); every other packet, and any decode failure, falls through to
    hash, `fwd_table`, `backends`, in `balancer.c` (`docs/design/12-selection.md`).
 7. **Validity and state** — `backend_id == 0` → drop `no_backend`;
-   `MARLIN_BE_F_STATE` clear in `backend.flags` → drop `backend_down`.
+   `MARLIN_BE_F_STATE` clear in `backend.flags` → drop `backend_down`; a `pkt_len`/frame-length
+   invariant violation → drop `encap_length` (`docs/design/23-mtu.md`).
 8. **Dispatch** on `ENCAP_MODE(backend.flags)`:
    - `L2DSR` → rewrite destination MAC; `XDP_TX`, or `XDP_REDIRECT` where `docs/design/16-fib-lookup.md` resolves the
      backend out another interface

@@ -40,7 +40,8 @@ static inline struct bpf_map *marlin_find_build_map(struct bpf_object *obj)
         }
 
         value = bpf_map__initial_value(map, &value_size);
-        if(value != NULL && value_size == sizeof(struct marlin_build) && ((const struct marlin_build *)value)->magic == MARLIN_BUILD_MAGIC) {
+        if(value != NULL && value_size == sizeof(struct marlin_build) &&
+           ((const struct marlin_build *)value)->magic == MARLIN_BUILD_MAGIC) {
             return map;
         }
     }
