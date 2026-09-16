@@ -110,6 +110,43 @@ MARLIN_TEST(unsupported_proto_esp_is_drop_and_counted)
     CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_UNSUPPORTED_PROTO));
 }
 
+/*
+ * The ESP/AH rejection binds ahead of the fragment shortcut, so a non-first
+ * fragment is unsupported_proto exactly like the unfragmented head above --
+ * one policy for the protocol, not a fragment-tail exemption.
+ */
+MARLIN_TEST(unsupported_proto_ipv4_esp_non_first_fragment_is_drop_and_counted)
+{
+    __u64 before = xdp_drop_stats_total(MARLIN_DROP_UNSUPPORTED_PROTO);
+    struct xdp_run_result result;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_ESP, MARLIN_IPV4_IHL_MIN, 0x0040 /* offset set, MF clear: non-first, last fragment */,
+            V4_SRC, V4_DST);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_UNSUPPORTED_PROTO));
+}
+
+MARLIN_TEST(unsupported_proto_ipv6_esp_non_first_fragment_is_drop_and_counted)
+{
+    __u64 before = xdp_drop_stats_total(MARLIN_DROP_UNSUPPORTED_PROTO);
+    struct xdp_run_result result;
+
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    pb_ipv6(IPPROTO_FRAGMENT, SRC6, DST6);
+    pb_frag6(IPPROTO_ESP, 0x0008 /* offset set, MF clear: non-first, last fragment */);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_UNSUPPORTED_PROTO));
+}
+
 MARLIN_TEST(parse_error_truncated_ipv4_is_drop_and_distinct_from_ext_hdr_limit)
 {
     __u64 parse_error_before = xdp_drop_stats_total(MARLIN_DROP_PARSE_ERROR);

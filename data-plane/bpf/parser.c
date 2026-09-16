@@ -76,6 +76,18 @@ static __always_inline int marlin_is_ext6(__u8 nexthdr)
     return nexthdr == IPPROTO_HOPOPTS || nexthdr == IPPROTO_ROUTING || nexthdr == IPPROTO_DSTOPTS || nexthdr == IPPROTO_FRAGMENT;
 }
 
+/*
+ * Marlin cannot reach the ports behind ESP or AH. One predicate for the
+ * three sites this policy applies to: the IPv6 extension-header chain, the
+ * port parse both families share, and marlin_parse()'s own check below --
+ * which exists because the first two run only on a packet that already
+ * cleared the fragment shortcut, and a non-first fragment never does.
+ */
+static __always_inline int marlin_proto_unsupported(__u8 proto)
+{
+    return proto == IPPROTO_ESP || proto == IPPROTO_AH;
+}
+
 _Static_assert(MARLIN_L3_OFF_ETH + sizeof(struct ipv6hdr) + ((unsigned long)MAX_EXT_HDRS * 2048UL) < 0x10000UL,
                "the IPv6 extension-header walk must not push l4_off past marlin_ctx.l4_off's width");
 
@@ -87,7 +99,7 @@ static __always_inline int marlin_walk_ext6(const void *data, const void *data_e
         const struct ipv6_opt_hdr *eh;
         __u32 hdr_len;
 
-        if(nexthdr == IPPROTO_ESP || nexthdr == IPPROTO_AH) {
+        if(marlin_proto_unsupported(nexthdr)) {
             return MARLIN_DROP_UNSUPPORTED_PROTO;
         }
 
@@ -184,7 +196,7 @@ static __always_inline int marlin_parse_ports(const void *data, const void *data
 {
     const struct marlin_l4_ports *ports;
 
-    if(proto == IPPROTO_ESP || proto == IPPROTO_AH) {
+    if(marlin_proto_unsupported(proto)) {
         return MARLIN_DROP_UNSUPPORTED_PROTO;
     }
 
@@ -348,6 +360,19 @@ int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
     mctx->l3_off = MARLIN_L3_OFF_ETH;
     mctx->l4_off = (__u16)l3.l4_off;
     mctx->flags |= l3.flags;
+
+    /*
+     * Applied ahead of the fragment shortcut below so it binds regardless of
+     * fragment state: IPv4 carries the protocol in the base header
+     * unconditionally, and IPv6's fragment header walk has already copied
+     * fh->nexthdr into l3.proto by the time either path reaches here. An
+     * unfragmented ESP/AH packet is unsupported_proto; leaving its fragment
+     * tails admitted would be a second, inconsistent policy for the same
+     * protocol.
+     */
+    if(marlin_proto_unsupported(l3.proto)) {
+        return MARLIN_DROP_UNSUPPORTED_PROTO;
+    }
 
     if((mctx->flags & MARLIN_CTX_F_FRAG) != 0U) {
         /* Fragment tails carry no ICMP or port headers. */

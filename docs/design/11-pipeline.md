@@ -13,7 +13,10 @@ clients, there is no reverse path and no classifier.
    chain is walked to at most `MAX_EXT_HDRS` headers. Exceeding that bound drops with reason
    `ext_hdr_limit` rather than `parse_error`, so that an attacker padding a chain to force
    the loop to its bound is countable rather than indistinguishable from a malformed packet.
-   A chain terminating in ESP or AH is `unsupported_proto`; Marlin cannot reach the ports.
+   **ESP or AH is `unsupported_proto` in both families, regardless of fragment state** —
+   Marlin cannot reach the ports behind either, so a non-first fragment of an ESP or AH
+   datagram carries the same verdict as the unfragmented packet; the check runs ahead of the
+   fragment handling below rather than only at the head.
 
    `IPPROTO_FRAGMENT` in the chain marks the packet as a fragment, which is what makes the
    client-address-only hashing of `docs/design/12-selection.md` implementable for IPv6 — the

@@ -6,6 +6,14 @@ All notable changes to `marlin.bpf.o` will be documented in this file. Versioned
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Fix a rate-limit bucket refilling to burst when a losing CAS retry's clock sample read
+  slightly behind a concurrent CPU's winning exchange; the loser now re-samples the clock per
+  retry and tolerates the resulting skew instead of treating it as a 32-bit wrap.
+- Drop ESP and AH non-first fragments as `unsupported_proto` in both families, matching the
+  unfragmented head instead of admitting the tail.
+
 ## [0.0.1] - 2026-09-16
 
 - Implement DSR load balancing mechanism.

@@ -26,6 +26,13 @@
 #define MARLIN_READ_ONCE(x)  (*(const volatile __typeof__(x) *)&(x))
 
 /*
+ * Widest gap by which a bucket may legitimately read as stamped ahead of a
+ * retry's own clock sample: one tick of cross-CPU bpf_ktime_get_ns() skew,
+ * plus one for the tick boundary the two samples may straddle.
+ */
+#define MARLIN_RL_SKEW_TICKS  2
+
+/*
  * Pure token-bucket step: refills `old` to `now` and spends one token,
  * reporting the result through `*next` rather than writing the map. Shared
  * by the miss path below, against a synthetic full bucket, and by the
@@ -40,7 +47,7 @@ static __always_inline int rl_spend(__u64 old, __u64 now, __u64 rate, __u64 burs
 
     elapsed = (__s64)now - (__s64)(old >> 32);
 
-    if(elapsed < 0) {
+    if(elapsed < -MARLIN_RL_SKEW_TICKS) {
         /*
          * The 32-bit tick counter wrapped (roughly every 52 days of
          * uptime), or the clock moved backwards. Resyncing to a full
@@ -51,6 +58,19 @@ static __always_inline int rl_spend(__u64 old, __u64 now, __u64 rate, __u64 burs
          * the source would stay dropped until `now` caught back up to it.
          */
         refill = burst;
+    } else if(elapsed < 0) {
+        /*
+         * Not a wrap: a losing CAS retry adopts the winning CPU's bucket,
+         * whose timestamp can legitimately read up to MARLIN_RL_SKEW_TICKS
+         * ahead of this retry's own sample -- cross-CPU bpf_ktime_get_ns()
+         * skew, or the two samples straddling a tick boundary. Treating
+         * that as a wrap would refill to burst on every contended tick,
+         * which is exactly the bypass a flooding source would want.
+         * Crediting no refill and keeping the newer timestamp is safe:
+         * the bucket is already at least as current as this retry knows.
+         */
+        now = old >> 32;
+        refill = 0;
     } else {
         /* Clamped before the add: elapsed * rate can overflow 32 bits long
          * before the sum does.
@@ -180,6 +200,14 @@ int marlin_ratelimit(const struct marlin_ctx *mctx)
         }
 
         old = prev;
+
+        /*
+         * Re-sample rather than reuse: this retry lost to a CPU that may
+         * have advanced the bucket past this loop's original `now`, and
+         * rl_spend()'s skew tolerance above is what keeps that from being
+         * misread as a wrap on the next attempt.
+         */
+        now = (bpf_ktime_get_ns() >> RL_TICK_SHIFT) & MARLIN_RL_STATE_MASK;
     }
 
     marlin_stats_reason(MARLIN_COUNT_RL_CAS_EXHAUSTED);
