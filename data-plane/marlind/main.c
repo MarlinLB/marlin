@@ -101,7 +101,7 @@ int main(int argc, char **argv)
         { "help", no_argument, NULL, 'h' },   { "version", no_argument, NULL, 'V' }, { NULL, 0, NULL, 0 },
     };
     enum mode mode = MODE_NONE;
-    int c;
+    int opt;
 
     /*
      * Leading '+' stops getopt from permuting argv: there are no operands
@@ -109,8 +109,8 @@ int main(int argc, char **argv)
      * exact "was there a leftover argument" test rather than one a
      * permuted argv could dodge.
      */
-    while((c = getopt_long(argc, argv, "+hV", opts, NULL)) != -1) {
-        switch(c) {
+    while((opt = getopt_long(argc, argv, "+hV", opts, NULL)) != -1) {
+        switch(opt) {
         case 'a':
             if(mode != MODE_NONE) {
                 usage(stderr, argv[0]);

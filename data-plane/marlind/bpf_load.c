@@ -67,15 +67,15 @@ struct bpf_object *load_and_pin_maps(const char *obj_path, const char *pin_dir)
 
     bpf_object__for_each_map(map, obj)
     {
-        int n;
+        int len;
 
         if(bpf_map__is_internal(map)) {
             continue;
         }
 
-        n = snprintf(path, sizeof(path), "%s/%s", pin_dir, bpf_map__name(map));
+        len = snprintf(path, sizeof(path), "%s/%s", pin_dir, bpf_map__name(map));
 
-        if(n < 0 || (size_t)n >= sizeof(path)) {
+        if(len < 0 || (size_t)len >= sizeof(path)) {
             die("pin path too long for map %s", bpf_map__name(map));
         }
         if(bpf_map__set_pin_path(map, path) != 0) {
@@ -121,14 +121,14 @@ void pin_version(struct bpf_object *obj, const char *pin_dir)
 {
     struct bpf_map *map = marlin_find_build_map(obj);
     char path[PATH_MAX];
-    int n;
+    int len;
 
     if(map == NULL) {
         return;
     }
 
-    n = snprintf(path, sizeof(path), "%s/%s", pin_dir, MARLIN_VERSION_PIN);
-    if(n < 0 || (size_t)n >= sizeof(path)) {
+    len = snprintf(path, sizeof(path), "%s/%s", pin_dir, MARLIN_VERSION_PIN);
+    if(len < 0 || (size_t)len >= sizeof(path)) {
         die("pin path too long for the version map");
     }
 

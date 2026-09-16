@@ -149,17 +149,16 @@ int cmd_attach(void)
     notify("READY=1\nSTATUS=attached %s to %s (ifindex %d); pins under %s", MARLIN_PROG_NAME, cfg.iface, cfg.ifindex, cfg.pin_dir);
 
     for(;;) {
-        int n = epoll_wait(epfd, events, 2, -1);
-        int i;
+        int nready = epoll_wait(epfd, events, 2, -1);
 
-        if(n < 0) {
+        if(nready < 0) {
             if(errno == EINTR) {
                 continue;
             }
             die("epoll_wait: %s", strerror(errno));
         }
 
-        for(i = 0; i < n; i++) {
+        for(int i = 0; i < nready; i++) {
             if(events[i].data.fd == sig_fd) {
                 logmsg("stopping: detaching %s from %s", MARLIN_PROG_NAME, cfg.iface);
                 notify("STOPPING=1");
