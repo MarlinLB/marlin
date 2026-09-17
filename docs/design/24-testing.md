@@ -43,6 +43,10 @@ pointer invalidation bites.
   whose Fragmentable Part opens with an extension header: head and tail both drop
   `unsupported_proto` in the parser, before either reaches `vip_map`, regardless of the VIP's
   port configuration — asserted alongside the two above.
+- The fragment/extension-header refusal above does not reach a quoted first fragment inside an
+  ICMP error: `Fragment → Destination Options → UDP`, with ports past both, still recovers a
+  tuple (`docs/design/13-icmp.md`). Native-tier only — the packet-tier fragment cases above are
+  about the packet Marlin forwards, not the header an ICMP error quotes.
 - An ICMP error on a flagged VIP selects the same row as the flow it reports on. This fails
   unless `parser.c` recovers the embedded destination port into `tuple.sport`
   (`docs/design/13-icmp.md`), and it is the only test that catches that omission.

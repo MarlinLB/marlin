@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Restrict the fragment/extension-header refusal below to the packet being forwarded: it no
+  longer reaches a quoted header inside an ICMP error. A quoted first fragment whose Fragment
+  header is immediately followed by another extension header — e.g. `Fragment → Destination
+  Options → UDP` — was dropped as `icmp_unparseable` even with both ports present, although the
+  quote is a whole, unfragmented packet with no head/tail to split. It parses again.
 - Drop an IPv6 fragment, head or tail, as `unsupported_proto` when its Fragment header is
   immediately followed by another extension header. The Fragment header's Next Header field is
   the first header of the Fragmentable Part (RFC 8200 §4.5), not necessarily the upper-layer

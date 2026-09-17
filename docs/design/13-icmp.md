@@ -38,6 +38,16 @@ carries the ports. Deriving the bits from the embedded header instead would have
 `VIP_HASH_5TUPLE` VIP drop precisely the `frag_needed` errors that path MTU discovery depends
 on, which is the opposite of the intent.
 
+**The same reasoning extends from the flags to the fragment/extension-header refusal of
+`docs/design/11-pipeline.md`.** That refusal exists because a head and a tail of the packet
+Marlin forwards can resolve `tuple.proto` differently when a Fragment header is immediately
+followed by another extension header. A quoted first fragment has no such head/tail split —
+it is embedded whole inside one ICMP packet — so `marlin_parse_icmp()` does not apply the
+refusal to it: a quote shaped `Fragment → Destination Options → UDP`, with ports past both,
+still recovers a tuple, the same way an unfragmented quote does. Refusing it would drop
+exactly the `frag_needed`/Packet Too Big errors the paragraph above already argues path MTU
+discovery depends on.
+
 **A fragmented ICMP packet is a separate case, and only its first fragment reaches the branch
 above.** A non-first fragment carries no ICMP header at all, so it is classifiable as neither an
 error nor an echo and there is no embedded header to recover a tuple from. It passes to the host

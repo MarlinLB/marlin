@@ -64,7 +64,7 @@ VIP's short-header volume is the aggregate signal that steering is not landing.
 | `adjust_head_failed` | instance | insufficient driver headroom for encapsulation — VXLAN's 50-byte requirement is the largest of the three and makes this materially more likely than under IPIP or GUE (`DEPLOYMENT.md` §1.3) |
 | `frame_too_big` | instance | encapsulated frame exceeds the egress MTU, under any of the three encapsulating modes (`docs/design/23-mtu.md`) |
 | `icmp_unparseable` | instance | PMTUD errors being dropped |
-| `unsupported_proto` | instance | ESP or AH traffic, or an IPv6 fragment (head or tail) whose Fragmentable Part opens with an extension header instead of the upper-layer protocol — Marlin cannot reach the ports behind either case (`docs/design/11-pipeline.md`) |
+| `unsupported_proto` | instance | ESP or AH traffic, or an IPv6 fragment being forwarded (head or tail) whose Fragmentable Part opens with an extension header instead of the upper-layer protocol — Marlin cannot reach the ports behind either case. Does not apply to the same shape inside an ICMP error's quote, which parses instead (`docs/design/11-pipeline.md`, `docs/design/13-icmp.md`) |
 | `no_backend` | instance | table rows pointing at 0 — a control-plane reconciliation fault |
 | `acl_blocked` | instance | the blocklist is matching; volume shows whether it is load-bearing, but mixes VIP-matched blocks with host-bound ones (`docs/design/11-pipeline.md` step 4) |
 | `vip_miss` | instance | traffic addressed to no configured VIP, or the fragment tail of one — an explicit-port VIP with no `port == 0` companion never admits its tails, which read here exactly like host-bound traffic (`docs/design/11-pipeline.md`, `docs/design/12-selection.md`) |
