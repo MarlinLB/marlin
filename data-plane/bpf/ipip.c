@@ -21,12 +21,60 @@
 
 _Static_assert(MARLIN_OVERHEAD_IPIP == sizeof(struct iphdr), "MARLIN_OVERHEAD_IPIP must match the outer IPv4 header size");
 
+/* Guard against pkt_len invariant violation to prevent garbage-length headers. */
+static __always_inline int marlin_ipip_validate(const struct marlin_ctx *mctx)
+{
+    if(mctx->pkt_len < ETH_HLEN) {
+        return MARLIN_DROP_ENCAP_LENGTH;
+    }
+
+    return marlin_frame_fits(mctx, MARLIN_OVERHEAD_IPIP);
+}
+
+/* Relocate the arriving Ethernet header to the new frame start for nexthop.c's MAC swap. */
+static __always_inline void marlin_ipip_build_outer_eth(const void *data, __u16 overhead, struct ethhdr *eth)
+{
+    __builtin_memcpy(eth, (const char *)data + overhead, sizeof(*eth));
+    eth->h_proto = bpf_htons(ETH_P_IP);
+}
+
+/* tos/id=0, frag_off=DF: frame_fits() prevents fragmentation. */
+static __always_inline void marlin_ipip_build_outer_ipv4(const struct marlin_ctx *mctx, struct iphdr *iph, __u16 inner_len)
+{
+    __builtin_memset(iph, 0, sizeof(*iph));
+    iph->version = 4;
+    iph->ihl = MARLIN_IPV4_IHL_MIN;
+    iph->frag_off = bpf_htons(IP_DF);
+    iph->ttl = MARLIN_OUTER_TTL;
+    iph->protocol = (mctx->tuple.family == AF_INET6) ? IPPROTO_IPV6 : IPPROTO_IPIP;
+    iph->tot_len = bpf_htons((__u16)(MARLIN_OVERHEAD_IPIP + inner_len));
+    iph->saddr = mctx->cfg.tunnel_src;
+    iph->daddr = mctx->backend.addr;
+    iph->check = marlin_ipv4_csum(iph);
+}
+
+/*
+ * Both writes land inside the ETH_HLEN + MARLIN_OVERHEAD_IPIP bytes the
+ * caller's bounds check already proved writable; store each header right
+ * after building it; interleaving eth's store before iph's build keeps
+ * their live ranges disjoint instead of both surviving to a batched end.
+ */
+static __always_inline void marlin_ipip_write_outer(const struct marlin_ctx *mctx, void *data, __u16 inner_len)
+{
+    struct ethhdr eth;
+    struct iphdr iph;
+
+    marlin_ipip_build_outer_eth(data, MARLIN_OVERHEAD_IPIP, &eth);
+    __builtin_memcpy(data, &eth, sizeof(eth));
+
+    marlin_ipip_build_outer_ipv4(mctx, &iph, inner_len);
+    __builtin_memcpy((char *)data + ETH_HLEN, &iph, sizeof(iph));
+}
+
 int marlin_ipip_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
 {
     void *data;
     void *data_end;
-    struct ethhdr eth;
-    struct iphdr iph;
     __u16 inner_len;
     int rc;
 
@@ -34,12 +82,7 @@ int marlin_ipip_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
         return MARLIN_ABORT_NULLREF;
     }
 
-    /* Guard against pkt_len invariant violation to prevent garbage-length headers. */
-    if(mctx->pkt_len < ETH_HLEN) {
-        return MARLIN_DROP_ENCAP_LENGTH;
-    }
-
-    rc = marlin_frame_fits(mctx, MARLIN_OVERHEAD_IPIP);
+    rc = marlin_ipip_validate(mctx);
 
     if(rc != MARLIN_OK) {
         return rc;
@@ -58,30 +101,7 @@ int marlin_ipip_encap_packet(struct xdp_md *ctx, struct marlin_ctx *mctx)
         return MARLIN_DROP_ADJUST_HEAD;
     }
 
-    /* Relocate the arriving Ethernet header to the new frame start for nexthop.c's MAC swap. */
-    __builtin_memcpy(&eth, (char *)data + MARLIN_OVERHEAD_IPIP, sizeof(eth));
-
-    /*
-     * The outer network layer is always IPv4 (docs/design/14-forwarding-modes.md
-     * SS7.5), regardless of tuple.family, so the arriving EtherType -- which
-     * mirrors tuple.family exactly (parser.c) -- must not carry forward unchanged.
-     */
-    eth.h_proto = bpf_htons(ETH_P_IP);
-    __builtin_memcpy(data, &eth, sizeof(eth));
-
-    /* tos/id=0, frag_off=DF: frame_fits() prevents fragmentation. */
-    __builtin_memset(&iph, 0, sizeof(iph));
-    iph.version = 4;
-    iph.ihl = MARLIN_IPV4_IHL_MIN;
-    iph.frag_off = bpf_htons(IP_DF);
-    iph.ttl = MARLIN_OUTER_TTL;
-    iph.protocol = (mctx->tuple.family == AF_INET6) ? IPPROTO_IPV6 : IPPROTO_IPIP;
-    iph.tot_len = bpf_htons((__u16)(MARLIN_OVERHEAD_IPIP + inner_len));
-    iph.saddr = mctx->cfg.tunnel_src;
-    iph.daddr = mctx->backend.addr;
-    iph.check = marlin_ipv4_csum(&iph);
-
-    __builtin_memcpy((char *)data + ETH_HLEN, &iph, sizeof(iph));
+    marlin_ipip_write_outer(mctx, data, inner_len);
 
     mctx->l3_off = ETH_HLEN;
     mctx->pkt_len = (__u16)(ETH_HLEN + MARLIN_OVERHEAD_IPIP + inner_len);
