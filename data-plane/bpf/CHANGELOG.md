@@ -6,6 +6,13 @@ All notable changes to `marlin.bpf.o` will be documented in this file. Versioned
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-09-17
+
+- Split `marlin_ipip_encap_packet` into `static __always_inline` helpers
+  (`marlin_ipip_validate`, `marlin_ipip_build_outer_eth`, `marlin_ipip_build_outer_ipv4`,
+  `marlin_ipip_write_outer`) for readability. No behaviour change; the combined stack frame
+  is unchanged at 32 bytes.
+
 ## [0.1.0] - 2026-09-17
 
 - Label the parser's `not_forwarded` and `icmp_echo` passes as early returns rather than parse
