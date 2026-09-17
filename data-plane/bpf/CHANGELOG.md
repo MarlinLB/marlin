@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split the `marlin_vxlan_encap_packet` function into multiple functions that are inlined by the
   compiler.
 
+## [0.1.2] - 2026-09-17
+
+- Split `marlin_gue_encap_packet` into `static __always_inline` helpers
+  (`marlin_gue_validate`, `marlin_gue_build_outer_eth`, `marlin_gue_build_outer_ipv4`,
+  `marlin_gue_build_outer_udp`, `marlin_gue_build_gue_hdr`, `marlin_gue_write_outer_l3`,
+  `marlin_gue_write_outer_l4`) for readability. No behaviour change; the combined stack frame
+  shrinks from 56 to 24 bytes, since each header's store now happens right after it is built
+  instead of all four surviving live to a batched end.
+
+## [0.1.1] - 2026-09-17
+
+- Split `marlin_ipip_encap_packet` into `static __always_inline` helpers
+  (`marlin_ipip_validate`, `marlin_ipip_build_outer_eth`, `marlin_ipip_build_outer_ipv4`,
+  `marlin_ipip_write_outer`) for readability. No behaviour change; the combined stack frame
+  is unchanged at 32 bytes.
+
 ## [0.1.0] - 2026-09-17
 
 - Label the parser's `not_forwarded` and `icmp_echo` passes as early returns rather than parse
