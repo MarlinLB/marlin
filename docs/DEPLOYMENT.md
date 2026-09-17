@@ -358,6 +358,30 @@ flag has no effect on a backend not yet configured, but a mismatched `hash_key` 
 that *is* configured routes deterministically to the wrong backend rather than merely missing
 the migration case (`docs/design/21-active-active.md`).
 
+### 1.7.3 `VIP_DSCP` — outer marking, not a QoS guarantee
+
+`VIP_DSCP` (`vip_meta.flags` bits 16-21, `docs/design/08-types.md`) sets the outer IPv4 DSCP
+Marlin writes on every IPIP, GUE and VXLAN frame for a VIP, `docs/design/14-forwarding-modes.md`
+§7.2. Marlin only writes the byte; it does nothing else with it.
+
+**The underlay must be configured to act on the marking, or nothing happens.** Marlin does not
+police queues, classify interfaces or configure QoS anywhere — the mark is inert until whatever
+switches and routers sit between Marlin and the backend are configured to classify by outer
+DSCP and give the marked class preferential treatment during congestion. Absent that
+configuration, this field has no effect on packet processing throughput or latency; it is purely
+a wire signal for infrastructure Marlin does not control.
+
+**It marks the outer header only, and it is never derived from the client.** Marlin never reads
+or copies the client's own DSCP or ECN bits into the outer header — the value comes from
+configuration alone, so a hostile client cannot claim its own traffic is latency-sensitive by
+setting its own IP header's DSCP field. The inner header the backend eventually sees is
+untouched.
+
+**L2 DSR ignores it.** A VIP with backends only in `L2DSR` mode has no outer header for the
+marking to land in, so `VIP_DSCP` is accepted but inert there
+(`docs/design/20-configuration-validation.md` warns rather than rejects, since backend modes
+change under reconciliation).
+
 ### 1.8 Routing state
 
 **IPv4 forwarding must be enabled.** The datapath consults the kernel routing table for backends it

@@ -155,12 +155,17 @@ packet: for an ICMP error it is reconstructed from the embedded header.
 | 3 | `VIP_QUIC` — steer short-header UDP packets by connection ID instead of the hash path (docs/design/30-quic.md) |
 | 4–7 | reserved, must be zero |
 | 8–12 | `VIP_QUIC_CID_LEN` — configured connection-ID length, 7–20; 0 = unset (docs/design/30-quic.md) |
-| 13–31 | reserved, must be zero |
+| 13–15 | reserved, must be zero |
+| 16–21 | `VIP_DSCP` — outer DSCP for this VIP's tunnel modes, `<< 2` into the emitted `tos` byte; 0 = unmarked (CS0), byte-identical to before this field existed (docs/design/14-forwarding-modes.md) |
+| 22–31 | reserved, must be zero |
 
 `VIP_HASH_5TUPLE` is hash input, so it is subject to the cross-instance agreement requirement
 of `docs/design/21-active-active.md` rather than being a free per-instance choice. `VIP_QUIC`
 and `VIP_QUIC_CID_LEN` join it there for the same reason: a mismatch does not merely lose
-affinity, it routes deterministically to the wrong backend (docs/design/30-quic.md).
+affinity, it routes deterministically to the wrong backend (docs/design/30-quic.md). `VIP_DSCP`
+does not join them: it never influences which backend a packet reaches, only a QoS byte on the
+wire after that choice is made, so an instance disagreement changes queuing behaviour, not
+correctness (docs/design/20-configuration-validation.md).
 
 `backend.flags` packs the encapsulation mode with three independent bits — `mode`, `state` and
 `fib` were byte-per-field in an earlier revision of this document; the header now packs all of

@@ -33,13 +33,24 @@ so the backend decapsulates and replies directly to the client.
 
 **The remaining outer IPv4 fields, common to all three encapsulating modes.** `version=4`,
 `ihl=5` (no options), `id=0`, `frag_off=IP_DF` (`proto.h:20`) — Marlin never fragments the
-outer packet; it drops `frame_too_big` instead (`docs/design/23-mtu.md`) — `ttl=64`, `tos=0`,
-and `tot_len` the inner packet's length plus the mode's overhead. `tos=0` rather than copying
-the inner header's DSCP/ECN is a deliberate omission, not an oversight: copying either needs a
-per-family read of the inner header plus RFC 6040's ECN remapping rules on decapsulation, so it
-stays out until a revision does both rather than one half-done. `protocol` is 4 or 41 as above
+outer packet; it drops `frame_too_big` instead (`docs/design/23-mtu.md`) — `ttl=64`, and
+`tot_len` the inner packet's length plus the mode's overhead. `protocol` is 4 or 41 as above
 for IPIP; GUE and VXLAN (§7.3, §7.4, below) fix it at 17 (UDP) instead, since their inner-family
 signal moves to the GUE header's protocol byte and the inner EtherType respectively.
+
+`tos` carries the VIP's operator-assigned outer DSCP (`vip_meta.flags` bits 16-21,
+`docs/design/08-types.md`), shifted `<< 2`; default 0 (CS0), byte-identical to every frame this
+mode emitted before the field existed. All three builders write it before computing the outer
+checksum. This is still not the inner header's DSCP or ECN, and copying either remains out of
+scope for the reason it always was: copying needs a per-family read of the inner header plus
+RFC 6040's ECN remapping rules on decapsulation, and a configured value needs neither. The field
+is six bits, not eight, so no configuration can reach the ECN pair — a property of the field's
+width, not of a rule the control plane has to honour. The marking applies to every encapsulated
+frame a builder emits, forwarded ICMP errors (`docs/design/13-icmp.md`) included, since none of
+the three builders condition the store on the inner packet. Neither Katran nor GLB does this:
+Katran's `create_v4_hdr()` copies the inner ToS byte, ECN pair included, behind a compile-time
+flag that defaults on; GLB hard-zeroes both fields with no configuration surface. Marlin's
+per-VIP, DSCP-only, ECN-excluded marking is neither.
 
 - Overhead 20 bytes.
 - Crosses L3 boundaries, unlike L2 DSR.

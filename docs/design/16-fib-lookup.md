@@ -10,6 +10,15 @@ policy rules. On success the helper returns egress `ifindex`, `smac` and `dmac`;
 is the same field as the input `tot_len` and is populated only on `RET_FRAG_NEEDED`, below, not
 on success. Then `XDP_TX` if egress equals ingress, otherwise `XDP_REDIRECT` via `tx_ports`.
 
+`fib.tos` is seeded with `marlin_outer_tos(mctx)` — the VIP's configured DSCP, `<< 2`, 0 under
+L2 DSR since no `marlin_ctx` reaches `nexthop.c` with the field set outside the three
+encapsulating modes (`docs/design/14-forwarding-modes.md`) — so a policy-routing rule matching
+`dsfield` resolves the next hop the way the wire will actually see the frame, not the way an
+unmarked lookup would have. Flags stay `0`: `BPF_FIB_LOOKUP_DIRECT` skips policy rules
+entirely, which would make `fib.tos` moot, and no mode needs that bypass today. `fib.tos` is
+unioned with `rt_metric`, which the kernel may write back on success; nothing reads it after
+the call, the same non-hazard `mtu_result`'s union with `tot_len` is below.
+
 **`RET_SUCCESS` includes gatewayed routes, and L2 DSR must reject them.** `dmac` is the next
 hop's MAC either way — the backend's where the route is on-link, a router's where it is not.
 The two are told apart by the helper's *conditional* write-back: on an IPv4 gateway it assigns

@@ -373,6 +373,12 @@ echo "✓ BPF program loaded and attached to veth_test0"
 #     value <32 bytes packed from struct backend, types.h>
 # sudo data-plane/build/tools/marlin_seed add /sys/fs/bpf/marlin \
 #     203.0.113.1 80 6 0 0 1   # vip=203.0.113.1 port=80 proto=tcp(6) vip_num=0 flags=0 backend_id=1
+#
+# flags packs several bits (docs/design/08-types.md); marlin_seed's own
+# usage text lists them. To mark this VIP's tunnel traffic EF (DSCP 46,
+# RFC 3246) instead, flags = 46 << 16 = 3014656:
+# sudo data-plane/build/tools/marlin_seed add /sys/fs/bpf/marlin \
+#     203.0.113.1 80 6 0 3014656 1
 
 # 8. Send test traffic in on the peer
 # (step §5.1 — tcpdump, scapy, or a custom tool)
