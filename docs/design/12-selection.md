@@ -104,8 +104,8 @@ row selection; it does not remove it from VIP lookup.
 The lookup key's protocol field can diverge the same way, and no `port == 0` companion recovers
 it: an IPv6 head and tail agree on `tuple.proto` only when nothing sits between the Fragment
 header and the upper-layer protocol (`docs/design/11-pipeline.md`). Where something does, the
-parser refuses both halves as `unsupported_proto` rather than let admission split them on a
-mismatched protocol the way it already can on a mismatched port.
+parser refuses both halves of the packet being forwarded as `unsupported_proto` rather than let
+admission split them on a mismatched protocol the way it already can on a mismatched port.
 
 The cost is that clients sharing a source address share a row, and therefore a backend: CGNAT,
 large proxy egresses, and VPN concentrators, where one address stands for a whole client

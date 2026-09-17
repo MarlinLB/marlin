@@ -31,7 +31,8 @@ struct marlin_l3 {
     __u32 l4_off;
     __u32 flags;
     __u8 proto;
-    __u8 pad[3];
+    __u8 frag_ext; /* Fragmentable Part opens with an extension header */
+    __u8 pad[2];
 };
 
 static __always_inline const struct ethhdr *marlin_parse_eth(const void *data, const void *data_end)
@@ -130,13 +131,12 @@ static __always_inline int marlin_walk_ext6(const void *data, const void *data_e
 
             /*
              * RFC 8200 SS4.5 puts the first header of the Fragmentable Part
-             * here, not necessarily the upper-layer protocol. A tail stops at
-             * this header and a head walks past it, so the two would key
-             * vip_map on different protocols and split the datagram; behind
-             * an options header neither can see an ESP or AH payload either.
+             * here, not necessarily the upper-layer protocol -- recorded for
+             * marlin_parse() to act on, since this walk also runs over a
+             * quoted header inside an ICMP error, where the policy differs.
              */
             if((out->flags & MARLIN_CTX_F_FRAG_ANY) != 0U && marlin_is_ext6(fh->nexthdr)) {
-                return MARLIN_DROP_UNSUPPORTED_PROTO;
+                out->frag_ext = 1;
             }
 
             /* Non-first fragments carry payload, not headers. */
@@ -315,6 +315,14 @@ static __always_inline int marlin_parse_icmp(const void *data, const void *data_
         return MARLIN_DROP_ICMP_UNPARSEABLE;
     }
 
+    /*
+     * emb->frag_ext is deliberately not checked here: it flags a fragment
+     * head/tail split risk in vip_map, which only applies to the packet
+     * Marlin forwards. The quoted packet was a backend-to-client reply that
+     * bypassed Marlin through DSR, so it has no such risk -- docs/design/
+     * 13-icmp.md's "fragment flags describe the ICMP packet, not the
+     * embedded header" argument, extended from flags to this verdict.
+     */
     if(marlin_parse_ports(data, data_end, emb->l4_off, emb->proto, &emb_sport, &emb_dport) != MARLIN_OK) {
         return MARLIN_DROP_ICMP_UNPARSEABLE;
     }
@@ -382,6 +390,24 @@ int marlin_parse(struct xdp_md *ctx, struct marlin_ctx *mctx)
      * protocol.
      */
     if(marlin_proto_unsupported(l3.proto)) {
+        return MARLIN_DROP_UNSUPPORTED_PROTO;
+    }
+
+    /*
+     * RFC 8200 SS4.5 puts the first header of the Fragmentable Part in the
+     * Fragment header's Next Header field, not necessarily the upper-layer
+     * protocol. A tail stops walking at that header and takes its Next
+     * Header as tuple.proto directly; a head walks past it and resolves the
+     * real L4. Left alone, the two would key vip_map on different protocols
+     * for the same datagram, so both halves are refused here -- before
+     * either reaches vip_map, ahead of the fragment shortcut below.
+     *
+     * l3.frag_ext is set by marlin_walk_ext6() for the packet being
+     * forwarded only. marlin_parse_icmp() runs the same walk over a quoted
+     * header and does not act on this field: an ICMP error is a whole,
+     * unfragmented packet, so nothing about it can split.
+     */
+    if(l3.frag_ext) {
         return MARLIN_DROP_UNSUPPORTED_PROTO;
     }
 

@@ -26,9 +26,13 @@ clients, there is no reverse path and no classifier.
    while a tail stops at the Fragment header and takes its Next Header value as `tuple.proto`
    directly. Left alone, the two would key `vip_map` on different protocols for the same
    datagram, so any extension header found immediately behind a Fragment header is
-   `unsupported_proto` for both halves — a second, broader case than the ESP/AH one above,
-   caught the same way: the check runs inside the fragment header's own branch of the walk, so
-   it catches the head as well as the tail, before either reaches `vip_map`.
+   `unsupported_proto` for both halves — a second, broader case than the ESP/AH one above.
+   The extension-header walk only records the shape; `marlin_parse()` is what refuses it,
+   ahead of the fragment handling below, so it catches the head as well as the tail before
+   either reaches `vip_map`. **This refuses only the packet Marlin forwards.** The same walk
+   also parses the header an ICMP error quotes (`docs/design/13-icmp.md`), and there the
+   refusal does not apply: a quote is a whole, unfragmented packet — the backend-to-client
+   reply it reports on bypassed Marlin through DSR — so it has no head/tail to split.
    A non-first fragment carries no L4 header in either family, so `sport` and `dport` stay
    zero and the VIP lookup falls to the port-agnostic retry below. That retry resolves the
    packet only when a `port == 0` entry exists for its `(address, protocol)`; on a VIP
