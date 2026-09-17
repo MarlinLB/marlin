@@ -54,10 +54,9 @@ _Static_assert(sizeof(struct marlin_ctx) <= 108, "marlin_ctx exceeds its mctx_sc
 
 _Static_assert((MARLIN_CTX_DSCP_MASK & (MARLIN_CTX_F_ICMP | MARLIN_CTX_F_FRAG | MARLIN_CTX_F_FRAG_FIRST | MARLIN_CTX_F_QUIC)) == 0,
                "the mctx DSCP field overlaps an assigned MARLIN_CTX_F_* bit");
-_Static_assert(
-        VIP_DSCP_MASK ==
-                MARLIN_CTX_DSCP_MASK, // NOLINT(misc-redundant-expression) -- deliberately tautological: catches either side moving
-        "the mctx DSCP field must sit where balancer.c copies vip_meta's without a shift");
+// NOLINTNEXTLINE(misc-redundant-expression) -- deliberately tautological: catches either side moving
+_Static_assert(VIP_DSCP_MASK == MARLIN_CTX_DSCP_MASK,
+               "the mctx DSCP field must sit where balancer.c copies vip_meta's without a shift");
 
 /*
  * The outer ToS byte for the three encapsulating modes: the VIP's configured

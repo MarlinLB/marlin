@@ -139,8 +139,8 @@ _Static_assert((20U << VIP_QUIC_CID_LEN_SHIFT) <= VIP_QUIC_CID_LEN_MASK,
 _Static_assert((VIP_DSCP_MASK & (VIP_ACL | VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK)) == 0,
                "the DSCP field overlaps an assigned vip_meta.flags bit");
 _Static_assert((VIP_DSCP_MASK >> VIP_DSCP_SHIFT) == 0x3f, "the DSCP field must hold every 6-bit codepoint (RFC 2474)");
-_Static_assert((((VIP_DSCP_MASK >> VIP_DSCP_SHIFT) << 2) & 0x03) ==
-                       0, // NOLINT(misc-redundant-expression) -- constant-folds, that's the point of the assert
+// NOLINTNEXTLINE(misc-redundant-expression) -- constant-folds, that's the point of the assert
+_Static_assert((((VIP_DSCP_MASK >> VIP_DSCP_SHIFT) << 2) & 0x03) == 0,
                "a configured DSCP must not reach the outer ToS byte's ECN bits (RFC 3168)");
 /* The four acl_lists bits must fit below the reserved range. */
 _Static_assert((ACL_LISTS_BIT(ACL_LIST_BLOCK, ACL_FAMILY_V6) & ACL_LISTS_RESERVED) == 0,
