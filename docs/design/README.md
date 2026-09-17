@@ -70,3 +70,4 @@ provisioning are the integrator's responsibility; see `DEPLOYMENT.md`.
 | 28-rate-limiting.md | Token-bucket rate limiting design and update algorithm |
 | 29-versions.md | Minimum kernel and toolchain version requirements |
 | 30-quic.md | QUIC connection-ID steering: wire format, ABI, and the backend contract |
+| 31-file-configuration.md | **Proposed, pre-decision.** TOML file configuration read by `marlind`, and the single-writer rule it depends on |
