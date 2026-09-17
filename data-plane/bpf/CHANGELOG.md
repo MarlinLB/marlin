@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.1] - 2026-09-16
 
-- Implement DSR load balancing mechanism.
+- Implement the DSR load balancing mechanism.
 - Implement support for the following forwarding modes:
   - GUE;
   - IP in IP;

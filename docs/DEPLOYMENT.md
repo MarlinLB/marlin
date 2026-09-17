@@ -744,7 +744,7 @@ largest of the three encapsulating modes. The outer header is always IPv4.
 The backend needs **one `vxlan` device**, matching the configured VNI and `dstport`:
 
 ```sh
-ip link add vxlan0 type vxlan id 100 dstport 4789 local 198.51.100.20 remote any
+ip link add vxlan0 type vxlan id 100 dstport 4789 local 198.51.100.20
 ip link set vxlan0 up
 ```
 

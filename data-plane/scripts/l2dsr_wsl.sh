@@ -47,8 +47,8 @@
 #
 #   up              build the topology (does not attach the program)
 #   attach          load marlin.bpf.o, pin it, attach to ${MARLIN_IF}
-#   seed            write backends[0]; nothing forwards until it is written
-#   unseed          zero backends[0] again; the program stays attached
+#   seed            write vip_map and backends[1]; nothing forwards until then
+#   unseed          remove the vip_map entry and zero backends[1]; the program stays attached
 #   reload          after a rebuild: detach, unpin, load the new object, attach
 #   detach          detach and remove the pins; the topology stays up
 #   down            tear the topology down (implies detach)
@@ -58,10 +58,10 @@
 #   test_http_get   GET the VIP from the client namespace, against a throwaway
 #                   listener started in the backend namespace
 #
-# The working order is up, attach, seed, listen. Seeding is not optional: BPF
-# array maps come up zero-filled, and an all-zero backends[0] has
-# MARLIN_BE_F_STATE clear, which xdp_interim_nexthop() (bpf/main.c) reads as
-# "not mine" and passes. An attached program with unseeded maps forwards
+# The working order is up, attach, seed, listen. Seeding is not optional: an
+# unmatched VIP passes every packet (marlin_balancer_admit, bpf/balancer.c),
+# and a backend with MARLIN_BE_F_STATE clear (an all-zero backends[] slot) is
+# never selected either. An attached program with unseeded maps forwards
 # nothing and looks exactly like a broken datapath.
 #
 # Overridable: MARLIN_OBJ, MARLIN_PINDIR, XDP_MODE, BPFTOOL.
@@ -204,10 +204,10 @@ Attach — ${XDP_MODE}, because WSL2 veth has no native XDP:
   sudo $0 reload          # after a rebuild: detach, unpin, load, attach
   sudo $0 detach          # detach and unpin; rig stays up
 
-Seed — an attached program forwards nothing until backends[0] is written:
+Seed — an attached program forwards nothing until vip_map and backends[${BACKEND_ID}] are written:
 
-  sudo $0 seed            # write backends[0] with the values above
-  sudo $0 unseed          # zero it again, to watch forwarding stop
+  sudo $0 seed            # write vip_map and backends[${BACKEND_ID}] with the values above
+  sudo $0 unseed          # remove the vip_map entry and zero backends[${BACKEND_ID}]
 
 Drive it:
 
@@ -247,7 +247,12 @@ status() {
 	fi
 	echo "== maps =="
 	if [[ -e ${PINDIR}/backends ]]; then
-		backend_show || echo "  backends[0] not seeded (run '$0 seed')"
+		if vip_seeded; then
+			echo "  vip_map: seeded (${VIP}:${HTTP_PORT})"
+		else
+			echo "  vip_map: empty (run '$0 seed')"
+		fi
+		backend_show || echo "  backends[${BACKEND_ID}] not seeded (run '$0 seed')"
 	else
 		echo "  no pins under ${PINDIR} (run '$0 attach')"
 	fi
@@ -263,9 +268,8 @@ status() {
 # Map seeding
 # ---------------------------------------------------------------------------
 #
-# Only backends[0] is written -- config's zero value already suits this rig,
-# and vip_map/fwd_table go unwritten since xdp_interim_nexthop() reads
-# backends[0] directly; they're required once selection lands (Phase 2b).
+# config's zero value already suits this rig: nothing here is encapsulated,
+# so config.tunnel_src/max_frame are never read.
 
 seed() {
 	need_root
@@ -279,13 +283,17 @@ seed() {
 	# MARLIN_BE_F_FIB stays clear, so the stored MAC is the fast path and
 	# bpf_fib_lookup() is not consulted (docs/design/15-nexthop-l2dsr.md).
 	flags=$(( mode | (1 << bit) ))
-	value=$(pack_backend "${BE_IP}" "${BE_MAC}" "${flags}")
+	value=$(pack_backend "${BE_IP}" "${BE_MAC}" "${flags}" "${BACKEND_ID}")
 
 	# Unquoted on purpose: bpftool takes the value as separate byte arguments.
 	# shellcheck disable=SC2086
-	"${BPFTOOL}" map update pinned "${PINDIR}/backends" key 0 0 0 0 value ${value}
+	"${BPFTOOL}" map update pinned "${PINDIR}/backends" key ${BACKEND_KEY} value ${value}
 
-	echo "seeded backends[0]:"
+	# vip_map/fwd_table: the port-agnostic lookup balancer.c performs
+	# (docs/design/11-pipeline.md), pointed at the one backend above.
+	vip_seed "${BACKEND_ID}"
+
+	echo "seeded backends[${BACKEND_ID}]:"
 	backend_show
 }
 
@@ -315,8 +323,8 @@ usage: $0 <command> [args]
   up              build the topology (namespaces, veths, bridge); does not
                   attach the program
   attach          load marlin.bpf.o, pin it, and attach it to ${MARLIN_IF}
-  seed            write backends[0] so the attached program starts forwarding
-  unseed          zero backends[0] again; the program stays attached
+  seed            write vip_map and backends[1] so the attached program starts forwarding
+  unseed          remove the vip_map entry and zero backends[1]; the program stays attached
   reload          rebuild loop: detach, unpin, load the new object, reattach
   detach          detach the program and remove its pins; topology stays up
   status          show the rig's namespaces, attach state and seeded maps
