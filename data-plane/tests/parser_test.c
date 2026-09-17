@@ -315,12 +315,15 @@ MARLIN_TEST(walk_ext6_eight_max_hdrlen_headers_advances_by_16384)
 }
 
 /*
- * Two chained FRAGMENT headers: the first (MF only) accumulates F_FRAG_FIRST,
- * the second (offset set) accumulates F_FRAG -- parser.c:124 uses |=, so both
- * end up set at once. include/marlin/marlin.h:26-27 documents them as if
- * mutually exclusive; this is Observation 2, pinned rather than fixed.
+ * Two chained FRAGMENT headers: the first (MF only) sets F_FRAG_FIRST, and
+ * IPPROTO_FRAGMENT is itself marlin_is_ext6() -- a second fragment header is
+ * exactly the "extension header behind a fragment header" shape the gate
+ * below refuses, so the walk never reaches the second header at all. Before
+ * that gate existed this chained into MARLIN_OK with both flag bits set
+ * (parser.c's |= accumulates them); this test used to pin that as an
+ * accepted implementation quirk rather than a fix. The fix closes it.
  */
-MARLIN_TEST(walk_ext6_two_fragment_headers_sets_both_frag_flags)
+MARLIN_TEST(walk_ext6_two_fragment_headers_is_unsupported_proto)
 {
     struct marlin_l3 out;
     int rc;
@@ -335,10 +338,48 @@ MARLIN_TEST(walk_ext6_two_fragment_headers_sets_both_frag_flags)
     pb_frag6(IPPROTO_FRAGMENT, IP6_MF);
     pb_frag6(IPPROTO_TCP, 0x0008);
     rc = marlin_walk_ext6(pb_arena, pb_arena + pb_len, 0, IPPROTO_FRAGMENT, MAX_EXT_HDRS, &out);
-    CHECK_RET(MARLIN_OK, rc);
-    CHECK_EQ(MARLIN_CTX_F_FRAG | MARLIN_CTX_F_FRAG_FIRST, out.flags);
-    CHECK_EQ(IPPROTO_TCP, out.proto);
-    CHECK_EQ(16, out.l4_off);
+    CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
+    CHECK_EQ(MARLIN_CTX_F_FRAG_FIRST, out.flags);
+}
+
+/*
+ * RFC 8200 SS4.5: the Fragment header's Next Header is the first header of
+ * the Fragmentable Part, not necessarily the upper-layer protocol. A tail
+ * stops walking at the fragment header (parser.c), so a Destination Options
+ * header immediately behind it would resolve a protocol the head never
+ * sees -- refused rather than trusted.
+ */
+MARLIN_TEST(walk_ext6_frag_tail_before_ext_hdr_is_unsupported_proto)
+{
+    struct marlin_l3 out;
+    int rc;
+
+    memset(&out, 0, sizeof(out));
+    pb_reset();
+    pb_frag6(IPPROTO_DSTOPTS, 0x0008 /* offset set, MF clear: tail */);
+    pb_ext6(IPPROTO_TCP, 0);
+    rc = marlin_walk_ext6(pb_arena, pb_arena + pb_len, 0, IPPROTO_FRAGMENT, MAX_EXT_HDRS, &out);
+    CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
+    CHECK_EQ(MARLIN_CTX_F_FRAG, out.flags);
+}
+
+/*
+ * The symmetric head: MF set, no offset. Before this fix the walk continued
+ * past the fragment header and resolved TCP behind Destination Options,
+ * while the tail above stopped at proto 60 -- the mismatch this fix closes.
+ */
+MARLIN_TEST(walk_ext6_frag_head_before_ext_hdr_is_unsupported_proto)
+{
+    struct marlin_l3 out;
+    int rc;
+
+    memset(&out, 0, sizeof(out));
+    pb_reset();
+    pb_frag6(IPPROTO_DSTOPTS, IP6_MF);
+    pb_ext6(IPPROTO_TCP, 0);
+    rc = marlin_walk_ext6(pb_arena, pb_arena + pb_len, 0, IPPROTO_FRAGMENT, MAX_EXT_HDRS, &out);
+    CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
+    CHECK_EQ(MARLIN_CTX_F_FRAG_FIRST, out.flags);
 }
 
 /*
@@ -1127,6 +1168,29 @@ MARLIN_TEST(parse_ipv6_non_first_fragment_ah_is_unsupported_proto)
     CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
 }
 
+/*
+ * Without the frag/ext-header gate, this tail resolved proto 60 (Destination
+ * Options, the header immediately behind the fragment header) instead of
+ * ESP, missed the unsupported_proto check entirely, and reached MARLIN_OK --
+ * a fragment tail that should have been refused, forwarded instead.
+ */
+MARLIN_TEST(parse_ipv6_frag_tail_before_esp_is_unsupported_proto)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    pb_ipv6(IPPROTO_FRAGMENT, SRC6, DST6);
+    pb_frag6(IPPROTO_DSTOPTS, 0x0008 /* offset set, MF clear: tail */);
+    pb_ext6(IPPROTO_ESP, 0);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
+}
+
 /* --- IPv6 body ------------------------------------------------------------ */
 
 MARLIN_TEST(parse_ipv6_tcp_no_ext_hdrs_l4_off)
@@ -1241,6 +1305,32 @@ MARLIN_TEST(parse_ipv6_atomic_fragment_sets_no_flags)
     CHECK_RET(MARLIN_OK, rc);
     CHECK_EQ(0, mctx.flags);
     CHECK_EQ(62, mctx.l4_off);
+}
+
+/*
+ * An atomic fragment sets no fragment flag, so the frag/ext-header gate
+ * above never engages and the walk continues through Destination Options to
+ * the real L4 exactly as an unfragmented packet would.
+ */
+MARLIN_TEST(parse_ipv6_atomic_fragment_with_ext_hdr_still_resolves_l4)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    pb_ipv6(IPPROTO_FRAGMENT, SRC6, DST6);
+    pb_frag6(IPPROTO_DSTOPTS, 0);
+    pb_ext6(IPPROTO_TCP, 0);
+    pb_ports(1234, 80);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(0, mctx.flags);
+    CHECK_EQ(IPPROTO_TCP, mctx.tuple.proto);
+    CHECK_EQ(70, mctx.l4_off);
 }
 
 MARLIN_TEST(parse_ipv6_sctp_is_not_forwarded)

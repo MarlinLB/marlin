@@ -112,6 +112,14 @@ unenforceable on it. The source address is in every fragment, so address-only ma
 fragment-shaped hole and needs no counter to measure one. This is the principal operational
 benefit of dropping L4 granularity, not the reduced map count.
 
+**The rule itself has no fragment-shaped hole; which enforcement arm applies to a fragment
+tail can still differ from its head's.** `VIP_ACL` is read from the `vip_map` hit
+(`docs/design/11-pipeline.md`), and a tail's parsed destination port is always zero
+(`docs/design/12-selection.md`, "Hash input"), so a tail can miss the VIP its head hit, or hit
+a different one. A blocked source's tail then enforces against the instance-wide arm — or a
+different VIP's `VIP_ACL` bit — rather than against the head's, even though the same rule
+matched the same address in both.
+
 ## `acl_lists` write ordering
 
 - Adding the first rule to a list: **set** the bit, **then** write the rule.

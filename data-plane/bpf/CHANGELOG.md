@@ -6,6 +6,14 @@ All notable changes to `marlin.bpf.o` will be documented in this file. Versioned
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Drop an IPv6 fragment, head or tail, as `unsupported_proto` when its Fragment header is
+  immediately followed by another extension header. The Fragment header's Next Header field is
+  the first header of the Fragmentable Part (RFC 8200 §4.5), not necessarily the upper-layer
+  protocol, so a tail stopping there and a head walking past it could resolve `tuple.proto`
+  differently for the same datagram and key `vip_map` on two different protocols.
+
 ## [0.2.0] - 2026-09-17
 
 - `marlin_ipv4_csum` sums the header as raw 16-bit words instead of taking a second 20-byte

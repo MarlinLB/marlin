@@ -78,6 +78,11 @@ Explicitly **not** validated:
   below this is not an inert configuration: the host-bound path of `docs/design/11-pipeline.md`
   step 4 enforces regardless, so such an instance is still a host firewall. Recorded here so the
   asymmetry with the rate limiter's warning is not read as an oversight.
+- An explicit-port VIP whose traffic fragments, configured with no `port == 0` companion entry
+  on the same address. Whether traffic fragments is not a property of the configuration, the
+  same reasoning as the `VIP_HASH_5TUPLE` entry above. Unlike that entry, there is no dedicated
+  counter: a fragment tail that misses the VIP is `vip_miss`, indistinguishable from ordinary
+  host-bound traffic (`docs/design/11-pipeline.md`, `docs/design/22-observability.md`).
 
 Accepted with a warning:
 

@@ -81,7 +81,10 @@ queue, discarding the reason to choose a UDP-encapsulating mode over IPIP in the
 
 The entropy hash degrades to whatever fields are readable. Inner fragments have no ports, so
 their fragments spread across paths and may reorder slightly before the backend reassembles —
-same backend either way, so reordering rather than misrouting.
+same backend either way (assuming both fragments reach a backend at all: an explicit-port VIP
+with no `port == 0` companion can miss a tail outright, or resolve it to a different `vip_num`
+than its head — `docs/design/12-selection.md`, "Hash input"), so reordering rather than
+misrouting.
 
 **The algorithm and port range.** `entropy.h`'s `marlin_entropy_sport()` mixes the five named
 fields of `marlin_ctx.tuple` — never `sizeof(struct packet_tuple)` whole, since `tuple.pad`'s
