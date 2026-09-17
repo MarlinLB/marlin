@@ -6,6 +6,16 @@ All notable changes to `marlin.bpf.o` will be documented in this file. Versioned
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-17
+
+- `marlin_ipv4_csum` sums the header as raw 16-bit words instead of taking a second 20-byte
+  copy and summing it byte-wise; `marlin_vxlan_write_outer` stores each outer header right
+  after building it instead of batching all four stores at the end, and
+  `marlin_vxlan_build_outer_eth` now writes directly into the packet instead of staging a
+  local `struct ethhdr`. No behaviour change; the combined stack frame shrinks from 88 to 32
+  bytes for `marlin_vxlan_encap_packet`, from 32 to 16 for `marlin_ipip_encap_packet`, and
+  from 24 to 8 for `marlin_gue_encap_packet`.
+
 ## [0.1.3] - 2026-09-17
 
 - Split the `marlin_vxlan_encap_packet` function into multiple functions that are inlined by the

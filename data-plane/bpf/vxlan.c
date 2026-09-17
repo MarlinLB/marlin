@@ -70,9 +70,10 @@ static __always_inline void marlin_vxlan_fixup_inner_eth(const struct marlin_ctx
     __builtin_memcpy(inner_eth->h_source, arriving_dst, ETH_ALEN);
 }
 
-static __always_inline void marlin_vxlan_build_outer_eth(struct ethhdr *eth, const __u8 *arriving_dst, const __u8 *arriving_src)
+static __always_inline void marlin_vxlan_build_outer_eth(void *data, const __u8 *arriving_dst, const __u8 *arriving_src)
 {
-    __builtin_memset(eth, 0, sizeof(*eth));
+    struct ethhdr *eth = data;
+
     __builtin_memcpy(eth->h_dest, arriving_src, ETH_ALEN);
     __builtin_memcpy(eth->h_source, arriving_dst, ETH_ALEN);
     eth->h_proto = bpf_htons(ETH_P_IP);
@@ -118,22 +119,27 @@ static __always_inline void marlin_vxlan_build_vxlan_hdr(struct marlin_vxlan_hdr
     vxlan->vni_and_reserved = bpf_htonl(vni << 8);
 }
 
+/*
+ * Each header's store happens right after it is built rather than all four
+ * surviving live to a batched end -- interleaving keeps their live ranges
+ * disjoint so clang can overlay the stack slots instead of spilling all four.
+ */
 static __always_inline void marlin_vxlan_write_outer(const struct marlin_ctx *mctx, void *data, const __u8 *arriving_dst,
                                                      const __u8 *arriving_src, __be16 sport, __u16 inner_len)
 {
-    struct ethhdr outer_eth;
     struct iphdr iph;
     struct udphdr udp;
     struct marlin_vxlan_hdr vxlan;
 
-    marlin_vxlan_build_outer_eth(&outer_eth, arriving_dst, arriving_src);
-    marlin_vxlan_build_outer_ipv4(mctx, &iph, inner_len);
-    marlin_vxlan_build_outer_udp(mctx, &udp, sport, inner_len);
-    marlin_vxlan_build_vxlan_hdr(&vxlan, mctx->backend.vni);
+    marlin_vxlan_build_outer_eth(data, arriving_dst, arriving_src);
 
-    __builtin_memcpy(data, &outer_eth, sizeof(outer_eth));
+    marlin_vxlan_build_outer_ipv4(mctx, &iph, inner_len);
     __builtin_memcpy((char *)data + ETH_HLEN, &iph, sizeof(iph));
+
+    marlin_vxlan_build_outer_udp(mctx, &udp, sport, inner_len);
     __builtin_memcpy((char *)data + ETH_HLEN + sizeof(iph), &udp, sizeof(udp));
+
+    marlin_vxlan_build_vxlan_hdr(&vxlan, mctx->backend.vni);
     __builtin_memcpy((char *)data + ETH_HLEN + sizeof(iph) + sizeof(udp), &vxlan, sizeof(vxlan));
 }
 

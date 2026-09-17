@@ -45,11 +45,23 @@ static __always_inline __sum16 marlin_csum_fold(__u32 sum)
     return bpf_htons((__u16)~sum);
 }
 
-/* Zero iph->check on local copy; checksum field is meaningless until computed. */
+/*
+ * Sums the header as raw 16-bit words, skipping the check field. One's
+ * complement addition is byte-order invariant, so the folded result is
+ * already in network order and needs no swap.
+ */
 static __always_inline __sum16 marlin_ipv4_csum(const struct iphdr *iph)
 {
-    struct iphdr tmp = *iph;
+    union {
+        struct iphdr iph;
+        __u16 word[10];
+    } hdr = { .iph = *iph };
+    __u32 sum;
 
-    tmp.check = 0;
-    return marlin_csum_fold(marlin_csum_words(&tmp, sizeof(tmp), 0));
+    sum = (__u32)hdr.word[0] + hdr.word[1] + hdr.word[2] + hdr.word[3] + hdr.word[4] + hdr.word[6] + hdr.word[7] +
+          hdr.word[8] + hdr.word[9];
+    sum = (sum & 0xffffU) + (sum >> 16);
+    sum = (sum & 0xffffU) + (sum >> 16);
+
+    return (__sum16)~sum;
 }
