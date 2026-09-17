@@ -412,6 +412,11 @@ MARLIN_TEST(unflagged_vip_fragments_and_unfragmented_share_a_row)
      * docs/design/24-testing.md: with VIP_HASH_5TUPLE clear, both fragments
      * must still forward, and to the same backend as an unfragmented packet
      * of the same flow -- the existing guarantee the flag must not disturb.
+     * Seeded at port 0: a fragment tail's parsed dport is always zero, so
+     * this guarantee holds only because the VIP itself is port-agnostic --
+     * see explicit_port_vip_fragment_tail_is_vip_miss and
+     * explicit_and_agnostic_vip_split_a_fragmented_datagram below for what
+     * happens on an explicit port instead.
      */
     unsigned char dmac_full[ETH_ALEN];
     unsigned char dmac_first_frag[ETH_ALEN];
@@ -462,6 +467,137 @@ MARLIN_TEST(unflagged_vip_fragments_and_unfragmented_share_a_row)
     bal_vip_clear(NH_VIP_NUM, 0);
     xdp_backend_clear(NH_BACKEND_ID);
     xdp_backend_clear(ALT_BACKEND_ID);
+}
+
+/*
+ * A fragment tail's parsed dport is always zero (parser.c), so on a VIP
+ * configured with an explicit port and no port == 0 companion, the tail's
+ * vip_map lookup is the same miss twice over -- not a second chance, since
+ * both lookups in marlin_balancer_vip() carry the identical zeroed key. The
+ * head still resolves and forwards; only the tail is stranded. This is the
+ * documented consequence of docs/design/11-pipeline.md and
+ * docs/design/12-selection.md's "Hash input", not a bug this test enshrines.
+ */
+MARLIN_TEST(explicit_port_vip_fragment_tail_is_vip_miss)
+{
+    __u64 miss_before;
+    struct xdp_run_result result;
+
+    bal_setup();
+    miss_before = xdp_drop_stats_total(MARLIN_PASS_VIP_MISS);
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    bal_vip_seed(NH_VIP_NUM, 80, 0, NH_BACKEND_ID);
+
+    bal_build_first_fragment();
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0x0040 /* offset set, MF clear: non-first, last fragment */, V4_SRC, V4_DST);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_PASS, result.retval);
+    nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
+    CHECK_EQ(miss_before + 1, xdp_drop_stats_total(MARLIN_PASS_VIP_MISS));
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
+/*
+ * If a port == 0 companion does exist on the same address, the tail is not
+ * stranded -- it resolves through the companion's vip_num instead of the
+ * head's, splitting one datagram across two independently configured pools.
+ * docs/design/12-selection.md rejects exactly this split as a hash input
+ * ("Hashing ports with fragments falling back to the address"); here it is
+ * reached through VIP admission rather than through the hash, which is why
+ * fixing the hash input alone does not close it.
+ */
+MARLIN_TEST(explicit_and_agnostic_vip_split_a_fragmented_datagram)
+{
+    struct xdp_run_result result;
+
+    bal_setup();
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    backend_seed_l2dsr(ALT_BACKEND_ID, ALT_BACKEND_MAC);
+    bal_vip_seed(NH_VIP_NUM, 80, 0, NH_BACKEND_ID);
+    bal_vip_seed(ALT_VIP_NUM, 0, 0, ALT_BACKEND_ID);
+
+    bal_build_first_fragment();
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0x0040 /* offset set, MF clear: non-first, last fragment */, V4_SRC, V4_DST);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(ALT_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+
+    bal_vip_clear(NH_VIP_NUM, 80);
+    bal_vip_clear(ALT_VIP_NUM, 0);
+    xdp_backend_clear(NH_BACKEND_ID);
+    xdp_backend_clear(ALT_BACKEND_ID);
+}
+
+/*
+ * RFC 8200 SS4.5: the Fragment header's Next Header is the first header of
+ * the Fragmentable Part, not necessarily the upper-layer protocol. Before
+ * parser.c's frag/ext-header gate, a Destination Options header behind the
+ * fragment header made the head resolve UDP (forwarding here, to
+ * NH_BACKEND_MAC) while the tail resolved proto 60 and missed this VIP
+ * outright -- a different failure from the port-agnostic-VIP case above,
+ * since no port == 0 companion can save a lookup keyed on the wrong
+ * protocol. The gate now refuses both halves in the parser, before either
+ * ever reaches vip_map.
+ */
+MARLIN_TEST(ipv6_frag_behind_ext_hdr_refuses_both_halves)
+{
+    struct vip_key key;
+    __u64 unsupported_before;
+    struct xdp_run_result result;
+
+    bal_setup();
+    unsupported_before = xdp_drop_stats_total(MARLIN_DROP_UNSUPPORTED_PROTO);
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    vip_seed6(DST6, 0, IPPROTO_UDP, NH_VIP_NUM, 0);
+    xdp_fwd_fill(NH_VIP_NUM, NH_BACKEND_ID);
+
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    pb_ipv6(IPPROTO_FRAGMENT, SRC6, DST6);
+    pb_frag6(IPPROTO_DSTOPTS, IP6_MF);
+    pb_ext6(IPPROTO_UDP, 0);
+    pb_ports(11111, 80);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(unsupported_before + 1, xdp_drop_stats_total(MARLIN_DROP_UNSUPPORTED_PROTO));
+
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    pb_ipv6(IPPROTO_FRAGMENT, SRC6, DST6);
+    pb_frag6(IPPROTO_DSTOPTS, 0x0008 /* offset set, MF clear: non-first, last fragment */);
+    pb_ext6(IPPROTO_UDP, 0);
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_DROP, result.retval);
+    CHECK_EQ(unsupported_before + 2, xdp_drop_stats_total(MARLIN_DROP_UNSUPPORTED_PROTO));
+
+    vip_key6(&key, DST6, 0, IPPROTO_UDP);
+    xdp_vip_del(&key);
+    xdp_fwd_clear(NH_VIP_NUM);
+    xdp_backend_clear(NH_BACKEND_ID);
 }
 
 static void bal_build_icmp_embedding_flow(__u16 flow_sport)

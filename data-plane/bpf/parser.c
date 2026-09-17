@@ -128,6 +128,17 @@ static __always_inline int marlin_walk_ext6(const void *data, const void *data_e
 
             out->flags |= marlin_parse_frag6(fh->frag_off);
 
+            /*
+             * RFC 8200 SS4.5 puts the first header of the Fragmentable Part
+             * here, not necessarily the upper-layer protocol. A tail stops at
+             * this header and a head walks past it, so the two would key
+             * vip_map on different protocols and split the datagram; behind
+             * an options header neither can see an ESP or AH payload either.
+             */
+            if((out->flags & MARLIN_CTX_F_FRAG_ANY) != 0U && marlin_is_ext6(fh->nexthdr)) {
+                return MARLIN_DROP_UNSUPPORTED_PROTO;
+            }
+
             /* Non-first fragments carry payload, not headers. */
             if((out->flags & MARLIN_CTX_F_FRAG) != 0U) {
                 out->proto = fh->nexthdr;

@@ -299,6 +299,19 @@ clear.
 fragments carry no ports, so a fragmented datagram cannot be steered consistently once ports are
 hashed, and both halves are dropped rather than stranding reassembly state on the backend.
 
+**A VIP with the flag clear still needs a `port == 0` entry to receive fragments at all, if it
+is configured with an explicit port.** A fragment tail's parsed destination port is always
+zero (`docs/design/11-pipeline.md`), so it cannot match an explicit-port `vip_map` entry: with
+no `port == 0` companion sharing the address, the tail is `vip_miss` and reaches the host, not
+the backend its head reached. Configure a `port == 0` entry for any explicit-port VIP whose
+traffic fragments — DNS over UDP with large responses being the case this table already
+recommends leaving `VIP_HASH_5TUPLE` clear for.
+
+**A `port == 0` companion does not rescue an IPv6 datagram carrying an extension header behind
+its Fragment header.** That layout drops as `unsupported_proto` for both fragments, in the
+parser, before `vip_map` is ever consulted (`docs/design/11-pipeline.md`) — no VIP
+configuration changes the outcome.
+
 | Set it on | Leave it clear on |
 |---|---|
 | TCP VIPs, where PMTUD and MSS clamping mean traffic does not fragment in practice | Any VIP carrying UDP datagrams that can exceed the path MTU — DNS over UDP with large responses, QUIC without correct PMTUD, tunnelled or media protocols |
@@ -722,8 +735,10 @@ Three things Marlin emits that a strict receiver may object to:
   the client address only — reusing that would collapse one client's connections onto a single path
   and a single queue.
 - **Inner fragments carry no ports**, so fragments of one datagram hash differently and may spread
-  across paths and arrive slightly reordered before the backend reassembles them. They always reach
-  the same backend.
+  across paths and arrive slightly reordered before the backend reassembles them. They reach
+  the same backend provided the VIP they are addressed to admits them at all — see §1.7.1's
+  note on explicit-port VIPs; a fragment tail that misses the VIP its head hit never reaches
+  a backend to reorder at.
 - **The outer UDP checksum is zero.** Unconditionally permitted with an IPv4 outer header; the
   receiver needs no configuration for it.
 

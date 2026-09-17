@@ -64,8 +64,10 @@ VIP's short-header volume is the aggregate signal that steering is not landing.
 | `adjust_head_failed` | instance | insufficient driver headroom for encapsulation — VXLAN's 50-byte requirement is the largest of the three and makes this materially more likely than under IPIP or GUE (`DEPLOYMENT.md` §1.3) |
 | `frame_too_big` | instance | encapsulated frame exceeds the egress MTU, under any of the three encapsulating modes (`docs/design/23-mtu.md`) |
 | `icmp_unparseable` | instance | PMTUD errors being dropped |
+| `unsupported_proto` | instance | ESP or AH traffic, or an IPv6 fragment (head or tail) whose Fragmentable Part opens with an extension header instead of the upper-layer protocol — Marlin cannot reach the ports behind either case (`docs/design/11-pipeline.md`) |
 | `no_backend` | instance | table rows pointing at 0 — a control-plane reconciliation fault |
 | `acl_blocked` | instance | the blocklist is matching; volume shows whether it is load-bearing, but mixes VIP-matched blocks with host-bound ones (`docs/design/11-pipeline.md` step 4) |
+| `vip_miss` | instance | traffic addressed to no configured VIP, or the fragment tail of one — an explicit-port VIP with no `port == 0` companion never admits its tails, which read here exactly like host-bound traffic (`docs/design/11-pipeline.md`, `docs/design/12-selection.md`) |
 | `ratelimited` | instance | a source is over budget |
 | `frag_unsupported` | instance | a fragment arrived for a `VIP_HASH_5TUPLE` VIP; non-zero means the flag is set on a VIP whose traffic fragments (`docs/design/12-selection.md`) |
 | `rl_cas_exhausted` | instance | `RL_CAS_RETRIES` too low under contention (`docs/design/28-rate-limiting.md`) |

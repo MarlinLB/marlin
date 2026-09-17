@@ -20,9 +20,21 @@ clients, there is no reverse path and no classifier.
 
    `IPPROTO_FRAGMENT` in the chain marks the packet as a fragment, which is what makes the
    client-address-only hashing of `docs/design/12-selection.md` implementable for IPv6 — the
-   equivalent of IPv4's `frag_off`.
+   equivalent of IPv4's `frag_off`. **The Fragment header's Next Header field is the first
+   header of the Fragmentable Part (RFC 8200 §4.5), not necessarily the upper-layer protocol**
+   — a head walks past a Destination Options header that follows it and resolves the real L4,
+   while a tail stops at the Fragment header and takes its Next Header value as `tuple.proto`
+   directly. Left alone, the two would key `vip_map` on different protocols for the same
+   datagram, so any extension header found immediately behind a Fragment header is
+   `unsupported_proto` for both halves — a second, broader case than the ESP/AH one above,
+   caught the same way: the check runs inside the fragment header's own branch of the walk, so
+   it catches the head as well as the tail, before either reaches `vip_map`.
    A non-first fragment carries no L4 header in either family, so `sport` and `dport` stay
-   zero and the VIP lookup falls to the port-agnostic retry below.
+   zero and the VIP lookup falls to the port-agnostic retry below. That retry resolves the
+   packet only when a `port == 0` entry exists for its `(address, protocol)`; on a VIP
+   configured with an explicit port and no such entry, both lookups carry the same zero
+   port, so the fragment tail is `vip_miss` regardless of the VIP its first fragment
+   reached (`docs/design/12-selection.md`, "Hash input").
 
    A UDP payload opening with a QUIC short header is flagged `MARLIN_CTX_F_QUIC` here, for
    step 6 to steer on — but only once the datagram's own declared UDP length, not merely
@@ -105,6 +117,13 @@ and no longer because no `vip_num` exists where the drop happens.
 **Port-agnostic VIPs.** A VIP configured with `port == 0` matches any port. `vip_map` is
 consulted twice: first with the parsed destination port, then with port 0 on a miss. Both
 lookups use a fully zeroed key.
+
+**A fragment tail's parsed destination port is always zero** (step 2 above), so for a tail
+the two lookups are identical: there is no second, different key for the retry to try. An
+explicit-port VIP with no `port == 0` companion therefore never admits a fragment tail, and
+a `port == 0` VIP sharing the address admits it into a different `vip_num` than the head
+reached — see `docs/design/12-selection.md`'s "Hash input" for why this is the same split
+that section rejects as a hash input, arrived at instead through admission.
 
 ## Pointer invalidation
 

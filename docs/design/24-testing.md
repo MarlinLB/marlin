@@ -13,7 +13,9 @@ rejected (`docs/design/25-rejected.md`).
 
 Coverage: every mode, both inner families, IPv6-inner over IPv4-outer, malformed and truncated
 headers, fragments in both families — including an ESP/AH non-first fragment, `unsupported_proto`
-in both families exactly like the unfragmented head — IPv6 extension-header chains — including
+in both families exactly like the unfragmented head, and an IPv6 fragment head or tail whose
+Fragmentable Part opens with an extension header instead of the upper-layer protocol, also
+`unsupported_proto` (`docs/design/11-pipeline.md`) — IPv6 extension-header chains — including
 one at `MAX_EXT_HDRS` and one beyond it — ICMP errors including the embedded-header path,
 port-agnostic VIPs, the sentinel and down-backend paths, and the header-adjustment paths where
 pointer invalidation bites.
@@ -30,7 +32,20 @@ pointer invalidation bites.
   `parser.c` — the failure it guards is a first fragment forwarded and reassembly state stranded,
   which no other test would notice.
 - With the flag clear, both fragments still forward, and to the same backend as an unfragmented
-  packet of the same flow. This is the existing guarantee, and it must not move.
+  packet of the same flow — **on a `port == 0` VIP**. This is the existing guarantee, and it
+  must not move. On a VIP with an explicit port and no `port == 0` companion, the guarantee
+  does not apply: a fragment tail's parsed destination port is always zero
+  (`docs/design/11-pipeline.md`), so it cannot match the explicit-port entry its head matched,
+  and the tail is `vip_miss` instead. If a `port == 0` companion exists on the same address,
+  the tail resolves through it to a different `vip_num`, splitting the datagram across two
+  pools. Both outcomes are asserted in `data-plane/tests/packet/xdp_60_balancer.c`
+  (`docs/design/12-selection.md`, "Hash input"). Neither outcome applies to an IPv6 fragment
+  whose Fragmentable Part opens with an extension header: head and tail both drop
+  `unsupported_proto` in the parser, before either reaches `vip_map`, regardless of the VIP's
+  port configuration — asserted alongside the two above.
+- An ICMP error on a flagged VIP selects the same row as the flow it reports on. This fails
+  unless `parser.c` recovers the embedded destination port into `tuple.sport`
+  (`docs/design/13-icmp.md`), and it is the only test that catches that omission.
 - An ICMP error on a flagged VIP selects the same row as the flow it reports on. This fails
   unless `parser.c` recovers the embedded destination port into `tuple.sport`
   (`docs/design/13-icmp.md`), and it is the only test that catches that omission.
@@ -132,10 +147,16 @@ copied verbatim out of `tuple.src`; and that a NULL `mctx` returns `MARLIN_ACL_A
 branch the verifier proves unreachable, which `main.c` maps to `MARLIN_ABORT_NULLREF`
 (`docs/design/04-calling-convention.md`). Packet-tier-only, because `marlin_acl_check()` reads nothing outside
 `tuple.src` and `tuple.family` and these are properties of `parser.c` and of the pipeline's step
-ordering instead: non-first fragments filtered identically to first fragments, which is the
-assertion that the fragment hole a port-granular design would have had does not exist; an ICMP
-error whose embedded client is blocked dropped while one whose transit router is blocked is not
-(`docs/design/27-source-filtering.md`); and the placement assertion below.
+ordering instead: non-first fragments filtered identically to first fragments **for a
+destination that is not a VIP**, which is the assertion that the fragment hole a
+port-granular design would have had does not exist there; an ICMP error whose embedded client
+is blocked dropped while one whose transit router is blocked is not
+(`docs/design/27-source-filtering.md`); and the placement assertion below. That identical
+filtering does not extend to a VIP destination: a fragment tail carries no port, so it can
+reach a different `vip_num` than its head, or none, and therefore a different `VIP_ACL` value
+— `bpf/balancer.c`'s host-bound arm applies to a tail its head never saw
+(`docs/design/11-pipeline.md`). No test below covers this; see the deferred case in
+`docs/PHASES.md`.
 
 **One of those assertions is about placement, not semantics, and is the one worth naming.** A
 blocked source addressed to a destination that is *not* a VIP must drop with `acl_blocked`, not
