@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Add operator-controlled per-VIP outer DSCP marking for IPIP, GUE and VXLAN. `vip_meta.flags`
+  bits 16-21 (`VIP_DSCP`) hold a six-bit codepoint, `0` (CS0) by default and byte-identical to
+  every frame emitted before this field existed. `struct vip_meta` does not grow.
+- `balancer.c` copies the VIP's `VIP_DSCP` bits into `marlin_ctx.flags` before dispatching to
+  the three encapsulation units; `marlin_ctx` stays 104 bytes. L2 DSR is unaffected — the copy
+  happens only on the encapsulating arm.
+- `ipip.c`, `gue.c` and `vxlan.c` each write the resolved DSCP, shifted `<< 2`, into the outer
+  IPv4 header's `tos` byte before computing the outer checksum. The field is six bits wide, so
+  no configuration can set the ECN pair.
+- `nexthop.c` seeds `bpf_fib_lookup()`'s `fib.tos` from the same value, so a policy-routing rule
+  matching `dsfield` resolves the next hop the way the wire will actually see the frame.
+- This is not a copy of the client's own DSCP or ECN, and it is not the RFC 6040 ECN-remapping
+  work `docs/design/14-forwarding-modes.md` excludes — a configured value needs neither an
+  inner-header read nor a remapping rule.
 - Restrict the fragment/extension-header refusal below to the packet being forwarded: it no
   longer reaches a quoted header inside an ICMP error. A quoted first fragment whose Fragment
   header is immediately followed by another extension header — e.g. `Fragment → Destination

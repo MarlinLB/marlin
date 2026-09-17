@@ -494,17 +494,20 @@ EOF
 verify() {
 	need_root
 	need_cmd tcpdump python3
-	local pcap port rc
+	local pcap port dscp rc
 	port=$(gue_port)
+	# VIP_FLAGS bits 16-21 (VIP_DSCP_SHIFT/_MASK, defines.h); 0 unless the
+	# caller set VIP_FLAGS before seed().
+	dscp=$(( (${VIP_FLAGS:-0} >> 16) & 0x3f ))
 	pcap=$(mktemp)
 	trap 'rm -f "${pcap}"' EXIT
 
 	verify_capture "${pcap}" || { rm -f "${pcap}"; trap - EXIT; exit 1; }
 
-	python3 - "${pcap}" "${port}" <<'PY'
+	python3 - "${pcap}" "${port}" "${dscp}" <<'PY'
 import struct, sys
 
-path, dport = sys.argv[1], int(sys.argv[2])
+path, dport, expected_dscp = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 
 def read_pcap(path):
     with open(path, "rb") as f:
@@ -563,6 +566,8 @@ gue = target[14 + ihl + 8:14 + ihl + 8 + 4]
 check("outer IPv4 protocol == 17 (UDP)", ip[9] == 17)
 check("outer IPv4 frag_off carries IP_DF", (struct.unpack("!H", ip[6:8])[0] & 0x4000) != 0)
 check("outer IPv4 ttl == 64", ip[8] == 64)
+check("outer IPv4 DSCP == configured (%d)" % expected_dscp, (ip[1] >> 2) == expected_dscp)
+check("outer IPv4 ECN bits == 0", (ip[1] & 0x03) == 0)
 csum = 0
 words = struct.unpack("!10H", ip[:20])
 s = sum(words)

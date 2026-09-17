@@ -280,5 +280,14 @@ int main(int argc, char **argv)
     fprintf(stderr, "usage: %s add <pindir> <vip> <port> <proto> <vip_num> <flags> <backend_id>\n", argv[0]);
     fprintf(stderr, "       %s del <pindir> <vip> <port> <proto> <vip_num>\n", argv[0]);
     fprintf(stderr, "       %s --version\n", argv[0]);
+    fprintf(stderr, "\n"
+                    "flags (vip_meta.flags, docs/design/08-types.md):\n"
+                    "  bit 0       VIP_ACL\n"
+                    "  bit 1       VIP_RATELIMIT\n"
+                    "  bit 2       VIP_HASH_5TUPLE\n"
+                    "  bit 3       VIP_QUIC\n"
+                    "  bits 8-12   VIP_QUIC_CID_LEN (0 = unset, 7-20 valid)\n"
+                    "  bits 16-21  VIP_DSCP: outer DSCP for IPIP/GUE/VXLAN, 0-63, 0 = unmarked\n"
+                    "              e.g. flags=$((46 << 16)) marks EF (RFC 3246)\n");
     return 1;
 }

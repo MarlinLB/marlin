@@ -144,7 +144,7 @@ MARLIN_TEST(fib_no_neigh_under_ipip_is_drop)
      * Encapsulation precedes next-hop resolution: the frame already grew by
      * MARLIN_OVERHEAD_IPIP by the time the FIB lookup fails.
      */
-    ipip_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, IPIP_TUNNEL_SRC, FIB_ADDR_BACKEND_A, AF_INET, result.out_len);
+    ipip_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, IPIP_TUNNEL_SRC, FIB_ADDR_BACKEND_A, AF_INET, result.out_len, 0);
     CHECK_EQ(no_neigh_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_NO_NEIGH));
 
     nh_backend_clear();
@@ -239,7 +239,7 @@ MARLIN_TEST(fib_l2dsr_refuses_gatewayed_ipip_forwards)
      * refused above forwards under IPIP, with the FIB's own smac/dmac
      * overwriting the outer Ethernet header ipip.c relocated.
      */
-    ipip_check_frame(FIB_MAC_GATEWAY, FIB_MAC_INGRESS, IPIP_TUNNEL_SRC, FIB_ADDR_GATEWAYED, AF_INET, result.out_len);
+    ipip_check_frame(FIB_MAC_GATEWAY, FIB_MAC_INGRESS, IPIP_TUNNEL_SRC, FIB_ADDR_GATEWAYED, AF_INET, result.out_len, 0);
 
     nh_backend_clear();
     fib_neigh_del(FIB_ADDR_GATEWAY, FIB_DEV_INGRESS);

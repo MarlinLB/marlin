@@ -52,7 +52,7 @@ __sum16 test_ipv4_csum(const struct iphdr *iph)
 }
 
 void ipip_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
-                       __be32 backend_addr, __u8 inner_family, __u32 out_len)
+                       __be32 backend_addr, __u8 inner_family, __u32 out_len, __u8 outer_dscp)
 {
     unsigned char expect_eth[ETH_HLEN];
     __be16 outer_proto = bpf_htons(ETH_P_IP);
@@ -75,6 +75,7 @@ void ipip_check_frame(const unsigned char *expect_dst, const unsigned char *expe
     memset(&expect_iph, 0, sizeof(expect_iph));
     expect_iph.version = 4;
     expect_iph.ihl = MARLIN_IPV4_IHL_MIN;
+    expect_iph.tos = (__u8)(outer_dscp << 2);
     expect_iph.frag_off = bpf_htons(IP_DF);
     expect_iph.ttl = MARLIN_OUTER_TTL;
     expect_iph.protocol = (inner_family == AF_INET6) ? IPPROTO_IPV6 : IPPROTO_IPIP;
@@ -88,7 +89,7 @@ void ipip_check_frame(const unsigned char *expect_dst, const unsigned char *expe
 }
 
 void gue_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
-                      __be32 backend_addr, __be16 encap_dport, __u8 inner_family, __u32 out_len)
+                      __be32 backend_addr, __be16 encap_dport, __u8 inner_family, __u32 out_len, __u8 outer_dscp)
 {
     unsigned char expect_eth[ETH_HLEN];
     __be16 outer_proto = bpf_htons(ETH_P_IP);
@@ -113,6 +114,7 @@ void gue_check_frame(const unsigned char *expect_dst, const unsigned char *expec
     memset(&expect_iph, 0, sizeof(expect_iph));
     expect_iph.version = 4;
     expect_iph.ihl = MARLIN_IPV4_IHL_MIN;
+    expect_iph.tos = (__u8)(outer_dscp << 2);
     expect_iph.frag_off = bpf_htons(IP_DF);
     expect_iph.ttl = MARLIN_OUTER_TTL;
     expect_iph.protocol = IPPROTO_UDP;
@@ -137,7 +139,7 @@ void gue_check_frame(const unsigned char *expect_dst, const unsigned char *expec
 
 void vxlan_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
                         __be32 backend_addr, __be16 encap_dport, const unsigned char *inner_mac, __u32 vni,
-                        __u32 out_len)
+                        __u32 out_len, __u8 outer_dscp)
 {
     unsigned char expect_eth[ETH_HLEN];
     __be16 outer_proto = bpf_htons(ETH_P_IP);
@@ -160,6 +162,7 @@ void vxlan_check_frame(const unsigned char *expect_dst, const unsigned char *exp
     memset(&expect_iph, 0, sizeof(expect_iph));
     expect_iph.version = 4;
     expect_iph.ihl = MARLIN_IPV4_IHL_MIN;
+    expect_iph.tos = (__u8)(outer_dscp << 2);
     expect_iph.frag_off = bpf_htons(IP_DF);
     expect_iph.ttl = MARLIN_OUTER_TTL;
     expect_iph.protocol = IPPROTO_UDP;

@@ -28,6 +28,16 @@ _Static_assert(sizeof(struct packet_tuple) == 40, "packet_tuple must stay 40 byt
 #define MARLIN_CTX_F_QUIC       (1U << 3) /* UDP payload opens with a QUIC short header (RFC 8999) */
 #define MARLIN_CTX_F_FRAG_ANY   (MARLIN_CTX_F_FRAG | MARLIN_CTX_F_FRAG_FIRST)
 
+/*
+ * The VIP's outer DSCP, copied from vip_meta.flags by balancer.c. Same shift
+ * as VIP_DSCP_SHIFT so the copy is a plain mask-and-or (see the equality
+ * assert below); an encapsulation unit reads it back through
+ * marlin_outer_tos().
+ */
+#define MARLIN_CTX_DSCP_SHIFT   16
+#define MARLIN_CTX_DSCP_MASK    ((__u32)0x3f << MARLIN_CTX_DSCP_SHIFT)
+#define MARLIN_CTX_DSCP(f)      (((f) & MARLIN_CTX_DSCP_MASK) >> MARLIN_CTX_DSCP_SHIFT)
+
 struct marlin_ctx {            /* 104 bytes */
     struct packet_tuple tuple; /* 40 */
     struct backend backend;    /* 32 */
@@ -41,6 +51,24 @@ struct marlin_ctx {            /* 104 bytes */
 };
 
 _Static_assert(sizeof(struct marlin_ctx) <= 108, "marlin_ctx exceeds its mctx_scratch per-CPU map-value budget");
+
+_Static_assert((MARLIN_CTX_DSCP_MASK & (MARLIN_CTX_F_ICMP | MARLIN_CTX_F_FRAG | MARLIN_CTX_F_FRAG_FIRST | MARLIN_CTX_F_QUIC)) == 0,
+               "the mctx DSCP field overlaps an assigned MARLIN_CTX_F_* bit");
+_Static_assert(
+        VIP_DSCP_MASK ==
+                MARLIN_CTX_DSCP_MASK, // NOLINT(misc-redundant-expression) -- deliberately tautological: catches either side moving
+        "the mctx DSCP field must sit where balancer.c copies vip_meta's without a shift");
+
+/*
+ * The outer ToS byte for the three encapsulating modes: the VIP's configured
+ * DSCP shifted into place, ECN always clear (VIP_DSCP_MASK is six bits).
+ * Shared by ipip.c/gue.c/vxlan.c and by nexthop.c's FIB lookup, so it lives
+ * here rather than in encap.h.
+ */
+static __always_inline __u8 marlin_outer_tos(const struct marlin_ctx *mctx)
+{
+    return (__u8)(MARLIN_CTX_DSCP(mctx->flags) << 2);
+}
 
 enum marlin_ret {
     /* terminal outcomes, not counted here */

@@ -23,6 +23,12 @@
 #include "xdp_encap.h"
 #include "xdp_fixture.h"
 
+/*
+ * Arbitrary, in-range: EF (RFC 3246). Shared by the four DSCP cases at the
+ * end of this file, each named for the mode/discipline it exercises.
+ */
+#define TEST_DSCP 46U
+
 MARLIN_TEST(l2dsr_stored_mac_is_tx_on_backend_mac)
 {
     __u64 fallback_before = xdp_drop_stats_total(MARLIN_COUNT_MAC_FALLBACK);
@@ -156,7 +162,7 @@ MARLIN_TEST(ipip_encap_zero_lookup_swaps_ethernet_and_builds_outer_header)
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len, 0);
     CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
 
     nh_backend_clear();
@@ -173,7 +179,7 @@ MARLIN_TEST(ipip_encap_ipv6_inner_sets_protocol_41)
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET6, result.out_len);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET6, result.out_len, 0);
 
     nh_backend_clear();
 }
@@ -215,7 +221,7 @@ MARLIN_TEST(ipip_encap_max_frame_zero_disables_the_check)
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len, 0);
 
     nh_backend_clear();
 }
@@ -232,7 +238,7 @@ MARLIN_TEST(gue_encap_zero_lookup_swaps_ethernet_and_builds_outer_header)
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET, result.out_len);
+    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET, result.out_len, 0);
     CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
 
     nh_backend_clear();
@@ -249,7 +255,7 @@ MARLIN_TEST(gue_encap_ipv6_inner_sets_gue_proto_41)
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET6, result.out_len);
+    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET6, result.out_len, 0);
 
     nh_backend_clear();
 }
@@ -290,7 +296,7 @@ MARLIN_TEST(gue_encap_max_frame_zero_disables_the_check)
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
-    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET, result.out_len);
+    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET, result.out_len, 0);
 
     nh_backend_clear();
 }
@@ -355,7 +361,7 @@ MARLIN_TEST(vxlan_encap_zero_lookup_writes_outer_and_inner_ethernet_headers)
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
     vxlan_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, VXLAN_TUNNEL_SRC, NH_BACKEND_ADDR, 0, VXLAN_INNER_MAC, VXLAN_VNI,
-                      result.out_len);
+                      result.out_len, 0);
 
     nh_backend_clear();
 }
@@ -383,7 +389,7 @@ MARLIN_TEST(encap_fib_flag_beats_the_vxlan_no_swap)
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_DROP, result.retval);
     vxlan_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, VXLAN_TUNNEL_SRC, NH_BACKEND_ADDR, 0, VXLAN_INNER_MAC, VXLAN_VNI,
-                      result.out_len);
+                      result.out_len, 0);
     CHECK_EQ(fwd_disabled_before + 1, xdp_drop_stats_total(MARLIN_DROP_FIB_FWD_DISABLED));
     CHECK_EQ(mismatch_before, xdp_drop_stats_total(MARLIN_COUNT_EGRESS_MISMATCH));
 
@@ -410,7 +416,7 @@ MARLIN_TEST(vxlan_encap_ipv6_inner_preserves_ethertype)
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
     vxlan_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, VXLAN_TUNNEL_SRC, NH_BACKEND_ADDR, 0, VXLAN_INNER_MAC, VXLAN_VNI,
-                      result.out_len);
+                      result.out_len, 0);
 
     nh_backend_clear();
 }
@@ -452,7 +458,7 @@ MARLIN_TEST(vxlan_encap_max_frame_zero_disables_the_check)
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
     vxlan_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, VXLAN_TUNNEL_SRC, NH_BACKEND_ADDR, 0, VXLAN_INNER_MAC, VXLAN_VNI,
-                      result.out_len);
+                      result.out_len, 0);
 
     nh_backend_clear();
 }
@@ -539,6 +545,88 @@ MARLIN_TEST(unknown_encap_mode_is_map_bounds_drop)
     CHECK_XDP(XDP_DROP, result.retval);
     nh_check_frame(NH_MARLIN_MAC, NH_ROUTER_MAC, result.out_len);
     CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_DROP_MAP_BOUNDS));
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(ipip_encap_dscp_marks_the_outer_header)
+{
+    /*
+     * The real-kernel counterpart to ipip_test.c's mctx-level DSCP cases:
+     * proves the VIP's configured DSCP survives the real vip_map lookup in
+     * balancer.c and reaches ipip.c's outer header.
+     */
+    struct xdp_run_result result;
+
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+    nh_vip_seed(VIP_HASH_5TUPLE | ((TEST_DSCP << VIP_DSCP_SHIFT) & VIP_DSCP_MASK));
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len,
+                      (__u8)TEST_DSCP);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(gue_encap_dscp_marks_the_outer_header)
+{
+    struct xdp_run_result result;
+
+    seed_encap_cfg(GUE_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_GUE, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+    nh_vip_seed(VIP_HASH_5TUPLE | ((TEST_DSCP << VIP_DSCP_SHIFT) & VIP_DSCP_MASK));
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    gue_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, GUE_TUNNEL_SRC, NH_BACKEND_ADDR, 0, AF_INET, result.out_len,
+                     (__u8)TEST_DSCP);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(vxlan_encap_dscp_marks_the_outer_header)
+{
+    struct xdp_run_result result;
+
+    seed_encap_cfg(VXLAN_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_VXLAN, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, VXLAN_VNI, VXLAN_INNER_MAC);
+    nh_vip_seed(VIP_HASH_5TUPLE | ((TEST_DSCP << VIP_DSCP_SHIFT) & VIP_DSCP_MASK));
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    vxlan_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, VXLAN_TUNNEL_SRC, NH_BACKEND_ADDR, 0, VXLAN_INNER_MAC, VXLAN_VNI,
+                       result.out_len, (__u8)TEST_DSCP);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(l2dsr_configured_dscp_leaves_the_frame_unchanged)
+{
+    /*
+     * Negative case for the L2 DSR boundary the feature promises
+     * (docs/design/14-forwarding-modes.md SS7.2): a VIP's configured DSCP
+     * only ever reaches an outer header balancer.c writes for the three
+     * tunnel modes, never an L2 DSR frame, which has no outer header to
+     * carry it in the first place.
+     */
+    struct xdp_run_result result;
+
+    nh_backend_seed(MARLIN_MODE_L2DSR, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+    nh_vip_seed(VIP_HASH_5TUPLE | ((TEST_DSCP << VIP_DSCP_SHIFT) & VIP_DSCP_MASK));
+    nh_build_frame();
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
 
     nh_backend_clear();
 }

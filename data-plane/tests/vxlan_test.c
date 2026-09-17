@@ -30,6 +30,14 @@
 #define VXLAN_BACKEND    0x0c0c0c0cU /* 12.12.12.12 */
 #define VXLAN_VNI        0x00abcdefU /* arbitrary, within the 24-bit field */
 
+/*
+ * Non-zero by default so a builder that drops the tos store, or stores it
+ * after the checksum, fails the existing byte-for-byte assertion rather than
+ * passing on a coincidental zero (mctx_init's own discipline, below). 46 is
+ * EF (RFC 3246), an arbitrary in-range choice.
+ */
+#define VXLAN_OUTER_DSCP 46U
+
 #define V4_SRC 0x01010101U /* 1.1.1.1 -- inner client, arbitrary */
 #define V4_DST 0x02020202U /* 2.2.2.2 -- inner VIP, arbitrary */
 
@@ -63,6 +71,7 @@ static void mctx_init(struct marlin_ctx *mctx, __u16 pkt_len, __u16 max_frame, _
     mctx->backend.vni = VXLAN_VNI;
     memcpy(mctx->backend.inner_mac, VXLAN_INNER_MAC, ETH_ALEN);
     mctx->tuple.family = family;
+    mctx->flags |= (VXLAN_OUTER_DSCP << MARLIN_CTX_DSCP_SHIFT) & MARLIN_CTX_DSCP_MASK;
 }
 
 /*
@@ -590,6 +599,7 @@ MARLIN_TEST(vxlan_encap_builds_the_outer_and_inner_headers_byte_for_byte)
     memset(&expect_iph, 0, sizeof(expect_iph));
     expect_iph.version = 4;
     expect_iph.ihl = MARLIN_IPV4_IHL_MIN;
+    expect_iph.tos = (__u8)(VXLAN_OUTER_DSCP << 2);
     expect_iph.frag_off = bpf_htons(IP_DF);
     expect_iph.ttl = MARLIN_OUTER_TTL;
     expect_iph.protocol = IPPROTO_UDP;
@@ -615,6 +625,67 @@ MARLIN_TEST(vxlan_encap_builds_the_outer_and_inner_headers_byte_for_byte)
     CHECK_MEM(VXLAN_INNER_MAC, inner_eth.h_dest, ETH_ALEN);
     CHECK_MEM(ARRIVING_DST, inner_eth.h_source, ETH_ALEN);
     CHECK_EQ(bpf_htons(ETH_P_IP), inner_eth.h_proto);
+}
+
+MARLIN_TEST(vxlan_encap_dscp_zero_emits_tos_zero)
+{
+    /*
+     * Regression guard for the default: a VIP with no configured DSCP must
+     * still emit tos == 0, byte-identical to before this feature existed.
+     */
+    struct marlin_ctx mctx;
+    struct xdp_md ctx;
+    struct ethhdr outer_eth, inner_eth;
+    struct iphdr iph;
+    struct udphdr udp;
+    struct marlin_vxlan_hdr vxlan;
+
+    pb_reset();
+    pb_pad(VXLAN_HEADROOM);
+    pb_eth(ETH_P_IP);
+    vxlan_set_arriving_addrs(VXLAN_HEADROOM);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(1234, 80);
+
+    mctx_init(&mctx, (__u16)(pb_len - VXLAN_HEADROOM), 0, AF_INET);
+    mctx.flags &= ~MARLIN_CTX_DSCP_MASK;
+    vxlan_arm(&ctx, VXLAN_HEADROOM);
+
+    CHECK_RET(MARLIN_OK, marlin_vxlan_encap_packet(&ctx, &mctx));
+
+    vxlan_read_outer(&ctx, &outer_eth, &iph, &udp, &vxlan, &inner_eth);
+    CHECK_EQ(0, iph.tos);
+}
+
+MARLIN_TEST(vxlan_encap_dscp_max_leaves_ecn_clear)
+{
+    /*
+     * DSCP 63 (0x3f), the top of the 6-bit field: tos must be 0xfc and the
+     * ECN pair (the low two bits) must stay clear.
+     */
+    struct marlin_ctx mctx;
+    struct xdp_md ctx;
+    struct ethhdr outer_eth, inner_eth;
+    struct iphdr iph;
+    struct udphdr udp;
+    struct marlin_vxlan_hdr vxlan;
+
+    pb_reset();
+    pb_pad(VXLAN_HEADROOM);
+    pb_eth(ETH_P_IP);
+    vxlan_set_arriving_addrs(VXLAN_HEADROOM);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(1234, 80);
+
+    mctx_init(&mctx, (__u16)(pb_len - VXLAN_HEADROOM), 0, AF_INET);
+    mctx.flags = (mctx.flags & ~MARLIN_CTX_DSCP_MASK) | (0x3fU << MARLIN_CTX_DSCP_SHIFT);
+    vxlan_arm(&ctx, VXLAN_HEADROOM);
+
+    CHECK_RET(MARLIN_OK, marlin_vxlan_encap_packet(&ctx, &mctx));
+
+    vxlan_read_outer(&ctx, &outer_eth, &iph, &udp, &vxlan, &inner_eth);
+    CHECK_EQ(0xfc, iph.tos);
+    CHECK_EQ(0, iph.tos & 0x03);
 }
 
 MARLIN_TEST(vxlan_encap_vni_occupies_the_high_three_bytes_and_reserved_byte_stays_zero)

@@ -30,6 +30,14 @@
 #define IPIP_TUNNEL_SRC 0x0d0d0d0dU /* 13.13.13.13 */
 #define IPIP_BACKEND    0x0c0c0c0cU /* 12.12.12.12 */
 
+/*
+ * Non-zero by default so a builder that drops the tos store, or stores it
+ * after the checksum, fails the existing byte-for-byte assertion rather than
+ * passing on a coincidental zero (mctx_init's own discipline, below). 46 is
+ * EF (RFC 3246), an arbitrary in-range choice.
+ */
+#define IPIP_OUTER_DSCP 46U
+
 #define V4_SRC 0x01010101U /* 1.1.1.1 -- inner client, arbitrary */
 #define V4_DST 0x02020202U /* 2.2.2.2 -- inner VIP, arbitrary */
 
@@ -51,6 +59,7 @@ static void mctx_init(struct marlin_ctx *mctx, __u16 pkt_len, __u16 max_frame, _
     mctx->cfg.tunnel_src = IPIP_TUNNEL_SRC;
     mctx->backend.addr = IPIP_BACKEND;
     mctx->tuple.family = family;
+    mctx->flags |= (IPIP_OUTER_DSCP << MARLIN_CTX_DSCP_SHIFT) & MARLIN_CTX_DSCP_MASK;
 }
 
 /*
@@ -507,6 +516,7 @@ MARLIN_TEST(ipip_encap_builds_the_outer_ipv4_header_byte_for_byte)
     memset(&expect, 0, sizeof(expect));
     expect.version = 4;
     expect.ihl = MARLIN_IPV4_IHL_MIN;
+    expect.tos = (__u8)(IPIP_OUTER_DSCP << 2);
     expect.frag_off = bpf_htons(IP_DF);
     expect.ttl = MARLIN_OUTER_TTL;
     expect.protocol = IPPROTO_IPIP;
@@ -516,6 +526,69 @@ MARLIN_TEST(ipip_encap_builds_the_outer_ipv4_header_byte_for_byte)
     expect.check = marlin_ipv4_csum(&expect);
 
     CHECK_MEM(&expect, &iph, sizeof(expect));
+}
+
+MARLIN_TEST(ipip_encap_dscp_zero_emits_tos_zero)
+{
+    /*
+     * Regression guard for the default: a VIP with no configured DSCP must
+     * still emit tos == 0, byte-identical to before this feature existed.
+     */
+    static const unsigned char SMAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+    static const unsigned char DMAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+    struct marlin_ctx mctx;
+    struct xdp_md ctx;
+    struct ethhdr eth_after;
+    struct iphdr iph;
+
+    pb_reset();
+    pb_pad(IPIP_HEADROOM);
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena + IPIP_HEADROOM, DMAC, ETH_ALEN);
+    memcpy(pb_arena + IPIP_HEADROOM + ETH_ALEN, SMAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(1234, 80);
+
+    mctx_init(&mctx, (__u16)(pb_len - IPIP_HEADROOM), 0, AF_INET);
+    mctx.flags &= ~MARLIN_CTX_DSCP_MASK;
+    ipip_arm(&ctx, IPIP_HEADROOM);
+
+    CHECK_RET(MARLIN_OK, marlin_ipip_encap_packet(&ctx, &mctx));
+
+    ipip_read_outer(&ctx, &eth_after, &iph);
+    CHECK_EQ(0, iph.tos);
+}
+
+MARLIN_TEST(ipip_encap_dscp_max_leaves_ecn_clear)
+{
+    /*
+     * DSCP 63 (0x3f), the top of the 6-bit field: tos must be 0xfc and the
+     * ECN pair (the low two bits) must stay clear.
+     */
+    static const unsigned char SMAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+    static const unsigned char DMAC[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+    struct marlin_ctx mctx;
+    struct xdp_md ctx;
+    struct ethhdr eth_after;
+    struct iphdr iph;
+
+    pb_reset();
+    pb_pad(IPIP_HEADROOM);
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena + IPIP_HEADROOM, DMAC, ETH_ALEN);
+    memcpy(pb_arena + IPIP_HEADROOM + ETH_ALEN, SMAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_ports(1234, 80);
+
+    mctx_init(&mctx, (__u16)(pb_len - IPIP_HEADROOM), 0, AF_INET);
+    mctx.flags = (mctx.flags & ~MARLIN_CTX_DSCP_MASK) | (0x3fU << MARLIN_CTX_DSCP_SHIFT);
+    ipip_arm(&ctx, IPIP_HEADROOM);
+
+    CHECK_RET(MARLIN_OK, marlin_ipip_encap_packet(&ctx, &mctx));
+
+    ipip_read_outer(&ctx, &eth_after, &iph);
+    CHECK_EQ(0xfc, iph.tos);
+    CHECK_EQ(0, iph.tos & 0x03);
 }
 
 MARLIN_TEST(ipip_encap_ipv6_inner_sets_protocol_41)
