@@ -6,6 +6,11 @@ All notable changes to `marlin.bpf.o` will be documented in this file. Versioned
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-09-17
+
+- Split the `marlin_vxlan_encap_packet` function into multiple functions that are inlined by the
+  compiler.
+
 ## [0.1.0] - 2026-09-17
 
 - Label the parser's `not_forwarded` and `icmp_echo` passes as early returns rather than parse
