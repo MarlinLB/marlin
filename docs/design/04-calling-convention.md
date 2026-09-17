@@ -72,6 +72,12 @@ address of a local, never a pointer that could be NULL.
   (`struct backend.id`, `docs/design/08-types.md`), so selection's caller can read
   `mctx->backend.id` without either function threading the index out as a separate return.
 
+  The VIP's configured DSCP passes the same test `MARLIN_CTX_F_QUIC` does
+  (`docs/design/30-quic.md`): written by `balancer.c` from `vip_meta.flags`, read by all three
+  encapsulation units and by `nexthop.c`'s FIB lookup — every one of them a different
+  translation unit from the writer. It is packed into `mctx->flags` bits 16-21 rather than a
+  new member, at no stack cost, the same reasoning as `MARLIN_CTX_F_QUIC`'s.
+
   `acl_verdict` is the one exception and does not cross a translation unit boundary either.
   `docs/design/11-pipeline.md` splits ACL evaluation from its enforcement around the VIP lookup —
   evaluated at step 3, consumed at step 4 by the per-VIP enforcement gate and at step 5 by the

@@ -1,8 +1,19 @@
 # Marlin — Design
 
 **Status:** design settled, pre-implementation
-**Last updated:** 2026-09-16
-**Revision:** 12 — `balancer.c`'s step-7 frame-length invariant check (`marlin_balancer_validate()`,
+**Last updated:** 2026-09-17
+**Revision:** 13 — operator-controlled per-VIP outer DSCP marking added for IPIP, GUE and VXLAN
+(`14-forwarding-modes.md` §7.2): `vip_meta.flags` bits 16-21 become `VIP_DSCP`, a six-bit
+configured codepoint shifted `<< 2` into the outer header's `tos` byte before its checksum, 0
+(CS0) the default and byte-identical to every frame emitted before the field existed.
+`struct vip_meta` does not grow. Carried to the three encapsulation units and to `nexthop.c`'s
+FIB lookup packed into `marlin_ctx.flags` at the same shift, so `marlin_ctx` stays 104 bytes;
+this is not a copy of the client's DSCP or ECN, and the field is six bits wide specifically so
+no configuration can reach the ECN pair, keeping the RFC 6040 exclusion this revision does not
+reopen. `08-types.md`, `04-calling-convention.md`, `16-fib-lookup.md`, `11-pipeline.md`,
+`19-control-plane.md`, `20-configuration-validation.md`, `06-map-abi.md`, `25-rejected.md`,
+`24-testing.md` and `PHASES.md` follow the consequence.
+Revision 12 — `balancer.c`'s step-7 frame-length invariant check (`marlin_balancer_validate()`,
 `pkt_len >= ETH_HLEN` and `bpf_xdp_get_buff_len() == pkt_len`) is now part of the design,
 distinct from `marlin_frame_fits()`'s MTU check. `23-mtu.md` and `11-pipeline.md` follow the
 consequence.

@@ -76,6 +76,14 @@ static __always_inline int marlin_nexthop_fib(struct xdp_md *ctx, struct marlin_
     fib.ipv4_dst = mctx->backend.addr;
     fib.tot_len = (__u16)((ctx->data_end - ctx->data) - ETH_HLEN);
     fib.ifindex = ctx->ingress_ifindex;
+    /*
+     * So a policy-routing rule matching dsfield resolves the next hop the
+     * way the wire will actually see the frame. fib.tos is unioned with
+     * rt_metric, which the kernel may write on return -- the same union
+     * hazard the mtu_result comment below records for tot_len -- but
+     * nothing reads fib.tos back.
+     */
+    fib.tos = marlin_outer_tos(mctx);
 
     rc = bpf_fib_lookup(ctx, &fib, sizeof(fib), 0);
 

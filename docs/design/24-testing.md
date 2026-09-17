@@ -198,6 +198,15 @@ elapsed time stays covered separately as `rl_spend()`'s wrap/backwards-clock cas
 compare-and-swap loop's actual multi-CPU behaviour and `rl_cas_exhausted` need the integration
 environment below with concurrent senders across multiple receive queues.
 
+**The outer DSCP is asserted per mode, plus one negative case.** IPIP, GUE and VXLAN each get a
+byte-for-byte case with a non-default VIP-configured DSCP, checked through the from-scratch
+checksum `tests/packet/xdp_encap.c` already computes independently of `csum.h` — a store placed
+after the outer checksum shows up as a checksum mismatch there, not a silently wrong QoS byte.
+The negative case is the one worth naming: a DSCP-bearing VIP with an L2 DSR backend must emit a
+frame byte-identical to one with no DSCP configured at all, since L2 DSR has no outer header for
+the marking to land in (`docs/design/14-forwarding-modes.md`). Every other encap case in this
+file passes DSCP 0, which is the regression guard that the default did not move.
+
 ## Native unit tests
 
 A second mechanism, alongside `bpf_prog_test_run` above: `data-plane/tests/` compiles a

@@ -322,6 +322,42 @@ MARLIN_TEST(frag_only_matters_with_hash_5tuple)
 }
 
 /*
+ * marlin_balancer_outer_dscp() reads only vip->flags and writes only
+ * mctx->flags, same shape as marlin_balancer_frag() above.
+ */
+MARLIN_TEST(outer_dscp_copies_only_the_dscp_field)
+{
+    struct marlin_ctx mctx;
+    struct vip_meta vip;
+
+    memset(&mctx, 0, sizeof(mctx));
+    memset(&vip, 0, sizeof(vip));
+
+    vip.flags = 0;
+    marlin_balancer_outer_dscp(&mctx, &vip);
+    CHECK_EQ(0, mctx.flags);
+
+    vip.flags = VIP_ACL | ((0x3fU << VIP_DSCP_SHIFT) & VIP_DSCP_MASK);
+    marlin_balancer_outer_dscp(&mctx, &vip);
+    CHECK_EQ(0x3fU << MARLIN_CTX_DSCP_SHIFT, mctx.flags);
+}
+
+MARLIN_TEST(outer_dscp_preserves_preexisting_mctx_flags)
+{
+    struct marlin_ctx mctx;
+    struct vip_meta vip;
+
+    memset(&mctx, 0, sizeof(mctx));
+    memset(&vip, 0, sizeof(vip));
+    mctx.flags = MARLIN_CTX_F_QUIC | MARLIN_CTX_F_FRAG;
+    vip.flags = (0x2aU << VIP_DSCP_SHIFT) & VIP_DSCP_MASK;
+
+    marlin_balancer_outer_dscp(&mctx, &vip);
+
+    CHECK_EQ((__u32)(MARLIN_CTX_F_QUIC | MARLIN_CTX_F_FRAG) | (0x2aU << MARLIN_CTX_DSCP_SHIFT), mctx.flags);
+}
+
+/*
  * marlin_balancer_load_backend() calls marlin_stats_backend(), which reads
  * `backend_stats` (a PERCPU_ARRAY) through bpf_map_lookup_elem(). No ARRAY
  * stub exists (docs/PHASES.md), so the call falls through to the ACL stub's

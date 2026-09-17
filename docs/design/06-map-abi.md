@@ -37,3 +37,9 @@ the C# declaration changes in the same commit. Byte offsets are stated as `[Fiel
 the C# side and in comments on the C side — `marlin_config` (`docs/design/08-types.md`)
 already carries them — so a review can check parity by reading, which is the primary
 mechanism for what `Explicit` layout does not already enforce.
+
+The same discipline covers a flag-bit **definition** in `abi/defines.h`, not only a struct
+field in `types.h`: `vip_meta.flags` bit 16-21 (`VIP_DSCP`) changes no layout, so it needs no
+`[FieldOffset]` review, but the constant, its shift and its mask are still part of the wire
+contract and are incomplete until `Marlin.Abi`'s C# constants change in the same commit
+(`docs/PHASES.md`).

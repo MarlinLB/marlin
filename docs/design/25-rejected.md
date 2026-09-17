@@ -176,3 +176,15 @@ re-argued field by field rather than closed once.
 **Probing the backend's own address for health checks.** `docs/design/18-health.md` — it avoids the martian problem but
 cannot detect a wrong VIP-on-loopback or missing ARP/NDP suppression, because the probe never
 carries the VIP. Isolating the prober in a VRF keeps the detection instead.
+
+**Growing `vip_meta` to carry the outer DSCP.** `struct vip_meta` is exactly 24 bytes with no
+spare field (`docs/design/08-types.md`). A byte-sized `dscp` field would grow it to 32, an ABI
+size change with no reserved bits to spend instead. `VIP_QUIC_CID_LEN`'s five-bit configured
+value packed into `flags` was already the precedent; a six-bit DSCP field follows the same
+shape at bits 16-21 and costs no struct growth.
+
+**Per-backend DSCP in `backend.pad`.** The feature is a per-VIP property, not a per-backend one,
+so this would have needed the control plane to keep every backend of a VIP in agreement — an
+invariant nothing enforces today and one more thing `docs/design/20-configuration-validation.md`
+would have to police. It would also have spent `backend`'s only slack (`pad[3]`,
+`docs/design/08-types.md`) on a value `vip_meta.flags` had room for at no ABI cost.

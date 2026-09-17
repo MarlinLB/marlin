@@ -129,6 +129,57 @@ MARLIN_TEST(ipv4_csum_self_check_zeros)
     CHECK_EQ(0, bpf_ntohs(marlin_csum_fold(sum)));
 }
 
+MARLIN_TEST(ipv4_csum_differs_when_only_tos_differs)
+{
+    struct iphdr a;
+    struct iphdr b;
+
+    /*
+     * word[0] is version/ihl and tos together (csum.h); this is the
+     * independent proof that a per-VIP DSCP write actually moves the
+     * checksum rather than landing in a byte the sum skips.
+     */
+    memset(&a, 0, sizeof(a));
+    a.version = 4;
+    a.ihl = 5;
+    a.protocol = IPPROTO_UDP;
+    a.saddr = bpf_htonl(0x0a0a0a0aU);
+    a.daddr = bpf_htonl(0x0b0b0b0bU);
+
+    b = a;
+    b.tos = 0xfc; /* DSCP 63 << 2, ECN clear */
+
+    CHECK_TRUE(marlin_ipv4_csum(&a) != marlin_ipv4_csum(&b));
+}
+
+MARLIN_TEST(ipv4_csum_self_check_zeros_with_tos_set)
+{
+    struct iphdr iph;
+    __u32 sum;
+
+    /*
+     * Same identity as ipv4_csum_self_check_zeros, above, but with a
+     * non-zero tos: the byte is ordinary payload to the checksum, not a
+     * special case.
+     */
+    memset(&iph, 0, sizeof(iph));
+    iph.version = 4;
+    iph.ihl = 5;
+    iph.tos = 0xfc; /* DSCP 63 << 2, ECN clear */
+    iph.tot_len = bpf_htons(60);
+    iph.id = bpf_htons(0x1c46);
+    iph.frag_off = bpf_htons(IP_DF);
+    iph.ttl = 64;
+    iph.protocol = IPPROTO_TCP;
+    iph.saddr = bpf_htonl(0xac100a63U);
+    iph.daddr = bpf_htonl(0xac100a0cU);
+
+    iph.check = marlin_ipv4_csum(&iph);
+
+    sum = marlin_csum_words(&iph, sizeof(iph), 0);
+    CHECK_EQ(0, bpf_ntohs(marlin_csum_fold(sum)));
+}
+
 int main(void)
 {
     return marlin_tests_main();

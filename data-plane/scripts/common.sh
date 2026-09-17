@@ -270,11 +270,13 @@ need_seeder() {
 }
 
 # vip_num is always 0: every rig configures exactly one VIP, so its
-# fwd_table block never collides with another rig's pins.
+# fwd_table block never collides with another rig's pins. flags defaults to
+# 0 (no ACL/RL/hash/QUIC bits, no DSCP marking); set VIP_FLAGS in the
+# environment to exercise a marking, e.g. VIP_FLAGS=$((46 << 16)) for EF.
 vip_seed() {
 	local backend_id=$1
 	need_seeder
-	"${SEEDER}" add "${PINDIR}" "${VIP}" "${HTTP_PORT}" "${IPPROTO_TCP}" "${VIP_NUM}" 0 "${backend_id}"
+	"${SEEDER}" add "${PINDIR}" "${VIP}" "${HTTP_PORT}" "${IPPROTO_TCP}" "${VIP_NUM}" "${VIP_FLAGS:-0}" "${backend_id}"
 }
 
 # Deletes the vip_map entry rather than zeroing it: a *present* entry

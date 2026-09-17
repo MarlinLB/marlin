@@ -79,12 +79,17 @@ static __always_inline void marlin_vxlan_build_outer_eth(void *data, const __u8 
     eth->h_proto = bpf_htons(ETH_P_IP);
 }
 
-/* tos/id=0, frag_off=DF: frame_fits() prevents fragmentation. */
+/*
+ * id=0, frag_off=DF: frame_fits() prevents fragmentation. tos carries the
+ * VIP's configured DSCP (docs/design/14-forwarding-modes.md SS7.2); never the
+ * client's, and never its ECN bits.
+ */
 static __always_inline void marlin_vxlan_build_outer_ipv4(const struct marlin_ctx *mctx, struct iphdr *iph, __u16 inner_len)
 {
     __builtin_memset(iph, 0, sizeof(*iph));
     iph->version = 4;
     iph->ihl = MARLIN_IPV4_IHL_MIN;
+    iph->tos = marlin_outer_tos(mctx);
     iph->frag_off = bpf_htons(IP_DF);
     iph->ttl = MARLIN_OUTER_TTL;
     iph->protocol = IPPROTO_UDP;

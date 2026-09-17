@@ -62,6 +62,11 @@ Rejected at configuration time rather than allowed to fail per packet:
   allow escape hatch. The rule is also load-bearing in the datapath: it is what lets the metering
   gate read `acl_verdict` without testing `VIP_ACL` itself (`docs/design/27-source-filtering.md`).
 - Any reserved flag bit set (`docs/design/08-types.md`).
+- A per-VIP DSCP outside 0-63. Already covered generically by the reserved-bit rule above once
+  the value is shifted into `vip_meta.flags`, but stated explicitly here because the operator
+  supplies a decimal codepoint (RFC 2474), not a pre-shifted mask, so the out-of-range case is a
+  configuration-time input error rather than a reserved-bit collision the operator would have to
+  reconstruct by hand.
 
 Explicitly **not** validated:
 
@@ -83,6 +88,12 @@ Explicitly **not** validated:
   same reasoning as the `VIP_HASH_5TUPLE` entry above. Unlike that entry, there is no dedicated
   counter: a fragment tail that misses the VIP is `vip_miss`, indistinguishable from ordinary
   host-bound traffic (`docs/design/11-pipeline.md`, `docs/design/22-observability.md`).
+- Agreement of `VIP_DSCP` between instances serving one VIP, for the weaker `VIP_ACL` reason
+  above: it is not hash input (`docs/design/08-types.md`), so a mismatch changes which queue a
+  frame lands in, not which backend a packet reaches.
+- Whether the underlay actually honours the configured codepoint. That is a property of the
+  operator's own QoS configuration outside Marlin, not of anything the datapath or the control
+  plane can observe.
 
 Accepted with a warning:
 
@@ -93,3 +104,7 @@ Accepted with a warning:
   bit is inert until the ACL is enabled (`docs/design/27-source-filtering.md`) — a staged rollout
   looks exactly like this, which is why it is a warning and not a rejection.
 - An ACL allow rule broader than `/8` for IPv4 or `/32` for IPv6.
+- `VIP_DSCP` non-zero on a VIP whose backends are all `L2DSR`. The marking has no outer header
+  to land in there (`docs/design/14-forwarding-modes.md`), but backend modes are per-backend and
+  change under reconciliation, so rejecting would refuse an otherwise legitimate mixed-mode
+  rollout that adds a tunnel-mode backend later.

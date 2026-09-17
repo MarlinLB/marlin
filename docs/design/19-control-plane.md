@@ -28,6 +28,10 @@
   events, and populate `tx_ports` with every egress ifindex it intends to redirect to.
 - Reconcile the four ACL tries to the configured rule set and maintain `config.acl_lists`
   (`docs/design/27-source-filtering.md`).
+- Populate `VIP_DSCP` in `vip_meta.flags` from the operator's configured per-VIP codepoint. The
+  datapath performs no mapping or policing beyond the `<< 2` into the outer header's `tos` byte
+  (`docs/design/14-forwarding-modes.md`); a value that does not fit six bits is rejected at
+  configuration time (`docs/design/20-configuration-validation.md`), not clamped by the datapath.
 - Convert the operator's tokens-per-second and burst-in-packets into `config.rl_refill` and the
   scaled `config.rl_burst` (`docs/design/28-rate-limiting.md`). The datapath performs no unit conversion.
 - **Never write `ratelimit`.** It is datapath-owned; the control plane reads it for diagnostics

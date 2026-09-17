@@ -58,8 +58,8 @@ static __always_inline __sum16 marlin_ipv4_csum(const struct iphdr *iph)
     } hdr = { .iph = *iph };
     __u32 sum;
 
-    sum = (__u32)hdr.word[0] + hdr.word[1] + hdr.word[2] + hdr.word[3] + hdr.word[4] + hdr.word[6] + hdr.word[7] +
-          hdr.word[8] + hdr.word[9];
+    sum = (__u32)hdr.word[0] + hdr.word[1] + hdr.word[2] + hdr.word[3] + hdr.word[4] + hdr.word[6] + hdr.word[7] + hdr.word[8] +
+          hdr.word[9];
     sum = (sum & 0xffffU) + (sum >> 16);
     sum = (sum & 0xffffU) + (sum >> 16);
 

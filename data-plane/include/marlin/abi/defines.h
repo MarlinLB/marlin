@@ -78,7 +78,17 @@
 #define VIP_QUIC_CID_LEN_MASK      ((__u32)0x1f << VIP_QUIC_CID_LEN_SHIFT)
 #define VIP_QUIC_CID_LEN(f)        (((f) & VIP_QUIC_CID_LEN_MASK) >> VIP_QUIC_CID_LEN_SHIFT)
 
-#define VIP_FLAGS_RESERVED         (~(__u32)(VIP_ACL | VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK))
+/*
+ * Operator-assigned outer DSCP for this VIP's tunnel modes, RFC 2474's six
+ * bits rather than the full ToS byte: the ECN pair stays unreachable from
+ * configuration by construction, not by convention (docs/design/14-forwarding-modes.md
+ * SS7.2). 0 = CS0, the class every VIP got before this field existed.
+ */
+#define VIP_DSCP_SHIFT             16
+#define VIP_DSCP_MASK              ((__u32)0x3f << VIP_DSCP_SHIFT)
+#define VIP_DSCP(f)                (((f) & VIP_DSCP_MASK) >> VIP_DSCP_SHIFT)
+
+#define VIP_FLAGS_RESERVED         (~(__u32)(VIP_ACL | VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK | VIP_DSCP_MASK))
 
 /*
  * Rate limiting
@@ -122,10 +132,16 @@ _Static_assert((MARLIN_BE_F_RESERVED &
                 (MARLIN_BE_F_ENCAP_MODE_MASK | MARLIN_BE_F_STATE | MARLIN_BE_F_ENCAP_REQUIRED | MARLIN_BE_F_FIB)) == 0,
                "flags reserved bits overlap an assigned bit");
 
-_Static_assert((VIP_FLAGS_RESERVED & (VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK)) == 0,
+_Static_assert((VIP_FLAGS_RESERVED & (VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK | VIP_DSCP_MASK)) == 0,
                "vip_meta.flags reserved mask overlaps an assigned bit");
 _Static_assert((20U << VIP_QUIC_CID_LEN_SHIFT) <= VIP_QUIC_CID_LEN_MASK,
                "the QUIC CID length field must hold values up to 20 (RFC 9000 SS17.2)");
+_Static_assert((VIP_DSCP_MASK & (VIP_ACL | VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK)) == 0,
+               "the DSCP field overlaps an assigned vip_meta.flags bit");
+_Static_assert((VIP_DSCP_MASK >> VIP_DSCP_SHIFT) == 0x3f, "the DSCP field must hold every 6-bit codepoint (RFC 2474)");
+// NOLINTNEXTLINE(misc-redundant-expression) -- constant-folds, that's the point of the assert
+_Static_assert((((VIP_DSCP_MASK >> VIP_DSCP_SHIFT) << 2) & 0x03) == 0,
+               "a configured DSCP must not reach the outer ToS byte's ECN bits (RFC 3168)");
 /* The four acl_lists bits must fit below the reserved range. */
 _Static_assert((ACL_LISTS_BIT(ACL_LIST_BLOCK, ACL_FAMILY_V6) & ACL_LISTS_RESERVED) == 0,
                "acl_lists bit encoding overflows into the reserved bits");

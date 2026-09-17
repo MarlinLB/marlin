@@ -337,6 +337,7 @@ static __always_inline int marlin_balancer_process_packet(struct xdp_md *ctx, st
     }
 
     if(ENCAP_MODE(mctx->backend.flags) != MARLIN_MODE_L2DSR) {
+        mctx->flags |= vip->flags & VIP_DSCP_MASK;
         rc = marlin_balancer_encap_packet(ctx, mctx);
 
         if(unlikely(rc != MARLIN_OK)) {

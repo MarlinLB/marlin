@@ -41,7 +41,7 @@ __sum16 test_ipv4_csum(const struct iphdr *iph);
  * without otherwise changing.
  */
 void ipip_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
-                       __be32 backend_addr, __u8 inner_family, __u32 out_len);
+                       __be32 backend_addr, __u8 inner_family, __u32 out_len, __u8 outer_dscp);
 
 #define GUE_TUNNEL_SRC 0x0e0e0e0eU /* 14.14.14.14 */
 
@@ -61,7 +61,7 @@ void ipip_check_frame(const unsigned char *expect_dst, const unsigned char *expe
  * function; this tier only needs to know a real value landed there.
  */
 void gue_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
-                      __be32 backend_addr, __be16 encap_dport, __u8 inner_family, __u32 out_len);
+                      __be32 backend_addr, __be16 encap_dport, __u8 inner_family, __u32 out_len, __u8 outer_dscp);
 
 /*
  * VXLAN-specific sibling of gue_check_frame(): the frame grew by
@@ -75,4 +75,4 @@ void gue_check_frame(const unsigned char *expect_dst, const unsigned char *expec
  */
 void vxlan_check_frame(const unsigned char *expect_dst, const unsigned char *expect_src, __be32 tunnel_src,
                         __be32 backend_addr, __be16 encap_dport, const unsigned char *inner_mac, __u32 vni,
-                        __u32 out_len);
+                        __u32 out_len, __u8 outer_dscp);

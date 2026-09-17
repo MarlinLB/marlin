@@ -193,6 +193,11 @@ revisable once a control plane has recorded a counter or read a struct in the fi
   `control-plane/Marlin.Abi/Defines/VipFlags.cs` — so the two reserved masks and the
   `_Static_assert` guarding them are one commit spanning both languages, exactly as exit criterion
   3 requires. Its only consumer is Phase 2b's enforcement gate.
+- `VIP_DSCP` lands here or not at all, on the same freeze logic. It takes `vip_meta.flags` bits
+  16-21, byte-aligned like `VIP_QUIC_CID_LEN`, so the two reserved masks and the
+  `_Static_assert` guarding them are one commit spanning both languages. `struct vip_meta` does
+  not grow. Its only consumers are Phase 2b's three encapsulation units and `nexthop.c`'s FIB
+  lookup.
 - Byte offsets stated in comments on both the C and C# sides for every mirrored struct, so
   parity is reviewable by reading — which `docs/design/06-map-abi.md` records as the only mechanism there is.
 - `drop_stats` enumerators appended from here, never reordered (`marlin.h:142`).
@@ -254,9 +259,15 @@ datapath is feature-complete and further work is control-plane work.
   IPv6 inner over IPv4 outer, VXLAN's VNI, its inner Ethernet header rewrite and its outer
   Ethernet header, the entropy source port shared by GUE and VXLAN, and the zero UDP checksum
   (`docs/design/14-forwarding-modes.md`).
+- **The outer DSCP write.** `balancer.c` copies the VIP's `VIP_DSCP` bits into `marlin_ctx.flags`
+  ahead of dispatch; all three tunnel builders write it into the outer header's `tos` byte
+  before their checksum. Six bits, so no configuration reaches the ECN pair and no RFC 6040
+  remapping work is implied. L2 DSR is asserted unaffected, not merely assumed to be.
 - `nexthop.c` completed: `bpf_fib_lookup()` with its seven return codes, the `neigh_fallback`
-  path, the L2 DSR gatewayed-next-hop refusal, `egress_mismatch`, and `XDP_REDIRECT` through
-  `tx_ports` (`docs/design/16-fib-lookup.md`).
+  path, the L2 DSR gatewayed-next-hop refusal, `egress_mismatch`, `XDP_REDIRECT` through
+  `tx_ports`, and `fib.tos` seeded from the same configured DSCP so a policy-routing rule
+  matching `dsfield` sees the frame as it will actually be transmitted
+  (`docs/design/16-fib-lookup.md`).
 - The MTU and fragmentation checks of `docs/design/23-mtu.md`: `frag_needed` and `frame_too_big`. Encapsulation
   also introduces `adjust_head_failed`, which is a driver-headroom failure counted under
   `docs/design/22-observability.md`, not an MTU check.
@@ -267,10 +278,13 @@ datapath is feature-complete and further work is control-plane work.
 
 **Decision required in this phase:** `nexthop.c:80` — `docs/design/16-fib-lookup.md` calls
 `BPF_FIB_LOOKUP_DIRECT` optional but gives it no configuration surface, so policy routing rules
-currently apply. The same decision covers `fib.ipv4_src`/`tos`/`l4_protocol`
+currently apply. The same decision covers `fib.ipv4_src`/`l4_protocol`
 (`nexthop.c:75-78`): they are left unseeded because the correct per-mode value is not one
 `nexthop.c` has in hand (`cfg` is not among its readers, `04-calling-convention.md:48-51`), and
-configuration surface for either would resolve both.
+configuration surface for either would resolve both. `fib.tos` is no longer part of this
+decision — per-VIP DSCP marking put the emitted `tos` byte in `marlin_ctx`, which `nexthop.c`
+already receives, so it is seeded from `marlin_outer_tos(mctx)` regardless of how the
+remaining fields are resolved.
 
 ### Exit criteria
 
@@ -454,7 +468,7 @@ section it affects, not in a document of its own.
 | D4 — `backend.mac` field order and mutability | `types.h:203` | 2a |
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
-| `BPF_FIB_LOOKUP_DIRECT` has no configuration surface, and neither does `fib.ipv4_src`/`tos`/`l4_protocol`/`sport`/`dport`, left unseeded for the same reason | `nexthop.c:75-80` | 2b |
+| `BPF_FIB_LOOKUP_DIRECT` has no configuration surface, and neither does `fib.ipv4_src`/`l4_protocol`/`sport`/`dport`, left unseeded for the same reason. `fib.tos` is no longer part of this decision: per-VIP DSCP marking put the emitted `tos` byte in `marlin_ctx`, which `nexthop.c` already receives, so it is seeded from `marlin_outer_tos(mctx)` regardless of how the rest resolve | `nexthop.c:75-80` | 2b |
 | Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly | `docs/design/11-pipeline.md` step 3 | 2b |
 | A fragment tail's parsed destination port is always zero, so an explicit-port VIP with no `port == 0` companion never admits its tails (`vip_miss`, indistinguishable from host-bound traffic), and one that has such a companion admits the tail into a different `vip_num` than its head — splitting one datagram across two independently configured pools, the outcome `docs/design/12-selection.md`'s "Hash input" rejects as a hash input, reached here through admission instead. Whether this is an accepted limitation (documented, uncounted, as written into `docs/design/11-pipeline.md`/`docs/design/12-selection.md`/`DEPLOYMENT.md` now), an added `drop_stats`/`MARLIN_COUNT_*` reason distinguishing a fragment-caused `vip_miss` from an ordinary one (a post-freeze `enum marlin_ret` append under Phase 2a's exit criterion 4 — `DROP_REASON_MAX` is 48 against `MARLIN_RET_MAX`'s current count, and it would also fire for ordinary host-bound fragment tails), or a control-plane-mandated `port == 0` companion sharing `vip_num` and `hash_key` with every explicit-port VIP (which widens the VIP to every port — a port-80 VIP would then forward port 22 to the backends — and cannot serve two explicit-port VIPs with different pools on one address) | `docs/design/11-pipeline.md:24-25`, `data-plane/bpf/balancer.c:112-129` | 2b |
 | An IPv6 fragment head and tail can also disagree on `tuple.proto` itself, not only on port: the Fragment header's Next Header is the first header of the Fragmentable Part (RFC 8200 §4.5), so a tail stops there while a head walks past a following extension header to the real L4 — no `port == 0` companion recovers this, unlike the port-only case above. It is refused in the parser as `unsupported_proto`, sharing the reason and counter ESP/AH already use, rather than reaching `vip_map` for either half — but only for the packet Marlin forwards; the same shape inside an ICMP error's quote is exempt and still parses (`docs/design/13-icmp.md`), since a quote has no head/tail to split. Whether the shared counter is precise enough — it cannot distinguish "ports behind ESP/AH" from "protocol behind a post-Fragment extension header" — or the case earns its own appended reason is open; either way this drop reaches a fragment that may be addressed to the host, not to any VIP, exactly as the existing ESP/AH check already does | `docs/design/11-pipeline.md:21-33`, `data-plane/bpf/parser.c:393-412` | 2b |
@@ -467,6 +481,7 @@ section it affects, not in a document of its own.
 | Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |
 | Backend ID allocation authority: the shared configuration store, or each instance's own control plane. `docs/design/21-active-active.md:5-7` lists five values that must be identical across instances and `backend_id` is not among them, yet `:26` presumes agreement on it and `DEPLOYMENT.md:288` tells the integrator to encode "the `backend_id` this instance assigns". The hash path tolerates divergence — two instances may hold the same backend at different indices and still route identically — but `VIP_QUIC` does not, because the ID is on the wire | `docs/design/21-active-active.md:5-7`, `docs/DEPLOYMENT.md:288` | 3 |
 | Whether the reconciler asserts `backends[i].id == i` on every write, or only on a full resync | `docs/design/20-configuration-validation.md` | 3 |
+| Whether `VIP_DSCP` non-zero on a VIP served only by `L2DSR` backends is a warning, silently accepted, or rejected. The marking has no outer header to land in there, but backend modes are per-backend and change under reconciliation, and the same VIP can mix modes over its lifetime — so a rejection would refuse an otherwise legitimate mixed-mode rollout | `docs/design/20-configuration-validation.md` | 3 |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |
 
 ---

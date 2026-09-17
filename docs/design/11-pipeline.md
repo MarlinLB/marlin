@@ -66,12 +66,14 @@ clients, there is no reverse path and no classifier.
    invariant violation → drop `encap_length` (`docs/design/23-mtu.md`).
 8. **Dispatch** on `ENCAP_MODE(backend.flags)`:
    - `L2DSR` → rewrite destination MAC; `XDP_TX`, or `XDP_REDIRECT` where `docs/design/16-fib-lookup.md` resolves the
-     backend out another interface
-   - `IPIP` → `docs/design/14-forwarding-modes.md`
-   - `GUE` → `docs/design/14-forwarding-modes.md`
-   - `VXLAN` → `docs/design/14-forwarding-modes.md`; alone among the modes this step also
-     writes the frame's **outer** Ethernet header, because it consumes the arriving one as the
-     inner header (§7.4)
+     backend out another interface. No outer header, so the VIP's configured DSCP has nowhere
+     to land and is not applied
+   - `IPIP` → `docs/design/14-forwarding-modes.md`; writes the VIP's configured DSCP into the
+     outer header's `tos` before its checksum
+   - `GUE` → `docs/design/14-forwarding-modes.md`; same DSCP write
+   - `VXLAN` → `docs/design/14-forwarding-modes.md`; same DSCP write, alone among the modes this
+     step also writes the frame's **outer** Ethernet header, because it consumes the arriving
+     one as the inner header (§7.4)
 9. **Next hop** — `docs/design/15-nexthop-l2dsr.md`, `docs/design/16-fib-lookup.md`.
 
 Steps 1–7 are identical for all four modes. Steps 8 and 9 both diverge on `ENCAP_MODE(backend.flags)`:

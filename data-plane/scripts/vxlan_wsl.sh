@@ -492,19 +492,23 @@ EOF
 verify() {
 	need_root
 	need_cmd tcpdump python3
-	local pcap port rc
+	local pcap port dscp rc
 	port=$(vxlan_port)
+	# VIP_FLAGS bits 16-21 (VIP_DSCP_SHIFT/_MASK, defines.h); 0 unless the
+	# caller set VIP_FLAGS before seed().
+	dscp=$(( (${VIP_FLAGS:-0} >> 16) & 0x3f ))
 	pcap=$(mktemp)
 	trap 'rm -f "${pcap}"' EXIT
 
 	verify_capture "${pcap}" || { rm -f "${pcap}"; trap - EXIT; exit 1; }
 
-	python3 - "${pcap}" "${port}" "${RT_A_MAC}" "${MARLIN_MAC}" "${INNER_MAC}" "${VNI}" <<'PY'
+	python3 - "${pcap}" "${port}" "${RT_A_MAC}" "${MARLIN_MAC}" "${INNER_MAC}" "${VNI}" "${dscp}" <<'PY'
 import struct, sys
 
-path, dport, rt_a_mac, marlin_mac, inner_mac, vni = sys.argv[1:7]
+path, dport, rt_a_mac, marlin_mac, inner_mac, vni, expected_dscp = sys.argv[1:8]
 dport = int(dport)
 vni = int(vni)
+expected_dscp = int(expected_dscp)
 
 def mac_bytes(s):
     return bytes(int(x, 16) for x in s.split(":"))
@@ -569,6 +573,8 @@ check("outer Ethernet dst == the arriving frame's source (%s)" % rt_a_mac.hex(":
       outer_eth[0:6] == rt_a_mac)
 check("outer Ethernet src == Marlin's own MAC", outer_eth[6:12] == marlin_mac)
 check("outer IPv4 protocol == 17 (UDP)", ip[9] == 17)
+check("outer IPv4 DSCP == configured (%d)" % expected_dscp, (ip[1] >> 2) == expected_dscp)
+check("outer IPv4 ECN bits == 0", (ip[1] & 0x03) == 0)
 check("outer UDP dest == encap_dport (%d)" % dport, struct.unpack("!H", udp[2:4])[0] == dport)
 check("outer UDP source in the ephemeral range 49152-65535", 49152 <= struct.unpack("!H", udp[0:2])[0] <= 65535)
 check("outer UDP checksum == 0", struct.unpack("!H", udp[6:8])[0] == 0)
