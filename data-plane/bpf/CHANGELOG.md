@@ -6,6 +6,11 @@ All notable changes to `marlin.bpf.o` will be documented in this file. Versioned
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-09-17
+
+- Split the `marlin_vxlan_encap_packet` function into multiple functions that are inlined by the
+  compiler.
+
 ## [0.1.2] - 2026-09-17
 
 - Split `marlin_gue_encap_packet` into `static __always_inline` helpers
@@ -21,7 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`marlin_ipip_validate`, `marlin_ipip_build_outer_eth`, `marlin_ipip_build_outer_ipv4`,
   `marlin_ipip_write_outer`) for readability. No behaviour change; the combined stack frame
   is unchanged at 32 bytes.
-
 
 ## [0.1.0] - 2026-09-17
 
