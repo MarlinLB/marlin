@@ -93,9 +93,11 @@ int xdp_main(struct xdp_md *ctx)
     rc = marlin_parse(ctx, mctx);
 
     if(rc != MARLIN_OK) {
-        MARLIN_DBG("Packet parsing failed: rc=%d\n", rc);
+        int action = marlin_action(rc);
+
+        MARLIN_DBG("Parser returned early: rc=%d action=%d\n", rc, action);
         marlin_stats_reason(rc);
-        return marlin_action(rc);
+        return action;
     }
 
     rc = marlin_balancer_process(ctx, mctx);
