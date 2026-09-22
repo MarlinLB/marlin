@@ -36,7 +36,7 @@ that produces an impossible length has a named reason instead of falling to a `d
 Reasons that are passes or fallbacks rather than drops are marked as such, so the sum of
 `drop_stats` is not mistaken for total drops.
 
-**Two counters belong to `VIP_QUIC`, and `balancer.c` is their producer**
+**Two counters belong to `VIP_QUIC`, and `lb_core.c` is their producer**
 (`docs/design/30-quic.md`): `quic_cid_routed`, a packet steered by connection ID, and
 `quic_cid_check_failed`, a connection ID whose check field or generation field did not verify.
 Neither is a drop, so neither changes the count above; both are `MARLIN_COUNT_*` enumerators

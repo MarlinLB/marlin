@@ -8,10 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Implement the load-balancer core in `lb_core.c`. With this translation unit (TU), `balancer.c`
+  TU can be decomissioned. The `lb_core` TU is responsible for VIP lookup, ACL enforcement,
+  backend selection (including QUIC steering) and DSCP marking.
 - Add operator-controlled per-VIP outer DSCP marking for IPIP, GUE and VXLAN. `vip_meta.flags`
   bits 16-21 (`VIP_DSCP`) hold a six-bit codepoint, `0` (CS0) by default and byte-identical to
   every frame emitted before this field existed. `struct vip_meta` does not grow.
-- `balancer.c` copies the VIP's `VIP_DSCP` bits into `marlin_ctx.flags` before dispatching to
+- `lb_core.c` copies the VIP's `VIP_DSCP` bits into `marlin_ctx.flags` before dispatching to
   the three encapsulation units; `marlin_ctx` stays 104 bytes. L2 DSR is unaffected — the copy
   happens only on the encapsulating arm.
 - `ipip.c`, `gue.c` and `vxlan.c` each write the resolved DSCP, shifted `<< 2`, into the outer

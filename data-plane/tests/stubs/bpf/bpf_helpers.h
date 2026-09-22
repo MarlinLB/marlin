@@ -121,7 +121,7 @@ static __attribute__((unused)) long bpf_redirect_map(void *map, __u64 key, __u64
 }
 
 /*
- * balancer.c's own two helpers, same as bpf_fib_lookup/bpf_redirect_map above:
+ * lb_core.c's own two helpers, same as bpf_fib_lookup/bpf_redirect_map above:
  * no native model exists (docs/PHASES.md), so these exist only so a
  * translation unit that calls them links. A native case that reaches past a
  * NULL-argument check into either needs the packet tier instead.

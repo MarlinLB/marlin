@@ -8,7 +8,7 @@
 #include <bpf/bpf_helpers.h>
 
 #include <marlin.h>
-#include <marlin/balancer.h>
+#include <marlin/lb_core.h>
 #include <marlin/build.h>
 #include <marlin/compiler.h>
 #include <marlin/maps.h>
@@ -69,20 +69,20 @@ static __always_inline int marlin_action(int rc)
 SEC("xdp")
 int xdp_main(struct xdp_md *ctx)
 {
-    struct marlin_ctx *mctx;
+    struct marlin_ctx *pkt;
     __u32 zero = 0;
     int rc;
 
-    mctx = bpf_map_lookup_elem(&mctx_scratch, &zero);
+    pkt = bpf_map_lookup_elem(&mctx_scratch, &zero);
 
-    if(unlikely(!mctx)) {
+    if(unlikely(!pkt)) {
         MARLIN_DBG("Failed to look up per-CPU scratch state\n");
         marlin_stats_reason(MARLIN_DROP_MAP_BOUNDS);
         return XDP_ABORTED;
     }
 
-    __builtin_memset(mctx, 0, sizeof(*mctx));
-    rc = xdp_load_config(mctx);
+    __builtin_memset(pkt, 0, sizeof(*pkt));
+    rc = xdp_load_config(pkt);
 
     if(unlikely(rc != MARLIN_OK)) {
         MARLIN_DBG("Failed to load config: rc=%d\n", rc);
@@ -90,7 +90,7 @@ int xdp_main(struct xdp_md *ctx)
         return XDP_ABORTED;
     }
 
-    rc = marlin_parse(ctx, mctx);
+    rc = marlin_parse(ctx, pkt);
 
     if(rc != MARLIN_OK) {
         int action = marlin_action(rc);
@@ -100,7 +100,7 @@ int xdp_main(struct xdp_md *ctx)
         return action;
     }
 
-    rc = marlin_balancer_process(ctx, mctx);
+    rc = marlin_lb_process(ctx, pkt);
     marlin_stats_reason(rc);
 
     return marlin_action(rc);

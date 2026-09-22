@@ -72,7 +72,7 @@ __u32 pb_quic_form(__u8 first_byte);
 
 /*
  * Short header plus the destination connection ID that follows it, which is
- * what balancer.c steers on (docs/design/30-quic.md). The ID's own layout is
+ * what lb_core.c steers on (docs/design/30-quic.md). The ID's own layout is
  * the caller's business: this only guarantees it lands immediately after the
  * form byte, where the decoder reads it.
  */

@@ -473,7 +473,7 @@ MARLIN_TEST(unflagged_vip_fragments_and_unfragmented_share_a_row)
  * A fragment tail's parsed dport is always zero (parser.c), so on a VIP
  * configured with an explicit port and no port == 0 companion, the tail's
  * vip_map lookup is the same miss twice over -- not a second chance, since
- * both lookups in marlin_balancer_vip() carry the identical zeroed key. The
+ * both lookups in marlin_lb_select_vip() carry the identical zeroed key. The
  * head still resolves and forwards; only the tail is stranded. This is the
  * documented consequence of docs/design/11-pipeline.md and
  * docs/design/12-selection.md's "Hash input", not a bug this test enshrines.

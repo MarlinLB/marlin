@@ -20,7 +20,7 @@ description of it rather than a justification worked backward from the number. R
 is still a decision to be made against a measured chain depth, not to absorb the next field someone
 wants to thread. Both aggregate members earn their place by being read in a unit other than the one
 that writes them — `backend` by the encapsulation units and `nexthop.c`, `cfg` by
-`balancer.c` and the encapsulation units — and that is the test any addition has to pass.
+`lb_core.c` and the encapsulation units — and that is the test any addition has to pass.
 
 **Measured, not estimated.** `make verifier-stats` (`data-plane/tools/verifier_stats.c`, which loads
 `marlin.bpf.o` through libbpf directly — no `bpftool`, no bpffs pin, since some hosts' LSM
@@ -38,8 +38,8 @@ checked is the deepest **root-to-leaf sum along the real call graph**, each fram
 16 bytes (`round_up_stack_depth()`, kernel-JIT builds — the default, `bpf_jit_enable=1`) or 32
 bytes (interpreted builds).
 
-This is not one of Marlin's units calling another as a byte-for-byte coincidence: `balancer.c`
-calls seven of the other nine global subprograms directly, so `xdp_main → marlin_balancer_process
+This is not one of Marlin's units calling another as a byte-for-byte coincidence: `lb_core.c`
+calls seven of the other nine global subprograms directly, so `xdp_main → marlin_lb_process
 → marlin_vxlan_encap_packet` is a real three-frame chain, not three siblings. `verifier_stats.c`
 reconstructs that call graph from the linked object's own `R_BPF_64_32` relocations — the
 BPF-to-BPF call sites `bpftool gen object` leaves for libbpf to resolve — pairs it with each
@@ -47,7 +47,7 @@ function's own decoded stack depth, and walks it depth-first from `xdp_main` to 
 chain by name, under both roundings. The kernel's anonymous per-function list is still printed
 alongside for cross-checking, but it is no longer what the tool's answer is derived from.
 
-`balancer.c` does not appear as a figure of its own: its stage functions are `static
+`lb_core.c` does not appear as a figure of its own: its stage functions are `static
 __always_inline` (see Verifier budget, below), so their cost lands in the frame of whichever
 caller reaches them rather than in a callee's. Editing them moves a number that is not labelled
 with their name, which is the second reason the depth is read from the build rather than
@@ -66,7 +66,7 @@ families in one monolithic program is where path explosion would appear; separat
 verified global subprograms keep it tractable.
 
 The unit of independent verification is the translation unit boundary, not every named
-function. Inside `balancer.c` only `marlin_balance()` is global; its stage functions are
+function. Inside `lb_core.c` only `marlin_balance()` is global; its stage functions are
 `static __always_inline` and are verified as one body with it. That is deliberate — the
 selection path is branch-light, and factoring it into global subprograms would have cost a
 call frame and the output-parameter convention for no reduction in path count. What remains

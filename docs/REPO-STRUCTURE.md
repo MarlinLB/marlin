@@ -72,7 +72,7 @@ marlin/
 │   │   ├── VERSION                   # marlin.bpf.o's own version; sources include/marlin/version.h (generated)
 │   │   ├── CHANGELOG.md              # marlin.bpf.o changelog; root CHANGELOG.md is the per-component index
 │   │   ├── main.c                  # XDP entry point
-│   │   ├── balancer.c                # marlin_balance()
+│   │   ├── lb_core.c                # marlin_lb_process()
 │   │   ├── parser.c
 │   │   ├── ipip.c
 │   │   ├── gue.c
@@ -93,6 +93,7 @@ marlin/
 │   │   │   ├── entropy.h             # outer UDP source port entropy hash, shared by gue.c and vxlan.c
 │   │   │   ├── siphash.h
 │   │   │   ├── stats.h
+│   │   │   ├── lb_core.h            # marlin_lb_process() prototype
 │   │   │   ├── acl.h
 │   │   │   └── ratelimit.h          # marlin_ratelimit() prototype
 │   │   └── marlind/                  # marlind's own headers — host-only, never reachable from a -target bpf TU (§3)
@@ -137,7 +138,7 @@ marlin/
 │   │       ├── xdp_40_fib.c         # FIB lookup / NO_NEIGH
 │   │       ├── xdp_45_encap.c       # L2DSR, IPIP, GUE, VXLAN
 │   │       ├── xdp_50_siphash.c     # SipHash-2-4 published-vector self-check
-│   │       ├── xdp_60_balancer.c    # VIP admission and backend selection
+│   │       ├── xdp_60_lb_core.c     # VIP admission and backend selection
 │   │       ├── xdp_70_acl_placement.c # ACL verdict placement relative to VIP lookup
 │   │       ├── xdp_80_quic.c        # QUIC connection-ID steering
 │   │       ├── xdp_fixture.h/.c     # addresses, run wrappers, VIP/backend fixture shared by ≥2 case files above

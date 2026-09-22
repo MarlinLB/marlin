@@ -29,7 +29,7 @@ _Static_assert(sizeof(struct packet_tuple) == 40, "packet_tuple must stay 40 byt
 #define MARLIN_CTX_F_FRAG_ANY   (MARLIN_CTX_F_FRAG | MARLIN_CTX_F_FRAG_FIRST)
 
 /*
- * The VIP's outer DSCP, copied from vip_meta.flags by balancer.c. Same shift
+ * The VIP's outer DSCP, copied from vip_meta.flags by lb_core.c. Same shift
  * as VIP_DSCP_SHIFT so the copy is a plain mask-and-or (see the equality
  * assert below); an encapsulation unit reads it back through
  * marlin_outer_tos().
@@ -56,7 +56,7 @@ _Static_assert((MARLIN_CTX_DSCP_MASK & (MARLIN_CTX_F_ICMP | MARLIN_CTX_F_FRAG | 
                "the mctx DSCP field overlaps an assigned MARLIN_CTX_F_* bit");
 // NOLINTNEXTLINE(misc-redundant-expression) -- deliberately tautological: catches either side moving
 _Static_assert(VIP_DSCP_MASK == MARLIN_CTX_DSCP_MASK,
-               "the mctx DSCP field must sit where balancer.c copies vip_meta's without a shift");
+               "the mctx DSCP field must sit where lb_core.c copies vip_meta's without a shift");
 
 /*
  * The outer ToS byte for the three encapsulating modes: the VIP's configured
@@ -114,7 +114,7 @@ enum marlin_ret {
 
     /*
      * VIP_QUIC's steering step (docs/design/30-quic.md), produced by
-     * balancer.c. Neither is a drop: a connection ID that does not verify
+     * lb_core.c. Neither is a drop: a connection ID that does not verify
      * falls through to the hash path, as do the fall-throughs that carry no
      * counter at all (docs/design/22-observability.md).
      */

@@ -150,7 +150,7 @@ it never creates maps (`docs/design/02-architecture.md`, `docs/design/19-control
 2. `bpf_prog_test_run` asserts exact output bytes for: a VIP hit rewriting the destination MAC
    and returning `XDP_TX`; a miss returning `XDP_PASS` counting `vip_miss`; `backend_id == 0`
    dropping `no_backend`; `state != MARLIN_UP` dropping `backend_down`. Each is registered in
-   `data-plane/tests/packet/xdp_60_balancer.c` and, for as long as the path it asserts is unreachable,
+   `data-plane/tests/packet/xdp_60_lb_core.c` and, for as long as the path it asserts is unreachable,
    carries a `MARLIN_SKIP` naming this line — so `make packet-tests` reports it as `skip` rather
    than a pass.
 3. The C# service configures that VIP and backend from scratch on a running datapath, and the
@@ -182,11 +182,11 @@ revisable once a control plane has recorded a counter or read a struct in the fi
 - `VIP_HASH_5TUPLE` and `MARLIN_DROP_FRAG_UNSUPPORTED` land here or not at all
   (`docs/design/12-selection.md`). The flag is a `vip_meta.flags` bit and the reason is a
   `drop_stats` index, so both are exactly what this phase freezes; adding either afterwards is a
-  post-freeze `types.h` change under exit criterion 4. Its datapath consumers are `balancer.c`'s
+  post-freeze `types.h` change under exit criterion 4. Its datapath consumers are `lb_core.c`'s
   frag and hash stages; the flag stays unusable until Phase 2b supplies its producer, below.
 - `VIP_QUIC` and the CID-length field land here or not at all (`docs/design/30-quic.md`), on the
   same freeze logic as `VIP_HASH_5TUPLE` above. `parser.c` classifies short- from long-header
-  packets; the steering step that consumes the flag is `balancer.c`'s, in Phase 2b.
+  packets; the steering step that consumes the flag is `lb_core.c`'s, in Phase 2b.
 - `VIP_ACL` lands here or not at all, on the same freeze logic again
   (`docs/design/27-source-filtering.md`). It takes `vip_meta.flags` bit 0, which both sides of the
   ABI otherwise fold into `VIP_FLAGS_RESERVED` — `data-plane/include/marlin/abi/defines.h` and
@@ -226,11 +226,11 @@ datapath is feature-complete and further work is control-plane work.
 - `parser.c`: IPv6 extension-header walking to `MAX_EXT_HDRS`, fragments in both families, ESP
   and AH as `unsupported_proto`, and the ICMP branch including the embedded-header path
   (`docs/design/11-pipeline.md`).
-- `balancer.c`'s VIP lookup: the port-agnostic double lookup of `vip_map` — the parsed
+- `lb_core.c`'s VIP lookup: the port-agnostic double lookup of `vip_map` — the parsed
   destination port first, then port 0 on a miss — both with a fully zeroed key
   (`docs/design/11-pipeline.md`). `parser.c` has no access to `vip_map`; this is step 4, not
   parsing.
-- **`balancer.c`'s ACL enforcement gate**, which is the other half of the same step: the block
+- **`lb_core.c`'s ACL enforcement gate**, which is the other half of the same step: the block
   verdict enforced instance-wide on the `vip_map` miss, and gated on `VIP_ACL` on the hit
   (`docs/design/27-source-filtering.md`). It lands here because it is datapath code reading
   `vip_meta.flags`, and it is inert until Phase 3 makes `CFG_ACL_ENABLE` usable. Moving
@@ -248,7 +248,7 @@ datapath is feature-complete and further work is control-plane work.
   `icmp_unparseable` threshold moves from two bytes of embedded L4 header to four with it.
   `tuple.pad` must stay zero, because the flag hashes the tuple whole
   (`docs/design/10-map-invariants.md`).
-- **`balancer.c`'s `VIP_QUIC` steering step.** On a `VIP_QUIC` VIP, a `MARLIN_CTX_F_QUIC` packet
+- **`lb_core.c`'s `VIP_QUIC` steering step.** On a `VIP_QUIC` VIP, a `MARLIN_CTX_F_QUIC` packet
   decodes a `backend_id` from its connection ID and indexes `backends[]` directly, bypassing
   `fwd_table`; any decode failure — check mismatch, an out-of-range or unpopulated
   `backend_id`, or a backend not `MARLIN_UP` — falls through to the existing hash path, uncounted
@@ -259,7 +259,7 @@ datapath is feature-complete and further work is control-plane work.
   IPv6 inner over IPv4 outer, VXLAN's VNI, its inner Ethernet header rewrite and its outer
   Ethernet header, the entropy source port shared by GUE and VXLAN, and the zero UDP checksum
   (`docs/design/14-forwarding-modes.md`).
-- **The outer DSCP write.** `balancer.c` copies the VIP's `VIP_DSCP` bits into `marlin_ctx.flags`
+- **The outer DSCP write.** `lb_core.c` copies the VIP's `VIP_DSCP` bits into `marlin_ctx.flags`
   ahead of dispatch; all three tunnel builders write it into the outer header's `tos` byte
   before their checksum. Six bits, so no configuration reaches the ECN pair and no RFC 6040
   remapping work is implied. L2 DSR is asserted unaffected, not merely assumed to be.
@@ -324,7 +324,7 @@ remaining fields are resolved.
    linked. If it is not, `docs/design/05-budgets.md`'s `PROG_ARRAY` fallback is taken **with its
    three consequences accepted explicitly**: `marlin_ctx` moves to a per-CPU scratch map, the
    accumulated stack cap drops to 256 bytes, and tail calls do not return. **Measured**, with
-   `make verifier-stats`, over a reachable set that includes `marlin_balancer_process()`, both
+   `make verifier-stats`, over a reachable set that includes `marlin_lb_process()`, both
    `marlin_nexthop_*` entry points and all three encapsulation units — against limits of
    1,000,000 processed instructions and a 512-byte **worst root-to-leaf call chain**, not a
    per-function maximum (`docs/design/05-budgets.md`). CI records which rounding —
@@ -403,7 +403,7 @@ rate-limiter conversion.
 
 **Goal:** the rate limiter is safe to enable on a link carrying production traffic.
 
-The datapath token bucket is `ratelimit.c`'s, gated at its `balancer.c` call site by
+The datapath token bucket is `ratelimit.c`'s, gated at its `lb_core.c` call site by
 `VIP_RATELIMIT` and instance-wide by `CFG_RL_ENABLE`, and covered at both the native
 (`data-plane/tests/ratelimit_test.c`) and packet (`data-plane/tests/packet/xdp_30_ratelimit.c`'s `rl_*`
 cases) tiers. What this phase adds is the measurement that decides whether it may be turned on,
@@ -470,14 +470,14 @@ section it affects, not in a document of its own.
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
 | `BPF_FIB_LOOKUP_DIRECT` has no configuration surface, and neither does `fib.ipv4_src`/`l4_protocol`/`sport`/`dport`, left unseeded for the same reason. `fib.tos` is no longer part of this decision: per-VIP DSCP marking put the emitted `tos` byte in `marlin_ctx`, which `nexthop.c` already receives, so it is seeded from `marlin_outer_tos(mctx)` regardless of how the rest resolve | `nexthop.c:75-80` | 2b |
 | Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly | `docs/design/11-pipeline.md` step 3 | 2b |
-| A fragment tail's parsed destination port is always zero, so an explicit-port VIP with no `port == 0` companion never admits its tails (`vip_miss`, indistinguishable from host-bound traffic), and one that has such a companion admits the tail into a different `vip_num` than its head — splitting one datagram across two independently configured pools, the outcome `docs/design/12-selection.md`'s "Hash input" rejects as a hash input, reached here through admission instead. Whether this is an accepted limitation (documented, uncounted, as written into `docs/design/11-pipeline.md`/`docs/design/12-selection.md`/`DEPLOYMENT.md` now), an added `drop_stats`/`MARLIN_COUNT_*` reason distinguishing a fragment-caused `vip_miss` from an ordinary one (a post-freeze `enum marlin_ret` append under Phase 2a's exit criterion 4 — `DROP_REASON_MAX` is 48 against `MARLIN_RET_MAX`'s current count, and it would also fire for ordinary host-bound fragment tails), or a control-plane-mandated `port == 0` companion sharing `vip_num` and `hash_key` with every explicit-port VIP (which widens the VIP to every port — a port-80 VIP would then forward port 22 to the backends — and cannot serve two explicit-port VIPs with different pools on one address) | `docs/design/11-pipeline.md:24-25`, `data-plane/bpf/balancer.c:112-129` | 2b |
+| A fragment tail's parsed destination port is always zero, so an explicit-port VIP with no `port == 0` companion never admits its tails (`vip_miss`, indistinguishable from host-bound traffic), and one that has such a companion admits the tail into a different `vip_num` than its head — splitting one datagram across two independently configured pools, the outcome `docs/design/12-selection.md`'s "Hash input" rejects as a hash input, reached here through admission instead. Whether this is an accepted limitation (documented, uncounted, as written into `docs/design/11-pipeline.md`/`docs/design/12-selection.md`/`DEPLOYMENT.md` now), an added `drop_stats`/`MARLIN_COUNT_*` reason distinguishing a fragment-caused `vip_miss` from an ordinary one (a post-freeze `enum marlin_ret` append under Phase 2a's exit criterion 4 — `DROP_REASON_MAX` is 48 against `MARLIN_RET_MAX`'s current count, and it would also fire for ordinary host-bound fragment tails), or a control-plane-mandated `port == 0` companion sharing `vip_num` and `hash_key` with every explicit-port VIP (which widens the VIP to every port — a port-80 VIP would then forward port 22 to the backends — and cannot serve two explicit-port VIPs with different pools on one address) | `docs/design/11-pipeline.md:24-25`, `data-plane/bpf/lb_core.c:112-129` | 2b |
 | An IPv6 fragment head and tail can also disagree on `tuple.proto` itself, not only on port: the Fragment header's Next Header is the first header of the Fragmentable Part (RFC 8200 §4.5), so a tail stops there while a head walks past a following extension header to the real L4 — no `port == 0` companion recovers this, unlike the port-only case above. It is refused in the parser as `unsupported_proto`, sharing the reason and counter ESP/AH already use, rather than reaching `vip_map` for either half — but only for the packet Marlin forwards; the same shape inside an ICMP error's quote is exempt and still parses (`docs/design/13-icmp.md`), since a quote has no head/tail to split. Whether the shared counter is precise enough — it cannot distinguish "ports behind ESP/AH" from "protocol behind a post-Fragment extension header" — or the case earns its own appended reason is open; either way this drop reaches a fragment that may be addressed to the host, not to any VIP, exactly as the existing ESP/AH check already does | `docs/design/11-pipeline.md:21-33`, `data-plane/bpf/parser.c:393-412` | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself. The `data-plane/scripts/vxlan_wsl.sh` and `netns-topo.sh` rigs assume `lo`/a dummy device, matching every other mode's rig — an operational default for development, not a resolution of the question | `docs/design/01-scope.md` | 2b |
 | Netns integration rigs: `tests/integration/` versus `data-plane/scripts/`, where all five currently live | `docs/REPO-STRUCTURE.md` §7.8 | 2b |
 | `nexthop.c` maps ten kernel `bpf_fib_lookup()` return codes onto seven named `drop_stats` reasons. `BPF_FIB_LKUP_RET_NOT_FWDED` (the ordinary no-route outcome), `UNSUPP_LWT` and `NO_SRC_ADDR` all fall to the `default:` arm, `MARLIN_DROP_FIB_UNSPEC` — so "no route" is indistinguishable from a helper contract violation in `drop_stats` | `docs/design/16-fib-lookup.md:56-66`, `nexthop.c:82-111` | 2b |
 | Whether `ipip.c`'s, `gue.c`'s and `vxlan.c`'s `tot_len`/`pkt_len` arithmetic needs a `__u32` guard against `__u16` wraparound when `cfg.max_frame == 0` disables `frame_fits()` — unreachable from the datapath today (`pkt_len` derives from `data_end - data`), covered by `ipip_test.c`, `gue_test.c` and `vxlan_test.c` only at the boundary that does not wrap; one guard for all three once decided, the same reasoning that makes them one boundary rather than three (`docs/PHASES.md:34-39`) | `ipip.c:77,85`, `gue.c:85,105`, `vxlan.c:96,194` | 2b |
-| `balancer.c`'s map-reading helpers (`vip_map`'s `HASH` lookup, `fwd_table`'s and `backends`' `ARRAY` lookups) and `marlin_balancer_quic_decode()`'s `bpf_xdp_load_bytes()` call have no native-tier stub — `data-plane/tests/stubs/hash_stub.h` is hardcoded to `rl_key`, and no `ARRAY` or `bpf_xdp_load_bytes()` stub exists — so these helpers stay packet-tier-only under `docs/design/24-testing.md`'s three-part test until stubs are written or the gap is accepted as permanent | `docs/design/24-testing.md:157-178`, `data-plane/bpf/balancer.c` | 2b |
-| `MARLIN_DROP_ENCAP_LENGTH`'s two branches inside `marlin_balancer_validate()` are now covered natively (`data-plane/tests/balancer_test.c`): the function takes `frame_len` as a plain argument and calls no helper itself, so it was never actually blocked by the missing `bpf_xdp_get_buff_len()` stub the row above used to cite — that citation was wrong and is corrected here. Still open: whether the check is reachable at the packet tier for a genuine multi-buffer frame, since `bpf_xdp_get_buff_len(ctx)` — called by the caller, `balancer.c:332`, not by `marlin_balancer_validate()` itself — and `mctx->pkt_len` (`parser.c:302`'s `data_end - data`) can only disagree for one, and `BPF_PROG_TEST_RUN` delivers a single linear buffer. Either an integration rig on an MTU that forces multi-buffer XDP covers it, or the reason is accepted as unreachable-by-construction and the check is a guard rather than a behaviour | `balancer.c:88-99`, `balancer.c:332`, `data-plane/tests/balancer_test.c` | 2b |
+| `lb_core.c`'s map-reading helpers (`vip_map`'s `HASH` lookup, `fwd_table`'s and `backends`' `ARRAY` lookups) and `marlin_lb_quic_decode()`'s `bpf_xdp_load_bytes()` call have no native-tier stub — `data-plane/tests/stubs/hash_stub.h` is hardcoded to `rl_key`, and no `ARRAY` or `bpf_xdp_load_bytes()` stub exists — so these helpers stay packet-tier-only under `docs/design/24-testing.md`'s three-part test until stubs are written or the gap is accepted as permanent | `docs/design/24-testing.md:157-178`, `data-plane/bpf/lb_core.c` | 2b |
+| `MARLIN_DROP_ENCAP_LENGTH`'s two branches inside `marlin_lb_validate()` are now covered natively (`data-plane/tests/lb_core_test.c`): the function takes `frame_len` as a plain argument and calls no helper itself, so it was never actually blocked by the missing `bpf_xdp_get_buff_len()` stub the row above used to cite — that citation was wrong and is corrected here. Still open: whether the check is reachable at the packet tier for a genuine multi-buffer frame, since `bpf_xdp_get_buff_len(ctx)` — called by the caller, `lb_core.c:332`, not by `marlin_lb_validate()` itself — and `mctx->pkt_len` (`parser.c:302`'s `data_end - data`) can only disagree for one, and `BPF_PROG_TEST_RUN` delivers a single linear buffer. Either an integration rig on an MTU that forces multi-buffer XDP covers it, or the reason is accepted as unreachable-by-construction and the check is a guard rather than a behaviour | `lb_core.c:88-99`, `lb_core.c:332`, `data-plane/tests/lb_core_test.c` | 2b |
 | Whether `VIP_QUIC` and `VIP_HASH_5TUPLE` may coexist, or configuration validation rejects the combination | `docs/design/20-configuration-validation.md` | 3 |
 | Backend ID allocation authority: the shared configuration store, or each instance's own control plane. `docs/design/21-active-active.md:5-7` lists five values that must be identical across instances and `backend_id` is not among them, yet `:26` presumes agreement on it and `DEPLOYMENT.md:288` tells the integrator to encode "the `backend_id` this instance assigns". The hash path tolerates divergence — two instances may hold the same backend at different indices and still route identically — but `VIP_QUIC` does not, because the ID is on the wire | `docs/design/21-active-active.md:5-7`, `docs/DEPLOYMENT.md:288` | 3 |
 | Whether the reconciler asserts `backends[i].id == i` on every write, or only on a full resync | `docs/design/20-configuration-validation.md` | 3 |

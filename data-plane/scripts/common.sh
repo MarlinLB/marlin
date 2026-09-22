@@ -35,7 +35,7 @@ BPFFS=/sys/fs/bpf
 BPFTOOL="${BPFTOOL:-bpftool}"
 
 HTTP_PORT="${HTTP_PORT:-80}" # listen, test_http_get, and half of vip_map's key
-                             # (balancer.c) -- seed() and the listener must agree
+                             # (lb_core.c) -- seed() and the listener must agree
 
 ABI_HDR="${SCRIPT_DIR}/../include/marlin/abi/defines.h"
 RET_HDR="${SCRIPT_DIR}/../include/marlin/marlin.h"
@@ -280,7 +280,7 @@ vip_seed() {
 }
 
 # Deletes the vip_map entry rather than zeroing it: a *present* entry
-# pointing fwd_table at backend 0 would drop as no_backend (bpf/balancer.c),
+# pointing fwd_table at backend 0 would drop as no_backend (bpf/lb_core.c),
 # not restore the pass-through unseed() promises.
 vip_unseed() {
 	need_seeder
@@ -488,9 +488,9 @@ seed_or_die() {
 # Removes the vip_map entry before zeroing the backend, not after: with the
 # order reversed there is a window where the VIP still matches and
 # fwd_table still names this backend, but the backend itself is DOWN, which
-# drops as backend_down (bpf/balancer.c) instead of the pass-through this
+# drops as backend_down (bpf/lb_core.c) instead of the pass-through this
 # promises. Deleting the VIP entry is what actually restores it --
-# marlin_balancer_admit() returns MARLIN_PASS_VIP_MISS on the miss, which
+# marlin_lb_admit() returns MARLIN_PASS_VIP_MISS on the miss, which
 # main.c maps to XDP_PASS.
 unseed() {
 	need_root
@@ -655,7 +655,7 @@ listen() {
 		echo "      or the client cannot reach ${VIP} at all." >&2
 	elif ! vip_seeded || ! backend_seeded; then
 		echo "note: vip_map or backends[${BACKEND_ID}] is not seeded -- ${PROG} passes every packet" >&2
-		echo "      (bpf/balancer.c). Run '$0 seed' in another terminal." >&2
+		echo "      (bpf/lb_core.c). Run '$0 seed' in another terminal." >&2
 	fi
 
 	if be_port_busy "${port}"; then

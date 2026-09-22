@@ -38,7 +38,7 @@ pointer invalidation bites.
   (`docs/design/11-pipeline.md`), so it cannot match the explicit-port entry its head matched,
   and the tail is `vip_miss` instead. If a `port == 0` companion exists on the same address,
   the tail resolves through it to a different `vip_num`, splitting the datagram across two
-  pools. Both outcomes are asserted in `data-plane/tests/packet/xdp_60_balancer.c`
+  pools. Both outcomes are asserted in `data-plane/tests/packet/xdp_60_lb_core.c`
   (`docs/design/12-selection.md`, "Hash input"). Neither outcome applies to an IPv6 fragment
   whose Fragmentable Part opens with an extension header: head and tail both drop
   `unsupported_proto` in the parser, before either reaches `vip_map`, regardless of the VIP's
@@ -58,10 +58,10 @@ pointer invalidation bites.
 the assertion behind `docs/design/10-map-invariants.md`'s zeroing rule for a struct that is
 hashed whole rather than used as a map key — is native-tier-only: `pad` takes no packet bytes,
 so nothing here gives the packet tier a wire-level knob to turn it with. See
-`data-plane/tests/balancer_test.c` below.
+`data-plane/tests/lb_core_test.c` below.
 
 **`VIP_QUIC` steers a flagged short-header packet by connection ID instead of the hash, once
-`balancer.c` exists** (`docs/design/30-quic.md`). `parser.c`'s classification is native-unit-tested
+`lb_core.c` exists** (`docs/design/30-quic.md`). `parser.c`'s classification is native-unit-tested
 today (`data-plane/tests/parser_test.c`); the assertions below are packet-level and register as
 `MARLIN_SKIP` placeholders (`docs/PHASES.md`) until the steering step lands:
 
@@ -86,7 +86,7 @@ today (`data-plane/tests/parser_test.c`); the assertions below are packet-level 
   and its siblings in `data-plane/tests/parser_test.c`, including a direct assertion on
   `mctx.udp_payload_len` itself). A valid connection ID physically past the declared length, a
   partial one, and the header-only case where both bounds must compose, are packet-level —
-  `data-plane/tests/packet/xdp_80_quic.c` — because they exercise `marlin_balancer_quic_decode()`,
+  `data-plane/tests/packet/xdp_80_quic.c` — because they exercise `marlin_lb_quic_decode()`,
   which has no native stub. A padded, header-only, non-QUIC datagram must not move
   `quic_cid_check_failed` either: that would mean the decoder ran over padding.
 
@@ -158,7 +158,7 @@ is blocked dropped while one whose transit router is blocked is not
 (`docs/design/27-source-filtering.md`); and the placement assertion below. That identical
 filtering does not extend to a VIP destination: a fragment tail carries no port, so it can
 reach a different `vip_num` than its head, or none, and therefore a different `VIP_ACL` value
-— `bpf/balancer.c`'s host-bound arm applies to a tail its head never saw
+— `bpf/lb_core.c`'s host-bound arm applies to a tail its head never saw
 (`docs/design/11-pipeline.md`). No test below covers this; see the deferred case in
 `docs/PHASES.md`.
 
@@ -274,11 +274,11 @@ non-NULL by verifier contract, so `bpf_prog_test_run` can never drive the branch
 `static` function directly on the host is the only way to. `parser_test.c` asserts it once for
 each of `marlin_parse()`'s two parameters; `data-plane/tests/nexthop_test.c` does the same for
 `marlin_nexthop_l2dsr()` and `marlin_nexthop_encapsulate()`, four cases in total, and
-`data-plane/tests/balancer_test.c` for `marlin_balancer_process()`'s two, six in total.
+`data-plane/tests/lb_core_test.c` for `marlin_lb_process()`'s two, six in total.
 `nexthop_test.c` does not make `nexthop.c` a qualifying translation unit under the three-part
 test above — its FIB fallback and redirect path stay real-kernel-only, per `main.c` above — the
 file exists solely for the two branches that return before either helper is reached.
-`balancer_test.c` does not qualify `balancer.c` either, for the reason the open-decision table in
+`lb_core_test.c` does not qualify `lb_core.c` either, for the reason the open-decision table in
 `docs/PHASES.md` gives (no `ARRAY`, `bpf_xdp_load_bytes()` or `bpf_xdp_get_buff_len()` stub);
 alongside the abort cases, it also carries the `tuple.pad` assertion above, which needs no map or
 packet-adjusting helper at all — only `marlin_siphash()` called directly on two tuples that
@@ -302,7 +302,7 @@ only; the packet-adjusting stub (`data-plane/tests/stubs/xdp_stub.h`) and the ra
 file — `data-plane/tests/csum_test.c`, `data-plane/tests/mtu_test.c`,
 `data-plane/tests/entropy_test.c`, `data-plane/tests/parser_test.c`, `data-plane/tests/acl_test.c`,
 `data-plane/tests/nexthop_test.c`, `data-plane/tests/ipip_test.c`,
-`data-plane/tests/ratelimit_test.c` and `data-plane/tests/balancer_test.c` today; `docs/PHASES.md`
+`data-plane/tests/ratelimit_test.c` and `data-plane/tests/lb_core_test.c` today; `docs/PHASES.md`
 tracks which translation units the mechanism covers as more are added.
 
 This is also why a sub-`ETH_HLEN` truncation case cannot move to the packet-level harness: the

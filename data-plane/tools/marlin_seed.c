@@ -23,7 +23,7 @@
 
 #include <marlin/abi/defines.h>
 #include <marlin/abi/types.h>
-#include <marlin/balancer.h>
+#include <marlin/lb_core.h>
 
 #define MARLIN_SEED_VERSION "1.0"
 
@@ -183,7 +183,7 @@ static int cmd_add(int argc, char **argv)
      * fwd_table first: inserting the vip_map key while the block still
      * carries an earlier tenant (or its post-attach zero fill) would let a
      * packet match the VIP and resolve a stale or absent backend for that
-     * window (balancer.c's fwd_table lookup, MARLIN_DROP_NO_BACKEND).
+     * window (lb_core.c's fwd_table lookup, MARLIN_DROP_NO_BACKEND).
      */
     if(fill_fwd_table(fwd_fd, vip_num, backend_id) != 0) {
         goto out;

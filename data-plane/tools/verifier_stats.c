@@ -23,10 +23,10 @@
  * starts there, in verifier subprog order, with no names and no call-graph
  * information attached. It used to be read as this program's answer under
  * the assumption that Marlin's units are only ever called as siblings of
- * xdp_main. balancer.c ended that: marlin_balancer_process() calls the
+ * xdp_main. lb_core.c ended that: marlin_lb_process() calls the
  * three encapsulation units and both marlin_nexthop_*() entry points
  * directly, so a real three-frame chain exists (xdp_main ->
- * marlin_balancer_process -> marlin_vxlan_encap_packet) and neither the
+ * marlin_lb_process -> marlin_vxlan_encap_packet) and neither the
  * max nor the sum of the kernel's flat list is the figure MAX_BPF_STACK is
  * checked against -- that figure is the deepest root-to-leaf sum of
  * per-function frames along the actual call graph.

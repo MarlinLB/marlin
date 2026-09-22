@@ -16,8 +16,8 @@ Global subprograms are verified independently of their callers and are restricte
 ```c
 struct marlin_ctx {          /* 104 bytes */
     struct packet_tuple tuple; /* 40 — written by parser.c, read by everything after */
-    struct backend backend;  /* 32 — written by balancer.c, read by the encap units */
-    struct marlin_config cfg;/* 20 — written by marlin.c, read by balancer.c and the encap units */
+    struct backend backend;  /* 32 — written by lb_core.c, read by the encap units */
+    struct marlin_config cfg;/* 20 — written by marlin.c, read by lb_core.c and the encap units */
     __u32 flags;             /*  4 */
     __u16 l3_off;            /*  2 — parser.c's ingress value; an encap unit updates it to the outer offset */
     __u16 l4_off;            /*  2 */
@@ -66,14 +66,14 @@ called directly on the host with no verifier to make the argument's non-nullness
 address of a local, never a pointer that could be NULL.
 
 - **`marlin_ctx` carries what crosses a translation unit boundary, plus one stage boundary.**
-  `vip_num` is not a member: nothing outside `balancer.c` reads it, and the statistic it keys is
+  `vip_num` is not a member: nothing outside `lb_core.c` reads it, and the statistic it keys is
   bumped in the frame that derives it. State that never leaves a frame is a local, not context.
   `backend_id` is carried instead — at no stack cost — inside the embedded `backend` itself
   (`struct backend.id`, `docs/design/08-types.md`), so selection's caller can read
   `mctx->backend.id` without either function threading the index out as a separate return.
 
   The VIP's configured DSCP passes the same test `MARLIN_CTX_F_QUIC` does
-  (`docs/design/30-quic.md`): written by `balancer.c` from `vip_meta.flags`, read by all three
+  (`docs/design/30-quic.md`): written by `lb_core.c` from `vip_meta.flags`, read by all three
   encapsulation units and by `nexthop.c`'s FIB lookup — every one of them a different
   translation unit from the writer. It is packed into `mctx->flags` bits 16-21 rather than a
   new member, at no stack cost, the same reasoning as `MARLIN_CTX_F_QUIC`'s.
@@ -99,7 +99,7 @@ address of a local, never a pointer that could be NULL.
   staying `0` is unaffected.
 
 - **`cfg` is the per-packet configuration snapshot, taken once in `marlin.c`.** It qualifies by
-  the same test as everything else here: four units read it — `balancer.c` for `flags` and
+  the same test as everything else here: four units read it — `lb_core.c` for `flags` and
   `max_frame`, `ipip.c`, `gue.c` and `vxlan.c` for `tunnel_src` (`docs/design/14-forwarding-modes.md`). No unit other
   than `marlin.c` looks the `config` map up.
 

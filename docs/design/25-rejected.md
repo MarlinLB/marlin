@@ -154,7 +154,7 @@ writer, so each unit would end up copying to its stack anyway. That is the per-u
 below, with a cheaper load.
 
 **A `cfg` parameter threaded through the global subprograms.** `marlin_config` crosses the
-translation unit boundary — `balancer.c` plus all three encapsulation units, for `tunnel_src` (`docs/design/14-forwarding-modes.md`)
+translation unit boundary — `lb_core.c` plus all three encapsulation units, for `tunnel_src` (`docs/design/14-forwarding-modes.md`)
 — so the snapshot has to reach four units somehow. Passing it as an extra argument is legal:
 struct pointer arguments have been available since 5.13 and the signatures stay inside the
 five-register limit. It was rejected because it costs *the same stack* as carrying it on
