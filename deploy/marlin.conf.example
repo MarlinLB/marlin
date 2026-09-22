@@ -1,8 +1,8 @@
 # marlind's file-managed configuration. Copy to /etc/marlind/marlin.conf,
 # mode 0640 root:root -- it holds every VIP's hash_key and table_seed, and
-# marlind refuses a file that is group- or world-writable or not owned by
-# root. Start marlind with --config /etc/marlind/marlin.conf --attach; a
-# running instance reloads this file on SIGHUP.
+# marlind refuses a file that is group- or world-writable. Start marlind with
+# --config /etc/marlind/marlin.conf --attach; a running instance reloads this
+# file on SIGHUP.
 #
 # While marlind runs with --config it is the only writer of config,
 # backends, fwd_table, vip_map, tx_ports and the ACL tries. The control

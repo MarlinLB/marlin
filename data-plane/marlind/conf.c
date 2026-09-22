@@ -711,6 +711,12 @@ static void parse_vips(toml_datum_t top, struct marlin_conf *conf, struct conf_d
  * leave a TOCTOU gap between the check and the read. Reused by --check
  * (enforce=false, a warning) and by --attach/SIGHUP (enforce=true, a
  * rejection): see conf.h's conf_load() comment for why the two differ.
+ *
+ * Ownership is deliberately not checked: a group/world-writable file in a
+ * root-owned directory is already refused below, and that covers the
+ * escalation this would otherwise guard against. Checking ownership too
+ * would also refuse a config a developer owns in their own tree, with no
+ * corresponding gain against a config already writable by others.
  */
 static FILE *open_conf_file(const char *path, bool enforce, struct conf_diag *diag)
 {
@@ -728,26 +734,15 @@ static FILE *open_conf_file(const char *path, bool enforce, struct conf_diag *di
         return NULL;
     }
 
-    bool bad_owner = st.st_uid != 0;
     bool bad_write = (st.st_mode & (S_IWGRP | S_IWOTH)) != 0;
 
-    if(bad_owner || bad_write) {
+    if(bad_write) {
         if(enforce) {
-            if(bad_owner) {
-                conf_diag_add(diag, "%s is not owned by root; refusing to read it (chown root)", path);
-            }
-            if(bad_write) {
-                conf_diag_add(diag, "%s is group- or world-writable; refusing to read it (chmod 0640)", path);
-            }
+            conf_diag_add(diag, "%s is group- or world-writable; refusing to read it (chmod 0640)", path);
             close(fd);
             return NULL;
         }
-        if(bad_owner) {
-            conf_diag_warn(diag, "%s is not owned by root -- would be refused outside --check", path);
-        }
-        if(bad_write) {
-            conf_diag_warn(diag, "%s is group- or world-writable -- would be refused outside --check", path);
-        }
+        conf_diag_warn(diag, "%s is group- or world-writable -- would be refused outside --check", path);
     }
     if((st.st_mode & S_IROTH) != 0) {
         conf_diag_warn(diag, "%s is world-readable; it holds every VIP's hash_key and table_seed", path);

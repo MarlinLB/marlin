@@ -191,11 +191,11 @@ enum conf_load_mode {
  * to diag on any rejection; the caller decides whether that is fatal.
  * conf_check() has already run when this returns non-NULL for CONF_LOAD_FULL.
  *
- * enforce_perms controls what happens when the file is not owned by root or
- * is group/world-writable: true makes it a rejection (the --attach and
- * SIGHUP-reload paths, which trust this file with real map writes), false a
- * warning only (marlind --check, deliberately unprivileged and runnable
- * against a file this user does not own -- docs/design/31-file-configuration.md §7).
+ * enforce_perms controls what happens when the file is group/world-writable:
+ * true makes it a rejection (the --attach and SIGHUP-reload paths, which
+ * trust this file with real map writes), false a warning only (marlind
+ * --check, deliberately unprivileged and runnable against a file laid out
+ * however the caller's tree has it -- docs/design/31-file-configuration.md §7).
  */
 struct marlin_conf *conf_load(const char *path, enum conf_load_mode mode, bool enforce_perms, struct conf_diag *diag);
 void conf_free(struct marlin_conf *conf);

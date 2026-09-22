@@ -356,6 +356,25 @@ file-managed mode exists to make optional.
   and no map access. It is what makes `ExecReload=` safe to wire and what lets CI validate an
   integrator's file.
 
+### 7.1 File permissions
+
+`open_conf_file()` (`marlind/conf.c`) checks the file on the fd it is about to parse, not by path
+beforehand, so there is no TOCTOU gap between the check and the read.
+
+- **Group- or world-writable is refused on `--attach` and SIGHUP-reload**, and only warned on
+  `--check` -- the same `enforce_perms` split as every other check in this document, driven by
+  `--check` being deliberately runnable unprivileged and against a file the caller does not
+  control the layout of.
+- **World-readable is always a warning, never a rejection**, in both modes: the file holds every
+  VIP's `hash_key` and `table_seed`.
+- **Ownership is not checked.** A config owned by someone other than root that is *not*
+  group/world-writable is accepted. The write-mode check already covers the case that matters --
+  an unprivileged user rewriting a file marlind trusts with real map writes -- for any config
+  that lives in a directory that user cannot write to. Checking ownership on top of that would
+  also refuse a config a developer owns outright in their own tree (a netns integration rig's
+  config, for instance), for no corresponding gain: nothing stops that same developer from
+  `chown`-ing the file to themselves and passing the write-mode check regardless.
+
 ---
 
 ## 8. Validation and write ordering

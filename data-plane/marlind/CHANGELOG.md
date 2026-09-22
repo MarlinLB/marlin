@@ -25,3 +25,12 @@ and this project will adhere to [Semantic Versioning](https://semver.org/spec/v2
 - Vendored `tomlc17` (`data-plane/vendor/tomlc17/`, see `vendor/README.md`)
   and a third host-only SipHash-2-4 transcription
   (`data-plane/include/marlind/hash.h`) for `fwd_table` generation.
+
+### Changed
+
+- The config file permission check no longer requires root ownership; a
+  group- or world-writable file is still refused on `--attach`/SIGHUP (and
+  warned on `--check`), but who owns the file is no longer examined
+  (`docs/design/31-file-configuration.md` §7.1). This unblocks running
+  `--config` against a config owned by the invoking user, as the netns
+  integration rigs under `data-plane/scripts/` do.

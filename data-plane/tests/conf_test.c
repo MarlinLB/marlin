@@ -350,22 +350,19 @@ MARLIN_TEST(quic_without_cid_len_is_rejected)
 
 /* ---- permission enforcement ------------------------------------------------ */
 
-MARLIN_TEST(enforce_perms_rejects_a_file_this_user_does_not_own)
+MARLIN_TEST(enforce_perms_rejects_a_group_writable_file)
 {
-    char *path;
+    char *path = write_temp_conf("[instance]\ninterface=\"lo\"\n");
     struct conf_diag diag;
     struct marlin_conf *conf;
 
-    if(geteuid() == 0) {
-        MARLIN_SKIP("running as root: \"not owned by root\" cannot be exercised");
-    }
+    CHECK_TRUE(chmod(path, 0660) == 0);
 
-    path = write_temp_conf("[instance]\ninterface=\"lo\"\n");
     conf_diag_reset(&diag);
     CHECK_TRUE(conf_load(path, CONF_LOAD_INSTANCE_ONLY, true, &diag) == NULL);
     CHECK_TRUE(diag.count > 0);
 
-    /* --check's posture: same file, same ownership problem, warned rather than refused. */
+    /* --check's posture: same file, same mode, warned rather than refused. */
     conf_diag_reset(&diag);
     conf = conf_load(path, CONF_LOAD_INSTANCE_ONLY, false, &diag);
     CHECK_TRUE(conf != NULL);
