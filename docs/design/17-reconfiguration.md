@@ -47,9 +47,9 @@ modified in place; changing any of them is a removal followed by an addition und
 ID. `id` introduces no new rule here — changing a backend's ID is already a removal followed by
 an addition, so this makes an existing one apply to one more field.
 
-## `vip_map` held live in `balancer.c`
+## `vip_map` held live in `lb_core.c`
 
-`marlin_balancer_process()` keeps the `bpf_map_lookup_elem()` result from `vip_map` as a
+`marlin_lb_process()` keeps the `bpf_map_lookup_elem()` result from `vip_map` as a
 `const struct vip_meta *` for the rest of the packet's processing, rather than copying it onto
 the stack — the copy cost a 24-byte struct plus the register pressure it added around the
 SipHash unrolls that follow, on a 512-byte combined budget (`docs/design/05-budgets.md`).

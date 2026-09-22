@@ -554,7 +554,7 @@ MARLIN_TEST(ipip_encap_dscp_marks_the_outer_header)
     /*
      * The real-kernel counterpart to ipip_test.c's mctx-level DSCP cases:
      * proves the VIP's configured DSCP survives the real vip_map lookup in
-     * balancer.c and reaches ipip.c's outer header.
+     * lb_core.c and reaches ipip.c's outer header.
      */
     struct xdp_run_result result;
 
@@ -613,7 +613,7 @@ MARLIN_TEST(l2dsr_configured_dscp_leaves_the_frame_unchanged)
     /*
      * Negative case for the L2 DSR boundary the feature promises
      * (docs/design/14-forwarding-modes.md SS7.2): a VIP's configured DSCP
-     * only ever reaches an outer header balancer.c writes for the three
+     * only ever reaches an outer header lb_core.c writes for the three
      * tunnel modes, never an L2 DSR frame, which has no outer header to
      * carry it in the first place.
      */
@@ -627,6 +627,40 @@ MARLIN_TEST(l2dsr_configured_dscp_leaves_the_frame_unchanged)
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
     nh_check_frame(NH_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);
+
+    nh_backend_clear();
+}
+
+MARLIN_TEST(ipip_encap_dscp_marks_a_fragment)
+{
+    /*
+     * marlin_lb_process_packet() ORs the VIP's DSCP bits into mctx->flags
+     * after marlin_lb_check_frag() and backend selection have already run
+     * (lb_core.c), so flags carries MARLIN_CTX_F_FRAG_FIRST by the time the
+     * DSCP write happens -- the case the two deleted native-tier
+     * marlin_lb_outer_dscp() assertions covered before that write moved
+     * inline (docs/design/24-testing.md). VIP_HASH_5TUPLE must stay clear:
+     * a flagged VIP drops any fragment before the DSCP write is ever
+     * reached.
+     */
+    struct xdp_run_result result;
+
+    seed_encap_cfg(IPIP_TUNNEL_SRC, 1500);
+    nh_backend_seed(MARLIN_MODE_IPIP, NH_BACKEND_ADDR, NH_BACKEND_MAC, 0, 0, NULL);
+    nh_vip_seed((TEST_DSCP << VIP_DSCP_SHIFT) & VIP_DSCP_MASK);
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    memcpy(pb_arena, NH_MARLIN_MAC, ETH_ALEN);
+    memcpy(pb_arena + ETH_ALEN, NH_ROUTER_MAC, ETH_ALEN);
+    pb_ipv4(IPPROTO_TCP, MARLIN_IPV4_IHL_MIN, IP_MF, V4_SRC, V4_DST);
+    pb_ports(11111, 80);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_TX, result.retval);
+    ipip_check_frame(NH_ROUTER_MAC, NH_MARLIN_MAC, IPIP_TUNNEL_SRC, NH_BACKEND_ADDR, AF_INET, result.out_len,
+                      (__u8)TEST_DSCP);
 
     nh_backend_clear();
 }

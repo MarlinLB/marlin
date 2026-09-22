@@ -59,7 +59,7 @@
 #                   listener started in the backend namespace
 #
 # The working order is up, attach, seed, listen. Seeding is not optional: an
-# unmatched VIP passes every packet (marlin_balancer_admit, bpf/balancer.c),
+# unmatched VIP passes every packet (marlin_lb_admit, bpf/lb_core.c),
 # and a backend with MARLIN_BE_F_STATE clear (an all-zero backends[] slot) is
 # never selected either. An attached program with unseeded maps forwards
 # nothing and looks exactly like a broken datapath.
@@ -289,7 +289,7 @@ seed() {
 	# shellcheck disable=SC2086
 	"${BPFTOOL}" map update pinned "${PINDIR}/backends" key ${BACKEND_KEY} value ${value}
 
-	# vip_map/fwd_table: the port-agnostic lookup balancer.c performs
+	# vip_map/fwd_table: the port-agnostic lookup lb_core.c performs
 	# (docs/design/11-pipeline.md), pointed at the one backend above.
 	vip_seed "${BACKEND_ID}"
 

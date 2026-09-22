@@ -45,7 +45,7 @@ extern const unsigned char ALT_BACKEND_MAC[ETH_ALEN];
 /* ---- VIP and backend fixture ------------------------------------------ */
 
 /*
- * balancer.c refuses a forwarding-table slot of 0, so no fixture backend may
+ * lb_core.c refuses a forwarding-table slot of 0, so no fixture backend may
  * live at index 0 of the backends array.
  */
 #define NH_BACKEND_ID  1U
@@ -113,7 +113,7 @@ void nh_build_frame_v6(void);
 
 /*
  * config is process-global and outlives a case (seed_acl_cfg, seed_encap_cfg
- * above). None of the balancer/QUIC cases turn on the ACL or the rate
+ * above). None of the lb_core/QUIC cases turn on the ACL or the rate
  * limiter, so they must clear what an earlier case enabled rather than
  * inherit it.
  */

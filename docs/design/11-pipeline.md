@@ -60,7 +60,7 @@ clients, there is no reverse path and no classifier.
 6. **Resolve** — on a `VIP_QUIC` VIP, a `MARLIN_CTX_F_QUIC` packet decodes a `backend_id`
    from the connection ID and indexes `backends` directly, bypassing `fwd_table`
    (`docs/design/30-quic.md`); every other packet, and any decode failure, falls through to
-   hash, `fwd_table`, `backends`, in `balancer.c` (`docs/design/12-selection.md`).
+   hash, `fwd_table`, `backends`, in `lb_core.c` (`docs/design/12-selection.md`).
 7. **Validity and state** — `backend_id == 0` → drop `no_backend`;
    `MARLIN_BE_F_STATE` clear in `backend.flags` → drop `backend_down`; a `pkt_len`/frame-length
    invariant violation → drop `encap_length` (`docs/design/23-mtu.md`).

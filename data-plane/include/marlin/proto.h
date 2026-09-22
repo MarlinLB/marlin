@@ -119,4 +119,4 @@ struct marlin_quic_input { /* 24 bytes, no implicit padding */
 };
 
 _Static_assert(0xff >= MARLIN_QUIC_CID_MAX, "marlin_ctx.udp_payload_len (marlin.h) clamps to __u8; it must stay above the "
-                                            "longest configured connection ID it is compared against in balancer.c");
+                                            "longest configured connection ID it is compared against in lb_core.c");

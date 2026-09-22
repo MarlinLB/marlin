@@ -102,7 +102,7 @@ buffer offsets 18-23    zero
 
 hashed whole with `hash_key` regardless of the configured length — the trailing zeroes are part
 of the digest. A backend generating connection IDs must reproduce this padding exactly, or the
-check field never verifies against it. `data-plane/bpf/balancer.c`'s `struct marlin_quic_input`
+check field never verifies against it. `data-plane/bpf/lb_core.c`'s `struct marlin_quic_input`
 is this layout.
 
 Minimum connection-ID length **7**. A short header does not carry its DCID length on the wire
@@ -141,11 +141,11 @@ those grounds; see Open decisions.
 3–31 were free (`data-plane/include/marlin/marlin.h`). No stack-budget decision is required,
 and `docs/design/05-budgets.md`'s stated admission test for a shared field — read in a unit
 other than the one that writes it — is satisfied: the flag is written by `parser.c` and read by
-`balancer.c`.
+`lb_core.c`.
 
 `marlin_ctx.udp_payload_len` (`__u8`, replacing what was a pad byte) is the same shape: the UDP
 datagram's declared payload length, clamped to 255, written only by `marlin_parse_quic()` and
-read only by `marlin_balancer_quic_decode()`. It exists because `data_end` bounds the *frame*,
+read only by `marlin_lb_quic_decode()`. It exists because `data_end` bounds the *frame*,
 not the datagram — see "How the two halves divide" below — and it is written on the same path
 that sets the flag so the two can never disagree.
 
@@ -158,7 +158,7 @@ bit (RFC 8999 §4.1) is clear. Bounding against `data_end` alone is not enough: 
 shorter than the Ethernet minimum frame is padded by the sender or NIC, and that padding sits
 inside `data_end` without being part of the datagram at all, so a header-only UDP packet
 (`udp->len == 8`) must never be classified from its trailing pad. The declared payload length is
-stashed in `marlin_ctx.udp_payload_len` (see "ABI" above) for `balancer.c` to bound its own read
+stashed in `marlin_ctx.udp_payload_len` (see "ABI" above) for `lb_core.c` to bound its own read
 against. It never fails on its own; a packet too short to classify, on a protocol other than
 UDP, or whose declared length is malformed (shorter than the UDP header itself) simply carries no
 flag and a zeroed length. `parser.c` reads no map and calls no `bpf_*` helper either way — the
@@ -166,7 +166,7 @@ endianness swap is a compiler builtin, not a helper call — so the property
 `data-plane/tests/parser_test.c`'s native tier depends on (`docs/design/24-testing.md`) is
 unaffected.
 
-**Steering is `balancer.c`'s**, because it reads `vip_map`, which `parser.c` has no access to:
+**Steering is `lb_core.c`'s**, because it reads `vip_map`, which `parser.c` has no access to:
 
 - Gate on `VIP_QUIC`, so the step follows the VIP lookup (`docs/design/11-pipeline.md`).
 - Bounds-check the connection ID against the configured length **and** against
@@ -198,7 +198,7 @@ naming a row the control plane has not populated — an ARRAY row reads as a zer
 backend`, so the `MARLIN_BE_F_STATE` test covers a retired `backend_id` as well as a drained
 one. Dropping instead would turn a drain into connection resets, where falling through costs
 only the migration affinity that the drain was already ending. The check is in
-`balancer.c`'s `marlin_balancer_select_backend()`, before the `MARLIN_COUNT_QUIC_CID_ROUTED`
+`lb_core.c`'s `marlin_lb_select_backend()`, before the `MARLIN_COUNT_QUIC_CID_ROUTED`
 counter, so the counter records packets actually steered rather than connection IDs
 successfully decoded.
 

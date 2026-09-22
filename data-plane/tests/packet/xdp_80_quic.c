@@ -6,7 +6,7 @@
  * missing flag, length bounds, truncation, decoded backend
  * zero/out-of-range/down), fragments, ICMP errors, migration, and IPv6.
  * Reuses bal_setup()/the VIP fixture from xdp_fixture.h and sip_hash64()
- * from xdp_siphash.h to forge connection IDs the same way balancer.c
+ * from xdp_siphash.h to forge connection IDs the same way lb_core.c
  * decodes them.
  */
 
@@ -37,7 +37,7 @@
 /*
  * hash_5tuple and striped give the QUIC cases control over the fallback hash
  * path's own behaviour: a fragment case needs VIP_HASH_5TUPLE clear so
- * marlin_balancer_frag() does not drop before backend selection ever runs,
+ * marlin_lb_check_frag() does not drop before backend selection ever runs,
  * and a migration case needs the fwd_table block striped so a fallback to
  * hash is observable at all. Every other case keeps the original uniform,
  * 5-tuple-flagged fixture, where the hash path answers with NH_BACKEND_ID for
@@ -73,7 +73,7 @@ static void quic_vip_clear(void)
 /*
  * Reproduces the decoder's arithmetic, not its struct layout: the hash input is
  * struct marlin_quic_input straight from proto.h, so a field moving there
- * breaks this as loudly as it breaks balancer.c.
+ * breaks this as loudly as it breaks lb_core.c.
  */
 static void quic_forge_cid(__u8 *cid, __u32 cid_len, __u32 backend_id)
 {
@@ -597,9 +597,9 @@ MARLIN_TEST(quic_decoded_backend_down_falls_back_to_hash)
     CHECK_EQ(routed_before, xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_ROUTED));
 
     /*
-     * The rejection is marlin_balancer_select_backend_quic()'s own
+     * The rejection is marlin_lb_select_backend_quic()'s own
      * MARLIN_BE_F_STATE check, which returns NULL before
-     * marlin_balancer_load_backend() -- the only call that meters -- ever
+     * marlin_lb_load_backend() -- the only call that meters -- ever
      * sees this backend.
      */
     alt_after = xdp_backend_stats_total(ALT_BACKEND_ID);
@@ -674,10 +674,10 @@ MARLIN_TEST(fragmented_udp_on_vip_quic_routes_by_hash)
     struct xdp_run_result result;
 
     /*
-     * VIP_HASH_5TUPLE clear: with it set, marlin_balancer_frag() would drop
+     * VIP_HASH_5TUPLE clear: with it set, marlin_lb_check_frag() would drop
      * frag_unsupported before backend selection ever runs, testing the wrong
-     * guard. VIP_QUIC alone still reaches marlin_balancer_quic_decode(),
-     * whose own MARLIN_CTX_F_FRAG_ANY check (balancer.c) is what this proves.
+     * guard. VIP_QUIC alone still reaches marlin_lb_quic_decode(),
+     * whose own MARLIN_CTX_F_FRAG_ANY check (lb_core.c) is what this proves.
      */
     quic_vip_seed(QUIC_CID_LEN, VIP_QUIC, 0, 0);
     failed_before = xdp_drop_stats_total(MARLIN_COUNT_QUIC_CID_CHECK_FAILED);
@@ -771,7 +771,7 @@ MARLIN_TEST(quic_cid_routes_over_ipv6)
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
     /*
-     * Proves balancer.c reads mctx->l4_off rather than a v4-shaped constant:
+     * Proves lb_core.c reads mctx->l4_off rather than a v4-shaped constant:
      * a wrong offset would decode garbage and fall back to NH_BACKEND_MAC.
      */
     nh_check_frame(ALT_BACKEND_MAC, NH_MARLIN_MAC, result.out_len);

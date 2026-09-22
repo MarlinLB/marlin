@@ -2026,9 +2026,9 @@ MARLIN_TEST(parse_icmpv6_embedded_non_first_fragment_is_unparseable)
 /*
  * ======================================================================
  * QUIC classification -- marlin_parse_quic(), the parser half of
- * docs/design/30-quic.md. balancer.c does not exist yet, so nothing reads
- * MARLIN_CTX_F_QUIC downstream; these cases assert the classification
- * itself and that it changes nothing else.
+ * docs/design/30-quic.md. lb_core.c reads MARLIN_CTX_F_QUIC downstream for
+ * VIP_QUIC steering; these cases assert the classification itself and that
+ * it changes nothing else.
  * ====================================================================== */
 
 MARLIN_TEST(parse_quic_short_header_sets_flag)
@@ -2370,7 +2370,7 @@ MARLIN_TEST(parse_quic_malformed_short_udp_len_no_flag)
 }
 
 /*
- * mctx.udp_payload_len is balancer.c's bound for CID decoding
+ * mctx.udp_payload_len is lb_core.c's bound for CID decoding
  * (docs/design/30-quic.md), so its own contract needs a direct assertion:
  * the value marlin_parse_quic() stashes on UDP, and mctx_init()'s 0xAA
  * poison surviving untouched everywhere that function never runs -- TCP,

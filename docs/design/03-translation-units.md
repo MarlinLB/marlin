@@ -9,7 +9,7 @@ single `marlin.bpf.o`. Sources are `.c` and `.h`; only the linked object carries
 | File | Contents |
 |---|---|
 | `marlin.c` | XDP entry point. Zeroes `marlin_ctx`, takes the `config` snapshot, calls `marlin_parse()` then `marlin_balance()`, maps the returned `enum marlin_ret` onto an XDP action and a `drop_stats` index |
-| `balancer.c` | `marlin_balance()` — the packet pipeline of `docs/design/11-pipeline.md`: VIP lookup, backend selection, mode dispatch |
+| `lb_core.c` | `marlin_lb_process()` — the packet pipeline of `docs/design/11-pipeline.md`: VIP lookup, backend selection, mode dispatch |
 | `parser.c` | L2/L3/L4 parsing, IPv6 extension-header walking, ICMP embedded-header parsing, `packet_tuple` construction |
 | `ipip.c` | IPIP encapsulation |
 | `gue.c` | GUE encapsulation |

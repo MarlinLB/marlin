@@ -68,7 +68,7 @@ void xdp_rl_clear(void);
 /*
  * vip_map (HASH, struct vip_key -> struct vip_meta): built from the real ABI
  * structs, same discipline as the ACL helpers above. The key must be zeroed
- * before its fields are set -- balancer.c builds its lookup key with a
+ * before its fields are set -- lb_core.c builds its lookup key with a
  * memset and an IPv4 packet leaves addr6[1..3] zero, so a userspace key with
  * anything else there silently fails to match.
  */
@@ -80,7 +80,7 @@ void xdp_vip_clear(void);
 
 /*
  * fwd_table is one flat ARRAY of MAX_VIPS * TABLE_SIZE slots; VIP `vip_num`
- * owns the block at vip_num * TABLE_SIZE and balancer.c picks a row inside it
+ * owns the block at vip_num * TABLE_SIZE and lb_core.c picks a row inside it
  * with a keyed SipHash over the packet tuple. Userspace cannot recompute that
  * row without duplicating both the hash and struct packet_tuple's exact
  * layout, so every slot in the block is written instead: the row a packet
@@ -99,7 +99,7 @@ void xdp_fwd_fill_striped(__u32 vip_num, __u32 id_even, __u32 id_odd);
 void xdp_fwd_clear(__u32 vip_num);
 
 /*
- * backends is an ARRAY, so index 0 exists but balancer.c treats a zero
+ * backends is an ARRAY, so index 0 exists but lb_core.c treats a zero
  * forwarding-table slot as "empty" and refuses to resolve it. Callers must
  * pass a non-zero id for a backend they expect to be reachable.
  */

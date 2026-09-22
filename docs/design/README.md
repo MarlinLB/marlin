@@ -13,7 +13,7 @@ no configuration can reach the ECN pair, keeping the RFC 6040 exclusion this rev
 reopen. `08-types.md`, `04-calling-convention.md`, `16-fib-lookup.md`, `11-pipeline.md`,
 `19-control-plane.md`, `20-configuration-validation.md`, `06-map-abi.md`, `25-rejected.md`,
 `24-testing.md` and `PHASES.md` follow the consequence.
-Revision 12 — `balancer.c`'s step-7 frame-length invariant check (`marlin_balancer_validate()`,
+Revision 12 — `lb_core.c`'s step-7 frame-length invariant check (`marlin_lb_validate()`,
 `pkt_len >= ETH_HLEN` and `bpf_xdp_get_buff_len() == pkt_len`) is now part of the design,
 distinct from `marlin_frame_fits()`'s MTU check. `23-mtu.md` and `11-pipeline.md` follow the
 consequence.
@@ -30,11 +30,11 @@ host-bound arm enforcing instance-wide so the host-firewall property survives th
 `20-configuration-validation.md` gains the per-VIP twin of the rate limiter's escape-hatch
 rejection, and `04-calling-convention.md`, `22-observability.md`, `24-testing.md` and
 `28-rate-limiting.md` follow the consequences. `VIP_ACL` takes `vip_meta.flags` bit 0 out of
-`VIP_FLAGS_RESERVED` on both sides of the ABI, and the enforcement gate is `balancer.c`'s
+`VIP_FLAGS_RESERVED` on both sides of the ABI, and the enforcement gate is `lb_core.c`'s
 (`PHASES.md`, Phases 2a and 2b). Revision 9 — QUIC connection-ID steering added (`30-quic.md`): `VIP_QUIC` decodes a
 `backend_id` a cooperating backend embeds in its connection IDs, steering short-header packets
 around client address migration without a hash. It takes `vip_meta.flags` bits 3 and 8–12
-(`08-types.md`), classification is `parser.c`'s and steering is `balancer.c`'s.
+(`08-types.md`), classification is `parser.c`'s and steering is `lb_core.c`'s.
 Revision 8 — VXLAN's outer Ethernet header specified
 (`14-forwarding-modes.md` §7.4): `vxlan.c` writes it, because the MAC-swap default
 (`15-nexthop-l2dsr.md`) cannot once the arriving header has been consumed as the inner one;
