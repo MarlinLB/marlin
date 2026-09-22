@@ -1,8 +1,11 @@
 # Marlin — File Configuration
 
-**Status:** proposed, pre-decision. Not in `PHASES.md`; §11 names the phase each part would
-belong to.
-**Reconciled against:** `docs/design/README.md` revision 12, `data-plane/marlind/` as it stands.
+**Status:** implemented in `marlind`. §11 records the outcome of each open decision; the ones
+still open are also carried in `PHASES.md`'s open-decision table.
+**Reconciled against:** `docs/design/README.md` revision 13, `data-plane/marlind/` as it stands.
+
+**The default path is `/etc/marlind/marlin.conf`, not `/etc/marlin/marlin.toml`** — §4's example
+below is corrected to match. `deploy/marlin.conf.example` is the shipped, fully worked example.
 
 `marlind` today loads, pins, attaches and holds the link, and writes no map data at all — the
 only element-level map call in the tree's loader is a read (`marlind/cmd_status.c:119`). Every
@@ -62,15 +65,22 @@ Prior art is unambiguous on both halves:
 So: mode is fixed for the lifetime of the attach, selected by whether `marlind` was started with
 a configuration file, and the control plane must be able to observe it before writing.
 
-**The interlock is undecided.** Three mechanisms:
+**Decided: documented exclusivity only** (D-F2). Of the three mechanisms considered —
 
 | Mechanism | For | Against |
 |---|---|---|
 | A `CFG_FILE_MANAGED` bit in `marlin_config.flags` | visible to anything that reads the map, `bpftool` included; no new file, no new path; the control plane's check is one map read it already makes | it is ABI, so it must land in Phase 2a with the rest of the freeze, and it spends one of `flags` bits 2–31 on something the datapath never reads |
 | A marker file written by `marlind` under a `RuntimeDirectory` | no ABI change | `deploy/marlind.service:24` sets `ProtectSystem=strict` with no `ReadWritePaths`, so the unit must gain a writable path; and it is advisory — nothing stops a writer that does not look |
-| Documented exclusivity only | nothing to build | the failure is silent, intermittent and indistinguishable from a reconciliation bug |
+| **Documented exclusivity only** | nothing to build | the failure is silent, intermittent and indistinguishable from a reconciliation bug |
 
-Whichever is taken, the control plane's file-managed posture is read-only: stats maps by
+— the third was taken, on the grounds that this document's scope is `marlind` alone: the other
+two both reach outside it (an ABI change with a same-commit C# mirror, or a unit-file change
+whose other half is the control plane observing it). `deploy/marlind.service` and
+`deploy/marlin.conf.example` both state the exclusivity rule; nothing enforces it. Revisiting
+this is D-F2's residual entry in `PHASES.md`, to be taken up once the control plane exists to
+observe either mechanism.
+
+The control plane's file-managed posture is read-only regardless: stats maps by
 `bpf_map_lookup_batch`, `config`/`vip_map`/`backends` for labels, and no write anywhere.
 
 ---
@@ -136,12 +146,18 @@ the C# `Marlin.Health` project over a narrow write path, or accepts static state
 
 ## 4. The file
 
-One file, `/etc/marlin/marlin.toml` by default, selected by `marlind --config <path>`.
-`marlind/main.c:99-102`'s option table is entirely `no_argument` today, so this is the first
-option carrying a value; `main.c:147`'s `optind != argc` operand check is unaffected.
+One file, **`/etc/marlind/marlin.conf`** by default, selected by `marlind --config <path>`.
+`marlind/main.c`'s option table gained `--config <path>` (`required_argument`) and `--check`
+alongside the existing `no_argument` flags; the leading `+` and the `optind != argc` operand
+check are unaffected.
 
-Precedence over the existing environment input (`marlind/config.c`, `deploy/marlin.env.example`)
-is D-F2.
+**Decided (D-F3): the file replaces the environment input entirely, not a precedence order.**
+With `--config`, `[instance]` is the only source of `interface`/`object`/`pin_dir`, and
+`IFACE`/`MARLIN_OBJ`/`MARLIN_PIN_DIR` are ignored, with a warning logged if any is set. Without
+`--config`, `marlind/config.c`'s existing environment path is untouched. A precedence order
+(file overrides env, env is a fallback) was rejected: it would make the effective interface
+depend on two files at once, exactly the ambiguity §2's single-writer rule exists to avoid one
+level up.
 
 ```toml
 [instance]
@@ -185,7 +201,9 @@ acl         = true                      # VIP_ACL
 ratelimit   = false                     # VIP_RATELIMIT
 hash_5tuple = false                     # VIP_HASH_5TUPLE
 quic        = false                     # VIP_QUIC
-# quic_cid_len = 8                      # VIP_QUIC_CID_LEN, 7–20
+# quic_cid_len = 8                      # VIP_QUIC_CID_LEN, 7–20; required when quic = true
+# dscp        = 46                      # VIP_DSCP, 0–63; landed in revision 13, after this
+                                         #   document's first draft -- outer header only
 members = [
     { backend = "web-01", weight = 100 },
     { backend = "web-02", weight = 50 },
@@ -250,13 +268,28 @@ Two dependencies this adds to `marlind`, whose link line is `-lbpf` alone
   which cannot coexist in one translation unit with the userspace `<bpf/bpf.h>` that libbpf map
   I/O needs — the constraint `data-plane/tests/packet/xdp_siphash.h:6-10` already hit and
   answered with a from-scratch transcription. And `marlin_siphash()` accepts only input lengths
-  that are a multiple of eight (`include/marlin/siphash.h:4-7`), while generation hashes a
-  row index and a three-field backend identity whose widths sum to neither (D-F10). The
-  general-length `sip_hash64()` the packet tier already carries, vector-checked by
-  `xdp_50_siphash.c`, is the right shape; where it should live so that two tiers and a host
-  binary share one copy is D-F6.
+  that are a multiple of eight (`include/marlin/siphash.h:4-7`), while generation hashes a row
+  index and a three-field backend identity whose widths sum to neither on their own (fixed by
+  §6's byte encoding below, which pads both to a multiple of eight instead).
+
+  **Correction:** this document previously called `data-plane/tests/packet/xdp_siphash.c`'s
+  `sip_hash64()` "general-length". It is not — its own header comment says "Whole 8-byte blocks
+  only, matching `marlin_siphash()`'s length contract" — so promoting it would not have removed
+  the packing requirement below regardless.
+
+  **Decided (D-F6): a third transcription, in `data-plane/marlind/hash.c`.** Same algorithm,
+  same byte-wise little-endian load as the other two, carrying the same multiple-of-eight
+  contract; trustworthy only because `data-plane/tests/fwd_gen_test.c` asserts the published
+  vectors against it, as `xdp_50_siphash.c` does for the packet tier. Reworking
+  `include/marlin/siphash.h` to drop the BPF-only include and accept arbitrary lengths was
+  rejected: the datapath's own call sites are exactly the fixed, compile-time-constant lengths
+  the current macro exists to enforce (`marlin_siphash()`'s `_Static_assert`s), and a
+  general-length rework would weaken that guarantee for every existing caller to serve one new
+  one outside the datapath entirely.
 - **`-lm`**, for the weighted score. Comparing `ln(u)/w` instead of `u^(1/w)` preserves the
-  ordering and avoids `pow()`, but still wants `log()`.
+  ordering and avoids `pow()`, but still wants `log()`. `marlind/fwd_gen.c` skips even that when
+  every member of a VIP shares one weight — the common case — since a constant weight does not
+  reorder the comparison and the raw digest can be compared directly.
 
 ---
 
@@ -350,6 +383,23 @@ It is `docs/design/12-selection.md`'s reasoning one level up — `vip_num` is a 
 datapath follows to reach data, exactly as a row is — and without it a VIP moved between blocks
 forwards into another VIP's member set for the length of the rewrite.
 
+**A second rule this document did not originally state either, found implementing it: `config.acl_lists`
+needs the same "reference before referent" treatment as `vip_num`, one level further out.**
+`docs/design/27-source-filtering.md` calls `acl_lists` "control-plane-derived and exists to
+avoid a lookup against an empty map" — but that also means a clear bit is licence for the
+datapath to skip a trie's lookup *entirely*, not merely an optimisation. Reconciling a
+previously-empty trie by inserting its rows first and writing the bit second leaves a window,
+for as long as that insert loop runs, where a newly added rule is present but silently
+unenforced — worst on a newly added `block` rule, where the packets it exists to stop pass
+through unaffected. `marlind/reconcile.c` avoids this the same way §8's `vip_num` rule does,
+generalised: write `config.acl_lists` as `old_bits | final_bits` *before* touching any trie, so
+a bit is never clear while its trie is non-empty; do the trie inserts and deletes; then write
+`config` a second time, narrowing `acl_lists` down to exactly the final population. The
+`vip_num`/`fwd_table` ordering above needs no equivalent second pass because nothing reads
+`vip_num` as a bit deciding whether to trust `fwd_table` — a stale-but-still-valid `vip_num`
+only ever points at a correctly-populated block, never at a "trust this less" signal the way a
+clear `acl_lists` bit does.
+
 ---
 
 ## 9. Prior art
@@ -379,21 +429,22 @@ forwards into another VIP's member set for the length of the rewrite.
 
 ## 11. Open decisions
 
-Each is carried at the line or section it affects, per this repository's convention; the phase
-column is a proposal, since file-managed mode is not in `PHASES.md` at all.
+Each is carried at the line or section it affects, per this repository's convention. Eight of
+the ten are now closed, by implementation; the remaining two are carried forward into
+`PHASES.md`'s open-decision table since they bind more than this document.
 
-| Decision | Carried in | Phase |
-|---|---|---|
-| D-F1 — health in file-managed mode: static `state` only, a `glb-healthcheck`-shaped companion writing a derived file, or `Marlin.Health` over a narrow write path | §3.2 | 3 |
-| D-F2 — the write interlock: `CFG_FILE_MANAGED` in `marlin_config.flags`, a runtime marker file, or documented exclusivity | §2 | 2a for the ABI option, otherwise 3 |
-| D-F3 — `--config` versus the existing environment input: replacement, or precedence, and whether `IFACE` still works | `marlind/config.c`, `deploy/marlin.env.example` | 1 |
-| D-F4 — the TOML parser: vendor a small C implementation, or hand-write a restricted subset. Nothing is vendored today and no `third_party/` exists; the input is read as root on every forwarding host | `data-plane/Makefile`, `docs/REPO-STRUCTURE.md` §2 | 1 |
-| D-F5 — whether file-managed mode keeps `config.max_frame` fresh from the netlink link events its socket already receives (`marlind/cmd_attach.c:35-57`), or only samples the MTU at load | §3, `marlind/cmd_attach.c` | 3 |
-| D-F6 — where a general-length SipHash-2-4 usable from a libbpf-linking host binary lives: a third C transcription in `marlind/`, `data-plane/tests/packet/xdp_siphash.c` promoted out of the test tree, or `include/marlin/siphash.h` reworked to stop including `<bpf/bpf_helpers.h>` and to accept arbitrary lengths | §5, `data-plane/tests/packet/xdp_siphash.h:6-10` | 1 |
-| D-F7 — where key generation lives: a `marlind` subcommand, a `data-plane/tools/` binary beside `marlin_seed.c`, or documented `openssl rand -hex 16` | §4 | 1 |
-| D-F8 — whether an explicit-port VIP's `port == 0` companion gets schema sugar (a `ports` list). It cannot be decided here: `PHASES.md`'s open row on fragment-tail admission is what decides whether a companion shares `vip_num` and `hash_key` with its head, and the sugar's meaning follows that | §4, `docs/design/11-pipeline.md` | 2b |
-| D-F9 — the ACL trie value in file-managed mode: rule position as a label, or an operator-stated `id` preserving `docs/design/27-source-filtering.md`'s identity property | §5 | 3 |
-| D-F10 — the byte encoding of `fwd_table` generation's hash inputs, which `docs/design/12-selection.md` does not state. Needed by any second implementation and by §6's fixture; the datapath's packet hash carries the equivalent sentence and the generation side does not | `docs/design/12-selection.md`, "Table generation" | 2a or earlier — it constrains `Marlin.Core` as much as `marlind` |
+| Decision | Outcome |
+|---|---|
+| D-F1 — health in file-managed mode | **Closed: static `state` only.** `marlind` performs no health checking; §7's `SIGHUP` reload is what makes a GLB-style companion addable later with no `marlind` code change. |
+| D-F2 — the write interlock | **Closed: documented exclusivity only** (§2). |
+| D-F3 — `--config` versus the environment input | **Closed: replacement, not precedence** (§4). |
+| D-F4 — the TOML parser | **Closed: vendored.** `data-plane/vendor/tomlc17/` (`cktan/tomlc17`, MIT), pinned at a tagged commit — see `vendor/README.md`. Hand-writing a restricted subset was rejected: TOML's string-escaping and array-of-tables rules are easy to get subtly wrong against root-parsed, untrusted input, and `tomlc17` is one translation unit with no dependency beyond the C standard library. |
+| D-F5 — whether `config.max_frame` tracks netlink link events | **Still open** — carried in `PHASES.md`. `marlind` derives it once, at reconcile time, from `SIOCGIFMTU`; it does not yet subscribe the existing netlink socket to MTU changes. |
+| D-F6 — where the generation-side SipHash lives | **Closed: a third transcription**, `data-plane/marlind/hash.c` (§5). |
+| D-F7 — where key generation lives | **Closed: documented `openssl rand -hex 16`.** No `marlind` subcommand; `deploy/marlin.conf.example`'s header and `docs/DEPLOYMENT.md` carry the command. A generator subcommand was rejected as unnecessary surface: the two secrets are opaque 16-byte values with no structure a purpose-built generator would validate. |
+| D-F8 — `port == 0` companion schema sugar | **Still open** — carried in `PHASES.md`, blocked on the same fragment-tail admission decision it always was. |
+| D-F9 — the ACL trie value | **Closed: rule ordinal within its list** (§5), a diagnostic label. |
+| D-F10 — the byte encoding of `fwd_table` generation's hash inputs | **Closed: pinned in §5's derivation table** and restated here for visibility, since `docs/design/12-selection.md` is the document that should have stated it and did not. Both hashes are keyed by the VIP's `table_seed`. `row_seed = siphash(row_index as little-endian u32, padded to 8 bytes; table_seed)`. `score_input = siphash(row_seed as little-endian u64 (8B) ++ backend.addr exactly as stored, network order (4B) ++ backend.vni as little-endian u32 (4B) ++ backend.inner_mac (6B) ++ two zero pad bytes; table_seed)`, 24 bytes total. Little-endian for host-order scalars matches the datapath's own convention (`include/marlin/siphash.h:36-39`); network order for `addr` makes the buffer a direct copy of the ABI field. `data-plane/tests/fwd_gen_test.c` carries a computed vector over this encoding — not yet an external oracle, since no second implementation exists to check it against, but the concrete number a future `Marlin.Core` port must reproduce. |
 
 ---
 

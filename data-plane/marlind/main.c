@@ -9,25 +9,35 @@
  * from outside this process; `ip link set ... xdp off` and `bpftool net
  * detach` both fail with EBUSY against it.
  *
- * Usage: marlind --attach | --status | --unpin | --help | --version
+ * Usage: marlind --attach | --status | --unpin | --check | --help | --version
  *
  *   --attach  preflight, load (reusing pinned maps), pin, attach, then block
- *             until SIGTERM/SIGINT or the interface disappears
+ *             until SIGTERM/SIGINT, SIGHUP, or the interface disappears
  *   --status  one-shot probe of the current attach state; see EXIT_* below
  *   --unpin   remove the pins; refuses while attached
+ *   --check   validate a configuration file with no privilege and no map
+ *             access; needs --config (docs/design/31-file-configuration.md §7)
+ *
+ * --config <path> selects file-managed mode (docs/design/31-file-configuration.md):
+ * [instance] then becomes the only source of the interface, object and pin
+ * directory, and the environment variables below are ignored, with a
+ * warning if set. Without --config, the environment is unchanged.
  *
  * There is no --detach: the attach is bpf_link-owned and held for the
- * process's lifetime, so SIGTERM is the only way to end it.
+ * process's lifetime, so SIGTERM is the only way to end it. SIGHUP reloads
+ * --config's file in place rather than restarting.
  *
  * Single-threaded by construction: cmd_attach()'s wait is one epoll_wait
  * loop over a signalfd and a netlink socket, not a thread pool, and no
  * marlind source spawns a thread or forks. Nothing here needs to be
  * reentrant or async-signal-safe beyond that.
  *
- * Env: IFACE (required), MARLIN_OBJ, MARLIN_PIN_DIR (see load_config()).
+ * Env (ignored with --config): IFACE (required), MARLIN_OBJ, MARLIN_PIN_DIR
+ * (see load_config()).
  */
 
 #include <getopt.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -43,11 +53,13 @@ enum mode {
     MODE_ATTACH,
     MODE_STATUS,
     MODE_UNPIN,
+    MODE_CHECK,
 };
 
 static void usage(FILE *out, const char *argv0)
 {
-    (void)fprintf(out, "usage: %s --attach|--status|--unpin\n", argv0);
+    (void)fprintf(out, "usage: %s [--config <path>] --attach|--status|--unpin\n", argv0);
+    (void)fprintf(out, "       %s [--config <path>] --check\n", argv0);
     (void)fprintf(out, "       %s --help|--version\n", argv0);
 }
 
@@ -61,9 +73,9 @@ static void usage(FILE *out, const char *argv0)
  * whether the object clears MARLIND_MIN_BPF_VERSION, checked here the same
  * way preflight's check_object_version() checks it before --attach.
  */
-static void print_version(void)
+static void print_version(const char *conf_path)
 {
-    const char *path = config_obj_path();
+    const char *path = config_obj_path(conf_path);
     struct bpf_object *obj;
 
     printf("marlind %s\n", MARLIND_VERSION);
@@ -97,10 +109,15 @@ static void print_version(void)
 int main(int argc, char **argv)
 {
     static const struct option opts[] = {
-        { "attach", no_argument, NULL, 'a' }, { "status", no_argument, NULL, 's' },  { "unpin", no_argument, NULL, 'u' },
-        { "help", no_argument, NULL, 'h' },   { "version", no_argument, NULL, 'V' }, { NULL, 0, NULL, 0 },
+        { "attach", no_argument, NULL, 'a' },       { "status", no_argument, NULL, 's' },
+        { "unpin", no_argument, NULL, 'u' },        { "check", no_argument, NULL, 'k' },
+        { "config", required_argument, NULL, 'c' }, { "help", no_argument, NULL, 'h' },
+        { "version", no_argument, NULL, 'V' },      { NULL, 0, NULL, 0 },
     };
     enum mode mode = MODE_NONE;
+    const char *conf_path = NULL;
+    bool want_help = false;
+    bool want_version = false;
     int opt;
 
     /*
@@ -109,53 +126,65 @@ int main(int argc, char **argv)
      * exact "was there a leftover argument" test rather than one a
      * permuted argv could dodge.
      */
-    while((opt = getopt_long(argc, argv, "+hV", opts, NULL)) != -1) {
+    while((opt = getopt_long(argc, argv, "+c:hV", opts, NULL)) != -1) {
         switch(opt) {
         case 'a':
-            if(mode != MODE_NONE) {
-                usage(stderr, argv[0]);
-                return EXIT_USAGE;
-            }
-            mode = MODE_ATTACH;
-            break;
         case 's':
-            if(mode != MODE_NONE) {
-                usage(stderr, argv[0]);
-                return EXIT_USAGE;
-            }
-            mode = MODE_STATUS;
-            break;
         case 'u':
+        case 'k':
             if(mode != MODE_NONE) {
                 usage(stderr, argv[0]);
                 return EXIT_USAGE;
             }
-            mode = MODE_UNPIN;
+            mode = opt == 'a' ? MODE_ATTACH : opt == 's' ? MODE_STATUS : opt == 'u' ? MODE_UNPIN : MODE_CHECK;
+            break;
+        case 'c':
+            conf_path = optarg;
             break;
         case 'h':
-            usage(stdout, argv[0]);
-            return 0;
+            /*
+             * Recorded rather than acted on immediately: --config given
+             * ahead of --help/--version must still be consumed by getopt
+             * (it takes an argument), and print_version() wants it to
+             * resolve [instance].object -- see the file header.
+             */
+            want_help = true;
+            break;
         case 'V':
-            print_version();
-            return 0;
+            want_version = true;
+            break;
         default:
             usage(stderr, argv[0]);
             return EXIT_USAGE;
         }
     }
 
+    if(want_help) {
+        usage(stdout, argv[0]);
+        return 0;
+    }
+    if(want_version) {
+        print_version(conf_path);
+        return 0;
+    }
+
     if(mode == MODE_NONE || optind != argc) {
         usage(stderr, argv[0]);
         return EXIT_USAGE;
     }
+    if(mode == MODE_CHECK && conf_path == NULL) {
+        conf_path = MARLIN_DEFAULT_CONF;
+    }
 
     switch(mode) {
     case MODE_ATTACH:
-        return cmd_attach();
+        return cmd_attach(conf_path);
     case MODE_STATUS:
-        return cmd_status();
+        return cmd_status(conf_path);
     case MODE_UNPIN:
-        return cmd_unpin();
+        return cmd_unpin(conf_path);
+    case MODE_CHECK:
+        return cmd_check(conf_path);
     default:
         usage(stderr, argv[0]);
         return EXIT_USAGE;

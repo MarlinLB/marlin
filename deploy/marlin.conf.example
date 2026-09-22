@@ -1,0 +1,130 @@
+# marlind's file-managed configuration. Copy to /etc/marlind/marlin.conf,
+# mode 0640 root:root -- it holds every VIP's hash_key and table_seed, and
+# marlind refuses a file that is group- or world-writable or not owned by
+# root. Start marlind with --config /etc/marlind/marlin.conf --attach; a
+# running instance reloads this file on SIGHUP.
+#
+# While marlind runs with --config it is the only writer of config,
+# backends, fwd_table, vip_map, tx_ports and the ACL tries. The control
+# plane must be read-only against this instance -- nothing enforces that.
+#
+# Validate before installing:  marlind --check --config ./marlin.conf.example
+# Generate a key or a seed:    openssl rand -hex 16
+#
+# See docs/DEPLOYMENT.md §1.2 and docs/design/31-file-configuration.md.
+
+[instance]
+interface  = "eth0"
+object     = "/usr/lib/marlin/marlin.bpf.o"
+pin_dir    = "/sys/fs/bpf/marlin"
+tunnel_src = "203.0.113.10"          # required if any backend encapsulates (ipip/gue/vxlan)
+tx_ports   = ["eth1", "eth2"]        # XDP_REDIRECT egress devices; omit if every backend is on eth0
+# max_frame = 1514                   # omit to derive from eth0's MTU + ETH_HLEN
+
+[acl]
+enabled = true
+allow   = ["192.0.2.0/24", "2001:db8:ffff::/48"]
+block   = ["198.51.100.0/24", "2001:db8:bad::/48"]
+
+[ratelimit]
+enabled        = true
+tokens_per_sec = 5000
+burst_packets  = 10000
+
+# --- backends ---------------------------------------------------------------
+# Global and referenced by name below, not nested under a VIP: `backends` is
+# one dense ID space and one backend may serve several VIPs. `id` is the
+# array slot, is never 0, and is on the wire under quic = true -- renumbering
+# an existing backend routes traffic deterministically to the wrong one.
+
+[[backend]]
+name   = "web-01"                    # L2 DSR, stored MAC, zero-lookup fast path
+id     = 1
+addr   = "10.0.0.11"
+mode   = "l2dsr"
+state  = "up"
+mac    = "52:54:00:ab:cd:01"
+fib    = false                       # explicit opt-out; defaults to true wherever mac is stated
+egress = "eth0"
+
+[[backend]]
+name  = "web-02"                     # L2 DSR, kernel resolves every packet (no mac stated)
+id    = 2
+addr  = "10.0.0.12"
+mode  = "l2dsr"
+state = "up"
+
+[[backend]]
+name   = "edge-01"                   # IPIP
+id     = 3
+addr   = "198.51.100.21"
+mode   = "ipip"
+state  = "up"
+egress = "eth1"
+
+[[backend]]
+name        = "edge-02"              # GUE
+id          = 4
+addr        = "198.51.100.22"
+mode        = "gue"
+state       = "up"
+egress      = "eth1"
+# encap_dport = 6080                  # omit for the per-mode default
+
+[[backend]]
+name      = "overlay-01"             # VXLAN
+id        = 5
+addr      = "198.51.100.31"
+mode      = "vxlan"
+state     = "down"                   # static; marlind performs no health checking
+egress    = "eth2"
+vni       = 4242
+inner_mac = "52:54:00:00:00:01"
+# encap_dport = 4789
+
+# --- VIPs --------------------------------------------------------------------
+# hash_key and table_seed are 32 hex digits each, operator-generated, and
+# must be identical on every instance serving this VIP -- neither is ever
+# generated at reconcile time (docs/design/10-map-invariants.md).
+
+[[vip]]
+addr       = "203.0.113.1"
+port       = 443
+proto      = "tcp"
+hash_key   = "00112233445566778899aabbccddeeff"
+table_seed = "ffeeddccbbaa99887766554433221100"
+acl        = true
+ratelimit  = true
+members = [
+    { backend = "web-01", weight = 100 },
+    { backend = "web-02", weight = 50 },
+]
+
+[[vip]]
+addr         = "203.0.113.2"
+port         = 443
+proto        = "udp"
+hash_key     = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+table_seed   = "f0e1d2c3b4a5968778695a4b3c2d1e0f"
+acl          = true
+ratelimit    = false
+hash_5tuple  = false                 # set only on a VIP whose traffic does not fragment
+quic         = true
+quic_cid_len = 8                     # 7-20; required when quic = true
+dscp         = 46                    # EF (RFC 3246); marks the outer header of tunnel-mode backends only
+members = [
+    { backend = "edge-01", weight = 100 },
+    { backend = "edge-02", weight = 100 },
+    { backend = "overlay-01", weight = 25 },
+]
+
+[[vip]]
+addr       = "2001:db8::1"           # IPv6 VIP; backend.addr stays IPv4 by ABI (docs/design/15-nexthop-l2dsr.md)
+port       = 0                       # 0 matches any port
+proto      = "tcp"
+hash_key   = "112233445566778899aabbccddeeff00"
+table_seed = "eeddccbbaa99887766554433221100ff"
+acl        = false
+members = [
+    { backend = "web-01", weight = 100 },
+]

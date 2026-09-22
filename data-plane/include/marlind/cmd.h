@@ -21,6 +21,14 @@ struct attach_probe {
 /* Returns EXIT_ATTACHED, EXIT_FOREIGN or EXIT_NOT_ATTACHED; prints nothing. */
 int attach_probe(const struct config *cfg, struct attach_probe *probe);
 
-int cmd_attach(void);
-int cmd_status(void);
-int cmd_unpin(void);
+/* conf_path is NULL for environment-managed mode; see marlind.h's load_config(). */
+int cmd_attach(const char *conf_path);
+int cmd_status(const char *conf_path);
+int cmd_unpin(const char *conf_path);
+
+/*
+ * Parses and validates conf_path with no privilege and no map access
+ * (docs/design/31-file-configuration.md §7); every rejection is printed to
+ * stderr. Returns EXIT_ATTACHED on success, EXIT_CONFIG on rejection.
+ */
+int cmd_check(const char *conf_path);

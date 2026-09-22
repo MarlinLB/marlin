@@ -103,7 +103,14 @@ marlin/
 │   │       ├── log.h                 # logmsg(), die(), die_with(), notify()
 │   │       ├── preflight.h           # preflight()
 │   │       ├── bpf_load.h            # load_and_pin_maps(), pin_version(), pin_program(), attach_link()
-│   │       └── cmd.h                 # attach_probe(), cmd_attach(), cmd_status(), cmd_unpin()
+│   │       ├── cmd.h                 # attach_probe(), cmd_attach(), cmd_status(), cmd_unpin(), cmd_check()
+│   │       ├── conf.h                # struct marlin_conf (the file-configuration model), conf_load(), conf_free() -- docs/design/31-file-configuration.md
+│   │       ├── conf_value.h          # conf_parse_ipv4/ipv6/mac/hexkey16/proto/mode/state/cidr()
+│   │       ├── conf_check.h          # conf_check(), conf_check_against_previous()
+│   │       ├── reconcile.h           # reconcile_apply(): map I/O for file-managed mode
+│   │       ├── fwd_gen.h             # fwd_gen_block(): weighted-rendezvous fwd_table generation
+│   │       ├── hash.h                # marlind_siphash() -- the third SipHash-2-4 transcription, host-only
+│   │       └── rl_scale.h            # header-only: the operator-unit -> scaled-token-field conversion, shared with conf_check.c
 │   ├── tests/                       # native unit tests, `make tests` — Principle 5's exception
 │   │   ├── parser_test.c            # #includes bpf/parser.c to reach its static helpers
 │   │   ├── acl_test.c               # #includes bpf/acl.c; map lookups answered by stubs/ below
@@ -114,6 +121,8 @@ marlin/
 │   │   ├── mtu_test.c               # <marlin/mtu.h>, header-only
 │   │   ├── entropy_test.c           # <marlin/entropy.h>, header-only
 │   │   ├── compat_test.c            # <marlind/compat.h>, header-only -- marlind_version_cmp() and the version floor
+│   │   ├── conf_test.c              # #includes marlind/conf_value.c, conf_check.c, conf.c -- parser, coercion, validation
+│   │   ├── fwd_gen_test.c           # #includes marlind/fwd_gen.c, hash.c -- SipHash vectors, generation determinism/disruption
 │   │   ├── packet.h                 # packet builder declarations, shared with tests/packet/ below -- defined in support/packet.c
 │   │   ├── harness.h                # test registry + CHECK_* macro declarations, shared with tests/packet/ below -- defined in support/harness.c
 │   │   ├── support/                 # definitions for harness.h/packet.h, built once per tier (native vs. packet) so a case
@@ -149,20 +158,33 @@ marlin/
 │   │       └── fib.h/.c             # veth + real routes/neighbours for nexthop.c's bpf_fib_lookup() cases
 │   ├── tools/                       # dev-only, `make tools` — never installed
 │   │   └── verifier_stats.c        # loads marlin.bpf.o via libbpf; verifier insn/stack report
+│   ├── vendor/                       # third-party sources, not authored here -- see vendor/README.md
+│   │   └── tomlc17/                  # cktan/tomlc17, MIT, pinned tag -- marlind's --config parser
+│   │       ├── tomlc17.c
+│   │       ├── include/tomlc17.h
+│   │       └── LICENSE
 │   └── marlind/                     # the loader; built by data-plane/Makefile's `marlind` target
-│       ├── main.c                   # getopt_long: --attach | --status | --unpin
+│       ├── main.c                   # getopt_long: --attach | --status | --unpin | --check | --config <path>
 │       ├── log.c                    # logmsg(), die(), notify()
-│       ├── config.c                 # load_config()
+│       ├── config.c                 # load_config(): environment or, with --config, conf_load()
 │       ├── preflight.c              # preflight() -- host-state checks, docs/design/02-architecture.md
 │       ├── bpf_load.c               # load, pin, attach -- the map/program/link creation
-│       ├── cmd_attach.c             # cmd_attach(): netlink/signalfd watch + epoll loop
+│       ├── cmd_attach.c             # cmd_attach(): netlink/signalfd/SIGHUP watch + epoll loop
 │       ├── cmd_status.c             # cmd_status(), attach_probe() (also used by cmd_unpin.c)
-│       └── cmd_unpin.c              # cmd_unpin()
+│       ├── cmd_unpin.c              # cmd_unpin()
+│       ├── cmd_check.c              # cmd_check(): --check, no privilege, no map access
+│       ├── conf.c                   # conf_load(): drives tomlc17, lowers the result into struct marlin_conf
+│       ├── conf_value.c             # scalar coercion for conf.c
+│       ├── conf_check.c             # docs/design/20-configuration-validation.md's rules, plus the file-form additions
+│       ├── reconcile.c              # reconcile_apply(): map I/O for file-managed mode
+│       ├── fwd_gen.c                # weighted-rendezvous fwd_table block generation
+│       └── hash.c                  # marlind_siphash()
 │
 ├── deploy/
 │   ├── marlind.service                # Type=notify, before marlin.service
 │   ├── marlin.service                 # the control plane
-│   └── marlin.env.example             # IFACE, pin path
+│   ├── marlin.env.example             # IFACE, pin path
+│   └── marlin.conf.example            # docs/design/31-file-configuration.md's file-managed mode, fully worked
 │
 ├── control-plane/
 │   ├── Marlin.sln

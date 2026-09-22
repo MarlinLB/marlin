@@ -1,11 +1,12 @@
 # Marlin data-plane build: the XDP datapath object and the marlind loader
 # that attaches it, one host toolchain shared by both.
 
-SRC_DIR   := bpf
-INC_DIR   := include
-BUILD_DIR := build
-TEST_DIR  := tests
-TOOLS_DIR := tools
+SRC_DIR    := bpf
+INC_DIR    := include
+BUILD_DIR  := build
+TEST_DIR   := tests
+TOOLS_DIR  := tools
+VENDOR_DIR := vendor
 
 # --- Overridable tools --------------------------------------------------------
 # CI pins versions; check-toolchain's tests inject stubs through these vars.
@@ -26,6 +27,13 @@ TEST_CFLAGS   ?= -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer
 # The shipped loader binary. Deliberately not derived from TEST_CFLAGS: tests
 # carry sanitizers, this artefact must not.
 HOST_CFLAGS ?= -std=gnu11 -O2 -Wall -Wextra -Werror -fno-omit-frame-pointer
+
+# Third-party sources under vendor/ (see vendor/README.md) are not this
+# project's code and do not carry -Werror or -Wall/-Wextra: a warning
+# introduced upstream is upstream's to fix, not a reason this build refuses
+# to link marlind. -std=c17 because that is what the vendored source targets,
+# independent of HOST_CFLAGS/TEST_CFLAGS's -std=gnu11.
+VENDOR_CFLAGS ?= -std=c17 -O2 -fno-omit-frame-pointer
 
 # MARLIN_DEBUG=1 compiles in main.c's per-packet bpf_printk trace, read from
 # trace_pipe by the dev rigs' `trace` subcommand. Not tracked as a dependency:
@@ -71,7 +79,17 @@ MARLIND_DIR  := marlind
 MARLIND_SRCS := $(wildcard $(MARLIND_DIR)/*.c)
 MARLIND_OBJS := $(patsubst $(MARLIND_DIR)/%.c,$(BUILD_DIR)/marlind/%.o,$(MARLIND_SRCS))
 MARLIND_BIN  := $(BUILD_DIR)/marlind/marlind
-MARLIND_LIBS := -lbpf
+# -lm: fwd_gen.c compares ln(u)/w rather than u^(1/w) to avoid pow() (see
+# docs/design/12-selection.md), which still needs log().
+MARLIND_LIBS := -lbpf -lm
+
+# Vendored TOML parser (vendor/README.md); marlind's own config_file.c is the
+# only consumer. Kept out of $(MARLIND_SRCS)'s wildcard deliberately -- see
+# the vendor compile rule below for why it needs its own recipe.
+TOML_DIR  := $(VENDOR_DIR)/tomlc17
+TOML_SRCS := $(TOML_DIR)/tomlc17.c
+TOML_INC  := -I$(TOML_DIR)/include
+TOML_OBJS := $(patsubst $(TOML_DIR)/%.c,$(BUILD_DIR)/vendor/%.o,$(TOML_SRCS))
 
 # marlin.bpf.o and marlind version independently (bpf/CHANGELOG.md,
 # marlind/CHANGELOG.md): the loader and the datapath object are separate
@@ -131,6 +149,13 @@ SUPPORT_DIR         := $(TEST_DIR)/support
 SUPPORT_SRCS        := $(wildcard $(SUPPORT_DIR)/*.c)
 NATIVE_SUPPORT_OBJS := $(patsubst $(SUPPORT_DIR)/%.c,$(BUILD_DIR)/support/native/%.o,$(SUPPORT_SRCS))
 PACKET_SUPPORT_OBJS := $(patsubst $(SUPPORT_DIR)/%.c,$(BUILD_DIR)/support/packet/%.o,$(SUPPORT_SRCS))
+
+# A second, ASan/UBSan-built copy of the vendored TOML parser for conf_test.c
+# (native tier): an object built without TEST_SANITIZE will not link into a
+# binary built with it, same reasoning as NATIVE_SUPPORT_OBJS above. Linked
+# into every native test binary unconditionally, exactly as
+# NATIVE_SUPPORT_OBJS already is, rather than adding a per-test link rule.
+NATIVE_TOML_OBJS := $(patsubst $(TOML_DIR)/%.c,$(BUILD_DIR)/vendor/native/%.o,$(TOML_SRCS))
 
 .PHONY: all
 all: bpf marlind tools
@@ -192,14 +217,27 @@ $(COMPILE_COMMANDS): $(OBJS) $(MARLIND_OBJS) $(TOOL_OBJS)
 
 # Host compile, not -target bpf: main.c needs libbpf's syscall wrappers and
 # system headers, neither of which the bpf target's include search covers.
+# TOML_INC is on every marlind TU, not only conf.c, the same way $(INCLUDES)
+# is on every bpf/*.c TU regardless of which one actually uses a given header.
 $(BUILD_DIR)/marlind/%.o: $(MARLIND_DIR)/%.c $(MARLIND_VERSION_H)
 	@mkdir -p $(BUILD_DIR)/marlind
 	@echo "compile $(notdir $<)"
-	@$(HOST_CC) $(HOST_CFLAGS) -I$(INC_DIR) -I$(BUILD_DIR)/include -MJ $(BUILD_DIR)/marlind/$*.o.json -MMD -MP -c -o $@ $<
+	@$(HOST_CC) $(HOST_CFLAGS) -I$(INC_DIR) -I$(BUILD_DIR)/include $(TOML_INC) -MJ $(BUILD_DIR)/marlind/$*.o.json -MMD -MP -c -o $@ $<
 
-$(MARLIND_BIN): $(MARLIND_OBJS)
+# vendor/ is not this project's code (vendor/README.md): its own recipe, with
+# VENDOR_CFLAGS rather than HOST_CFLAGS, and no -MJ fragment -- excluding it
+# from $(CC_JSON) is what keeps `make tidy` (clang-tidy runs only over
+# $(SRCS)/$(MARLIND_SRCS)) from ever being pointed at upstream source.
+$(BUILD_DIR)/vendor/%.o: $(TOML_DIR)/%.c
+	@mkdir -p $(BUILD_DIR)/vendor
+	@echo "compile $(notdir $<)"
+	@$(HOST_CC) $(VENDOR_CFLAGS) $(TOML_INC) -MMD -MP -c -o $@ $<
+
+-include $(TOML_OBJS:.o=.d)
+
+$(MARLIND_BIN): $(MARLIND_OBJS) $(TOML_OBJS)
 	@echo "linking $(notdir $@)"
-	@$(HOST_CC) $(HOST_CFLAGS) -o $@ $(MARLIND_OBJS) $(MARLIND_LIBS)
+	@$(HOST_CC) $(HOST_CFLAGS) -o $@ $(MARLIND_OBJS) $(TOML_OBJS) $(MARLIND_LIBS)
 
 -include $(MARLIND_OBJS:.o=.d)
 
@@ -207,11 +245,14 @@ $(MARLIND_BIN): $(MARLIND_OBJS)
 marlind: $(MARLIND_BIN)
 
 # Depends on every header/source since a pattern rule can't name which one a
-# test #includes; -MMD narrows this from the second build onward.
+# test #includes; -MMD narrows this from the second build onward. TOML_INC is
+# on every test TU for the same reason it is on every marlind TU above:
+# conf_test.c #includes marlind/conf.c directly (parser_test.c's pattern for
+# a non-header-only TU), which reaches tomlc17.h transitively.
 $(BUILD_DIR)/tests/%.o: $(TEST_DIR)/%.c $(TEST_HDRS) $(SRCS) $(HDRS)
 	@mkdir -p $(BUILD_DIR)/tests
 	@echo "compile $(notdir $<)"
-	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) $(TEST_INCLUDES) -MMD -MP -c -o $@ $<
+	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) $(TEST_INCLUDES) $(TOML_INC) -MMD -MP -c -o $@ $<
 
 # See the SUPPORT_DIR comment above: built with the same sanitizer/include
 # flags as every other native-tier object, so it links into $(TEST_BINS).
@@ -220,13 +261,23 @@ $(BUILD_DIR)/support/native/%.o: $(SUPPORT_DIR)/%.c $(TEST_HDRS) $(HDRS)
 	@echo "compile $(notdir $<)"
 	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) $(TEST_INCLUDES) -MMD -MP -c -o $@ $<
 
-$(BUILD_DIR)/tests/%: $(BUILD_DIR)/tests/%.o $(NATIVE_SUPPORT_OBJS)
+# vendor/ under sanitizers, for conf_test.c -- see NATIVE_TOML_OBJS above.
+# Not -Werror'd (VENDOR_CFLAGS, not TEST_CFLAGS), same reasoning as the
+# unsanitized vendor rule.
+$(BUILD_DIR)/vendor/native/%.o: $(TOML_DIR)/%.c
+	@mkdir -p $(BUILD_DIR)/vendor/native
+	@echo "compile $(notdir $<)"
+	@$(HOST_CC) $(VENDOR_CFLAGS) $(TEST_SANITIZE) $(TOML_INC) -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/tests/%: $(BUILD_DIR)/tests/%.o $(NATIVE_SUPPORT_OBJS) $(NATIVE_TOML_OBJS)
 	@echo "linking $(notdir $@)"
-	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) -o $@ $< $(NATIVE_SUPPORT_OBJS)
+	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SANITIZE) -o $@ $< $(NATIVE_SUPPORT_OBJS) $(NATIVE_TOML_OBJS) -lm
+
+-include $(NATIVE_TOML_OBJS:.o=.d)
 
 # Without this the .o files above are chained intermediates: make would
 # delete each one -- and stop regenerating its .d -- after every link.
-.SECONDARY: $(TEST_OBJS) $(NATIVE_SUPPORT_OBJS) $(PACKET_SUPPORT_OBJS)
+.SECONDARY: $(TEST_OBJS) $(NATIVE_SUPPORT_OBJS) $(PACKET_SUPPORT_OBJS) $(NATIVE_TOML_OBJS)
 
 .PHONY: tests
 tests: $(TEST_BINS)

@@ -15,14 +15,14 @@
 #include <marlind/log.h>
 #include <marlind/marlind.h>
 
-int cmd_unpin(void)
+int cmd_unpin(const char *conf_path)
 {
     struct config cfg;
     struct attach_probe probe;
     struct dirent *entry;
     DIR *dir;
 
-    load_config(&cfg);
+    load_config(&cfg, conf_path, CONF_LOAD_INSTANCE_ONLY);
 
     /*
      * A pin removed while attached does not stop forwarding -- the running
@@ -42,6 +42,7 @@ int cmd_unpin(void)
     dir = opendir(cfg.pin_dir);
     if(dir == NULL) {
         if(errno == ENOENT) {
+            free_config(&cfg);
             return 0;
         }
         die("failed to open %s: %s", cfg.pin_dir, strerror(errno));
@@ -68,5 +69,6 @@ int cmd_unpin(void)
     }
 
     logmsg("removed pins under %s", cfg.pin_dir);
+    free_config(&cfg);
     return 0;
 }

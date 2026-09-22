@@ -97,6 +97,16 @@ program pin itself uses.
 `IFACE` and the pin path come from `marlin.env.example`. `/sys/fs/bpf/marlin` is the default, not
 an invariant — if you change it, the control plane's configuration must agree.
 
+**File-managed mode is a second, mutually exclusive arrangement** (`docs/design/31-file-configuration.md`):
+`marlind --config /etc/marlind/marlin.conf --attach` reads a TOML file (`deploy/marlin.conf.example`
+is a complete worked example) and reconciles every map to it itself, instead of `IFACE`/`MARLIN_OBJ`/
+`MARLIN_PIN_DIR` and a separate control-plane writer. **The file and a map-writing control plane
+must never both be pointed at the same `pin_dir`** — nothing in either process enforces this, so
+it is an integrator discipline, not a checked invariant. Validate a file before installing it with
+`marlind --check --config <path>`, which needs no privilege and touches no map; reload a running
+instance's file in place with `systemctl reload marlind` (`SIGHUP`), which never exits on a bad
+file — it logs the rejection and keeps the previous generation attached.
+
 **`marlin.bpf.o` and `marlind` version independently** (`data-plane/bpf/VERSION`,
 `data-plane/marlind/VERSION`) — they are separate artefacts with separate release cadences, and a
 mismatch between the two figures `--version` prints (below) is normal, not a build error. What
@@ -420,6 +430,21 @@ plane populates `tx_ports` with every ifindex it intends to redirect to. Your si
 that the interfaces exist and the routing table resolves backends to them. An unregistered
 interface produces a counted drop (`no_tx_port`), not a silent one. The ingress interface is
 deliberately absent from the map — transmitting back out the ingress interface needs no devmap.
+
+**File-managed mode (`docs/design/31-file-configuration.md`) maintains no neighbour at all.**
+`marlind` performs no health checking and no netlink neighbour maintenance in this mode — nothing
+keeps a resolved MAC fresh the way the C# control plane's netlink watcher does
+(`docs/design/19-control-plane.md`). XDP cannot trigger ARP or NDP itself, so an unresolved
+neighbour is a standing `fib_no_neigh` with no owner. Pin the neighbours a file-managed instance
+depends on — every backend address configured without a `mac`, and every outer next hop a
+tunnel-mode backend's traffic transits — with `nud permanent` entries, e.g.:
+
+```sh
+ip neigh replace 10.0.0.12 lladdr 52:54:00:ab:cd:02 dev eth0 nud permanent
+```
+
+This is a prerequisite for file-managed mode specifically; the env-managed path above does not
+need it once Phase 3 lands the control plane's own neighbour maintenance.
 
 ### 1.9 The health-probe VRF
 
