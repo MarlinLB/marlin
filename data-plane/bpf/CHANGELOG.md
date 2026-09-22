@@ -8,9 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Rename the `balancer.c` translation unit to `lb_core.c` (`include/marlin/balancer.h` to
-  `include/marlin/lb_core.h`), and its `marlin_balancer_*` symbols to `marlin_lb_*`, including the
-  entry point `marlin_balancer_process()` to `marlin_lb_process()`. No behaviour change.
+- Implement the load-balancer core in `lb_core.c`. With this translation unit (TU), `balancer.c`
+  TU can be decomissioned. The `lb_core` TU is responsible for VIP lookup, ACL enforcement,
+  backend selection (including QUIC steering) and DSCP marking.
 - Add operator-controlled per-VIP outer DSCP marking for IPIP, GUE and VXLAN. `vip_meta.flags`
   bits 16-21 (`VIP_DSCP`) hold a six-bit codepoint, `0` (CS0) by default and byte-identical to
   every frame emitted before this field existed. `struct vip_meta` does not grow.
