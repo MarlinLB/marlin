@@ -180,7 +180,7 @@ static void handle_reload(struct config *cfg, struct bpf_object *obj)
     notify("STATUS=attached %s to %s (ifindex %d); reloaded %s", MARLIN_PROG_NAME, cfg->iface, cfg->ifindex, cfg->conf_path);
 }
 
-int cmd_attach(const char *conf_path)
+int cmd_attach(const char *conf_path, enum xdp_attach_mode xdp_mode)
 {
     struct config cfg;
     struct bpf_object *obj;
@@ -240,9 +240,14 @@ int cmd_attach(const char *conf_path)
     }
 
     prog = pin_program(obj, cfg.obj_path, cfg.prog_pin);
-    link_fd = attach_link(bpf_program__fd(prog), cfg.iface, cfg.ifindex);
+    link_fd = attach_link(bpf_program__fd(prog), cfg.iface, cfg.ifindex, xdp_mode);
 
-    logmsg("attached %s to %s (xdpdrv), pinned under %s", MARLIN_PROG_NAME, cfg.iface, cfg.pin_dir);
+    logmsg("attached %s to %s (%s), pinned under %s", MARLIN_PROG_NAME, cfg.iface,
+           xdp_mode == XDP_ATTACH_GENERIC ? "xdpgeneric" : "xdpdrv", cfg.pin_dir);
+    if(xdp_mode == XDP_ATTACH_GENERIC) {
+        logmsg("--xdp-mode=generic: this is an order-of-magnitude throughput regression versus "
+               "native XDP (docs/design/02-architecture.md) -- not for production use");
+    }
     notify("READY=1\nSTATUS=attached %s to %s (ifindex %d); pins under %s", MARLIN_PROG_NAME, cfg.iface, cfg.ifindex, cfg.pin_dir);
 
     for(;;) {

@@ -25,6 +25,12 @@ and this project will adhere to [Semantic Versioning](https://semver.org/spec/v2
 - Vendored `tomlc17` (`data-plane/vendor/tomlc17/`, see `vendor/README.md`)
   and a third host-only SipHash-2-4 transcription
   (`data-plane/include/marlind/hash.h`) for `fwd_table` generation.
+- `--xdp-mode <native|generic>` on `--attach` (`docs/design/02-architecture.md`). `native` is the
+  default and unchanged: refuse rather than silently degrade if the driver lacks native XDP
+  support. `generic` is an explicit, logged-on-attach exception for a host whose native XDP_TX is
+  broken outright rather than merely absent -- found on this repo's own netns rigs under a WSL2
+  kernel, where native XDP_TX silently drops any frame grown by `bpf_xdp_adjust_head()`
+  (`ethtool -S`'s `xdp_tx_errors`, invisible to the BPF program and to `drop_stats`).
 
 ### Changed
 

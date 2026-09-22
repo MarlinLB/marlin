@@ -45,6 +45,22 @@
 #define MARLIN_DEFAULT_CONF    "/etc/marlind/marlin.conf"
 
 /*
+ * XDP_ATTACH_NATIVE is the only mode --attach uses without --xdp-mode, and
+ * refuses rather than silently degrading if the driver lacks native XDP
+ * support (docs/design/02-architecture.md). XDP_ATTACH_GENERIC is an
+ * explicit, operator-requested exception for a host whose native XDP_TX is
+ * broken outright rather than merely absent -- discovered on this repo's own
+ * netns rigs under a WSL2 kernel, where a veth's native XDP_TX silently
+ * drops any frame grown by bpf_xdp_adjust_head() (ethtool -S's
+ * rx_queue_N_xdp_tx_errors counts it; the BPF program itself sees no
+ * failure). Never chosen automatically -- see main.c's --xdp-mode.
+ */
+enum xdp_attach_mode {
+    XDP_ATTACH_NATIVE = 0,
+    XDP_ATTACH_GENERIC,
+};
+
+/*
  * conf_path/file are NULL in environment-managed mode (no --config given).
  * With --config, [instance] is the only source of iface/obj_path/pin_dir --
  * docs/design/31-file-configuration.md D-F3.

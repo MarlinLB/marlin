@@ -22,7 +22,7 @@ struct attach_probe {
 int attach_probe(const struct config *cfg, struct attach_probe *probe);
 
 /* conf_path is NULL for environment-managed mode; see marlind.h's load_config(). */
-int cmd_attach(const char *conf_path);
+int cmd_attach(const char *conf_path, enum xdp_attach_mode xdp_mode);
 int cmd_status(const char *conf_path);
 int cmd_unpin(const char *conf_path);
 

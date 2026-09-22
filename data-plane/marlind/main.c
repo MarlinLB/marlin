@@ -18,6 +18,12 @@
  *   --check   validate a configuration file with no privilege and no map
  *             access; needs --config (docs/design/31-file-configuration.md §7)
  *
+ * --xdp-mode <native|generic>, with --attach only: native is the default and
+ * refuses rather than silently degrading if the driver lacks native XDP
+ * support (docs/design/02-architecture.md). generic is an explicit,
+ * logged-on-attach exception for a host whose native XDP_TX is broken
+ * outright, not merely absent -- marlind.h's enum xdp_attach_mode.
+ *
  * --config <path> selects file-managed mode (docs/design/31-file-configuration.md):
  * [instance] then becomes the only source of the interface, object and pin
  * directory, and the environment variables below are ignored, with a
@@ -58,7 +64,8 @@ enum mode {
 
 static void usage(FILE *out, const char *argv0)
 {
-    (void)fprintf(out, "usage: %s [--config <path>] --attach|--status|--unpin\n", argv0);
+    (void)fprintf(out, "usage: %s [--config <path>] --attach [--xdp-mode <native|generic>]\n", argv0);
+    (void)fprintf(out, "       %s [--config <path>] --status|--unpin\n", argv0);
     (void)fprintf(out, "       %s [--config <path>] --check\n", argv0);
     (void)fprintf(out, "       %s --help|--version\n", argv0);
 }
@@ -106,16 +113,22 @@ static void print_version(const char *conf_path)
     bpf_object__close(obj);
 }
 
+/* No short form; getopt_long identifies it by a value past the short-option set. */
+enum { OPT_XDP_MODE = 256 };
+
 int main(int argc, char **argv)
 {
     static const struct option opts[] = {
         { "attach", no_argument, NULL, 'a' },       { "status", no_argument, NULL, 's' },
         { "unpin", no_argument, NULL, 'u' },        { "check", no_argument, NULL, 'k' },
         { "config", required_argument, NULL, 'c' }, { "help", no_argument, NULL, 'h' },
-        { "version", no_argument, NULL, 'V' },      { NULL, 0, NULL, 0 },
+        { "version", no_argument, NULL, 'V' },      { "xdp-mode", required_argument, NULL, OPT_XDP_MODE },
+        { NULL, 0, NULL, 0 },
     };
     enum mode mode = MODE_NONE;
     const char *conf_path = NULL;
+    enum xdp_attach_mode xdp_mode = XDP_ATTACH_NATIVE;
+    bool xdp_mode_set = false;
     bool want_help = false;
     bool want_version = false;
     int opt;
@@ -140,6 +153,17 @@ int main(int argc, char **argv)
             break;
         case 'c':
             conf_path = optarg;
+            break;
+        case OPT_XDP_MODE:
+            if(strcmp(optarg, "native") == 0) {
+                xdp_mode = XDP_ATTACH_NATIVE;
+            } else if(strcmp(optarg, "generic") == 0) {
+                xdp_mode = XDP_ATTACH_GENERIC;
+            } else {
+                (void)fprintf(stderr, "%s: --xdp-mode must be \"native\" or \"generic\"\n", argv[0]);
+                return EXIT_USAGE;
+            }
+            xdp_mode_set = true;
             break;
         case 'h':
             /*
@@ -172,13 +196,17 @@ int main(int argc, char **argv)
         usage(stderr, argv[0]);
         return EXIT_USAGE;
     }
+    if(xdp_mode_set && mode != MODE_ATTACH) {
+        (void)fprintf(stderr, "%s: --xdp-mode only applies to --attach\n", argv[0]);
+        return EXIT_USAGE;
+    }
     if(mode == MODE_CHECK && conf_path == NULL) {
         conf_path = MARLIN_DEFAULT_CONF;
     }
 
     switch(mode) {
     case MODE_ATTACH:
-        return cmd_attach(conf_path);
+        return cmd_attach(conf_path, xdp_mode);
     case MODE_STATUS:
         return cmd_status(conf_path);
     case MODE_UNPIN:

@@ -167,11 +167,18 @@ struct bpf_program *pin_program(struct bpf_object *obj, const char *obj_path, co
  * set the kernel silently falls back to generic/SKB mode on a driver
  * without native XDP support -- the exact order-of-magnitude regression
  * docs/design/02-architecture.md refuses. XDP_FLAGS_DRV_MODE here makes
- * that fail loudly instead.
+ * that fail loudly instead, by default.
+ *
+ * XDP_ATTACH_GENERIC passes XDP_FLAGS_SKB_MODE explicitly instead, on the
+ * same call. This is not the silent fallback the paragraph above refuses --
+ * it is only ever reached via --xdp-mode=generic, an operator's deliberate,
+ * logged choice (marlind.h's enum xdp_attach_mode), for a host whose native
+ * XDP_TX is broken rather than merely absent.
  */
-int attach_link(int prog_fd, const char *iface, int ifindex)
+int attach_link(int prog_fd, const char *iface, int ifindex, enum xdp_attach_mode mode)
 {
-    LIBBPF_OPTS(bpf_link_create_opts, opts, .flags = XDP_FLAGS_DRV_MODE);
+    __u32 flags = mode == XDP_ATTACH_GENERIC ? XDP_FLAGS_SKB_MODE : XDP_FLAGS_DRV_MODE;
+    LIBBPF_OPTS(bpf_link_create_opts, opts, .flags = flags);
     int link_fd;
 
     link_fd = bpf_link_create(prog_fd, ifindex, BPF_XDP, &opts);
