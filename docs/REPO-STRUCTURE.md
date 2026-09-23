@@ -125,7 +125,7 @@ marlin/
 │   │   ├── conf_test.c              # #includes marlind/conf_value.c, conf_check.c, conf.c -- parser, coercion, validation
 │   │   ├── fwd_gen_test.c           # #includes marlind/fwd_gen.c, hash.c -- SipHash vectors, generation determinism/disruption
 │   │   ├── vip_alloc_test.c         # #includes marlind/vip_alloc.c -- allocation, reference ordering, cycles and capacity
-│   │   ├── reconcile_test.c         # #includes marlind/reconcile.c -- intermediate routing and failures with in-memory map operations
+│   │   ├── reconcile_test.c         # #includes marlind/reconcile.c, vip_alloc.c, fwd_gen.c, hash.c -- intermediate routing and failures with in-memory map operations
 │   │   ├── packet.h                 # packet builder declarations, shared with tests/packet/ below -- defined in support/packet.c
 │   │   ├── harness.h                # test registry + CHECK_* macro declarations, shared with tests/packet/ below -- defined in support/harness.c
 │   │   ├── support/                 # definitions for harness.h/packet.h, built once per tier (native vs. packet) so a case

@@ -343,6 +343,42 @@ MARLIN_TEST(cyclic_regrouping_at_full_key_capacity_uses_a_free_final_block)
     check_write_order(entries, MAX_VIPS - 2, baseline, MAX_VIPS, &plan);
 }
 
+MARLIN_TEST(cycle_break_relocates_only_the_entry_actually_stuck)
+{
+    struct vip_key keys[6];
+    struct vip_alloc_baseline baseline[6];
+    struct vip_key b_keys[3];
+    struct vip_key c_keys[2];
+    struct vip_alloc_entry entries[3];
+    struct vip_alloc_plan plan;
+
+    for(__u32 i = 0; i < 6; i++) {
+        key4(&keys[i], i + 1, 0, IPPROTO_SCTP);
+        baseline[i] = (struct vip_alloc_baseline){ .key = keys[i], .vip_num = i / 2 };
+    }
+    b_keys[0] = keys[0]; /* k1, was A's block 0 */
+    b_keys[1] = keys[2]; /* k3, was B's block 1 */
+    b_keys[2] = keys[5]; /* k6, was C's block 2 */
+    c_keys[0] = keys[1]; /* k2, was A's block 0 */
+    c_keys[1] = keys[3]; /* k4, was B's block 1 */
+    entries[0] = (struct vip_alloc_entry){ .keys = &keys[4], .key_count = 1 }; /* [k5] keeps C's block 2 */
+    entries[1] = (struct vip_alloc_entry){ .keys = b_keys, .key_count = 3 };
+    entries[2] = (struct vip_alloc_entry){ .keys = c_keys, .key_count = 2 };
+
+    /*
+     * entries[1] and entries[2] block each other (each holds a key from
+     * the other's preferred block), a genuine cycle. entries[0] merely
+     * has to wait behind entries[1] -- it is not part of that cycle, so
+     * relocating the first unwritten entry rather than a real cycle
+     * member would move it for no reason.
+     */
+    CHECK_TRUE(vip_alloc(entries, 3, baseline, 6, &plan));
+    CHECK_EQ(2, entries[0].vip_num);
+    CHECK_EQ(1, entries[2].vip_num);
+    CHECK_TRUE(entries[1].vip_num != 0 && entries[1].vip_num != 1 && entries[1].vip_num != 2);
+    check_write_order(entries, 3, baseline, 6, &plan);
+}
+
 MARLIN_TEST(deleting_a_group_releases_its_block_once)
 {
     struct vip_alloc_baseline baseline[2];

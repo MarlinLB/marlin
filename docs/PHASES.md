@@ -398,8 +398,10 @@ rate-limiter conversion.
   (`docs/design/30-quic.md`; `DEPLOYMENT.md` §1.7.2).
 - **Address groups and the SCTP validation rules in the C# control plane**
   (`docs/design/32-sctp.md`): a VIP entity with one or more addresses and the same `vip_num`
-  allocation rule `marlind`'s `vip_alloc.c` gives file-managed mode, plus configuration
-  validation's `hash_ports` and group rules (`docs/design/20-configuration-validation.md`).
+  allocation and write-ordering rule `marlind`'s `vip_alloc.c` gives file-managed mode
+  (assignment, alias-safe write order and cycle-breaking relocation, not allocation alone),
+  plus configuration validation's `hash_ports` and group rules
+  (`docs/design/20-configuration-validation.md`).
 
 ### Exit criteria
 
@@ -515,6 +517,7 @@ section it affects, not in a document of its own.
 | Whether `VIP_DSCP` non-zero on a VIP served only by `L2DSR` backends is a warning, silently accepted, or rejected. The marking has no outer header to land in there, but backend modes are per-backend and change under reconciliation, and the same VIP can mix modes over its lifetime — so a rejection would refuse an otherwise legitimate mixed-mode rollout | `docs/design/20-configuration-validation.md` | 3 |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |
 | D-F5 — whether file-managed mode keeps `config.max_frame` fresh from netlink link events, or only samples the MTU once per reconcile as it does today | `docs/design/31-file-configuration.md` §3, `data-plane/marlind/reconcile.c` | 3 |
+| Whether `reconcile_apply()` narrows regeneration to only the backends and VIPs a reload actually changed, rather than rewriting every one every time — `docs/design/17-reconfiguration.md:113`'s "Regeneration is per VIP; other VIPs' blocks are untouched" already describes the narrower behaviour this decision would have to deliver | `docs/design/17-reconfiguration.md:113`, `data-plane/marlind/reconcile.c` | 3 |
 | D-F8 — whether an explicit-port VIP's `port == 0` companion gets file-schema sugar (a `ports` list) in file-managed mode. Blocked on the same fragment-tail admission decision named two rows up in this table. **The machinery it would need already exists:** `docs/design/32-sctp.md`'s address groups let one `[[vip]]` entry hold several `vip_map` keys sharing one `vip_meta`, which is the same shape a `ports` list needs — but D-F8 stays blocked on the fragment-tail decision regardless | `docs/design/31-file-configuration.md` §4, `docs/design/11-pipeline.md` | 2b |
 | The SCTP health-probe protocol, and which address of a group a probe targets — `docs/design/18-health.md` specifies no probe protocol for any VIP today, so an SCTP-specific answer is needed before this phase's health checking can cover an SCTP VIP | `docs/design/18-health.md`, `docs/design/32-sctp.md` | 3 |
 | Whether a `marlinlb-daemon` package upgrade restarts `marlind`. Today it does neither: `deploy/marlin.env.example` ships with `IFACE` unset, so an unattended start would crash-loop, and restarting a running instance drops its `bpf_link` and interrupts forwarding | `packaging/scripts/marlinlb-daemon.postinst` | 1 |
