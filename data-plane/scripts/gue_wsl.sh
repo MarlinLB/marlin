@@ -72,7 +72,8 @@
 # connection and different between connections. Assert the range, never a value.
 #
 # Usage:  sudo ./gue_wsl.sh up | attach | seed | reload | detach | status | down
-#                          | listen | trace | test_icmp_echo | test_http_get | verify
+#                          | listen | trace | test_icmp_echo | test_http_get
+#                          | test_sctp_ping | verify
 #
 #   up              build the topology (does not attach the program)
 #   attach          load marlin.bpf.o, pin it, attach to ${MARLIN_IF}
@@ -86,6 +87,9 @@
 #   test_icmp_echo  ping the VIP from the client namespace
 #   test_http_get   GET the VIP from the client namespace, against a throwaway
 #                   listener started in the backend namespace
+#   test_sctp_ping  run an SCTP association from the client namespace to a
+#                   throwaway sctp_test server started in the backend
+#                   namespace, against marlin-sctp-wsl.conf's SCTP VIP
 #   verify          capture one test_http_get run on ${RT_A} and assert the
 #                   emitted frame byte-for-byte (docs/design/24-testing.md)
 #
@@ -145,6 +149,14 @@ NS_ALL=("${NS_RT}" "${NS_BE}" "${NS_CLI}")
 # encap_dport altogether would still forward and the rig would not notice.
 GUE_PORT="${MARLIN_GUE_PORT:-}"
 
+# test_sctp_ping's VIP port and the client's own source port. Both fixed
+# rather than left to the kernel: a fixed source port is the case that
+# defeats VIP_HASH_PORTS (marlin-sctp-wsl.conf), and a fixed VIP port has to
+# match whatever that config file names, since the server binds to it
+# directly rather than reading the file.
+SCTP_PORT="${MARLIN_SCTP_PORT:-38412}"
+SCTP_CLI_PORT="${MARLIN_SCTP_CLI_PORT:-50000}"
+
 # Root-namespace devices this script owns. down() deletes exactly these. The
 # last two normally die with their namespaces; they are listed so that a run of
 # up() that failed between creating a veth and moving it still cleans up.
@@ -187,6 +199,18 @@ need_fou() {
 	ip fou show >/dev/null 2>&1 || {
 		echo "no 'ip fou' support here: the kernel needs CONFIG_NET_FOU and" >&2
 		echo "iproute2 needs the fou subcommand. Nothing decapsulates GUE without it." >&2
+		exit 1
+	}
+}
+
+# Same reasoning as need_fou(): without sctp.ko, sctp_test's client fails to
+# connect and looks exactly like a datapath that dropped the association --
+# fail loudly, up front, instead.
+need_sctp() {
+	modprobe -q sctp 2>/dev/null || true
+	checksctp >/dev/null 2>&1 || {
+		echo "no SCTP support here: the kernel needs CONFIG_IP_SCTP." >&2
+		echo "test_sctp_ping cannot open an SCTP socket without it." >&2
 		exit 1
 	}
 }
@@ -360,6 +384,10 @@ Drive it:
   sudo $0 test_icmp_echo  # ping the VIP. No reply is the correct outcome: echo
                           # passes to the host stack (docs/design/13-icmp.md), so
                           # the evidence is icmp_echo moving in drop_stats
+  sudo $0 test_sctp_ping  # one SCTP association from ns ${NS_CLI} against a
+                          # throwaway sctp_test server, against
+                          # marlin-sctp-wsl.conf's SCTP VIP -- needs an
+                          # instance running with that config, not $0 seed
   sudo $0 verify          # capture one test_http_get run and assert the emitted
                           # frame byte-for-byte
 
@@ -369,6 +397,7 @@ Watch it, in path order:
   ip netns exec ${NS_RT} tcpdump -nei ${RT_A}                # in from client, back out 32B larger
   ip netns exec ${NS_BE} tcpdump -nei ${BE_IF} "udp port ${port}"  # outer ${MARLIN_IP} -> ${BE_IP}
   ip netns exec ${NS_BE} tcpdump -nei ${BE_RX4}               # after decapsulation, VIP intact
+  ip netns exec ${NS_BE} tcpdump -nei ${BE_RX4} sctp          # the SCTP path alone
   ip netns exec ${NS_BE} ip -s link show ${BE_RX4}            # RX moving = resubmit matched
   ip netns exec ${NS_BE} ip fou show
   ip -d link show ${MARLIN_IF} | grep prog/xdp               # expect "${XDP_MODE}"
@@ -596,6 +625,123 @@ PY
 }
 
 # ---------------------------------------------------------------------------
+# test_sctp_ping
+# ---------------------------------------------------------------------------
+
+# ss's TCP/UDP filter syntax (be_port_busy(), common.sh) doesn't select SCTP
+# sockets -- this needs -S rather than -t.
+be_sctp_busy() {
+	local port=${1:-${SCTP_PORT}}
+	nsx "${NS_BE}" ss -lnS "sport = :${port}" 2>/dev/null | grep -q LISTEN
+}
+
+# The resubmit path (bpf/gue.c) is the only thing that touches ${BE_RX4}'s
+# receive counter, so a delta here is proof the client's packets actually
+# went through the tunnel -- not merely that sctp_test's client connected to
+# something. Read from sysfs rather than parsed out of `ip -s link show`,
+# whose column layout is not this script's to depend on.
+rx4_packets() {
+	nsx "${NS_BE}" cat "/sys/class/net/${BE_RX4}/statistics/rx_packets" 2>/dev/null || echo 0
+}
+
+# One SCTP association from ns ${NS_CLI} to a throwaway sctp_test server in
+# ns ${NS_BE}, against marlin-sctp-wsl.conf's SCTP VIP -- that file must be
+# the one marlind is running with; $0 seed does not touch it. Modeled on
+# test_http_get() (common.sh), with two differences: sctp_test's client has
+# no equivalent of curl's exit-on-connect-failure (sendmsg() just keeps
+# retrying), so the pass condition also needs ${BE_RX4}'s RX counter moving,
+# not only the client's exit status; and the server binds the VIP directly
+# rather than serving a document, since sctp_test needs none.
+test_sctp_ping() {
+	need_root
+	rig_up_or_die
+	need_cmd sctp_test ss timeout
+	need_sctp
+
+	if be_sctp_busy; then
+		echo "port ${SCTP_PORT} is already bound in ns ${NS_BE}:" >&2
+		nsx "${NS_BE}" ss -lnSp "sport = :${SCTP_PORT}" >&2 || true
+		echo "kill that process, then retry" >&2
+		exit 1
+	fi
+
+	if ! xdp_attached; then
+		echo "note: nothing is attached to ${MARLIN_IF} -- is marlind running with" >&2
+		echo "      marlin-sctp-wsl.conf --attach? The client cannot reach ${VIP} at all." >&2
+	# vip_seeded()/backend_seeded() (common.sh) report whether vip_map/backends
+	# have any entry at all, not whether the SCTP VIP specifically is one of
+	# them -- a marlind instance seeded only from marlin-gue-wsl.conf still
+	# passes this check. The RX-counter/exit-status pair below is the actual
+	# evidence; this is advisory.
+	elif ! vip_seeded || ! backend_seeded; then
+		echo "note: vip_map or backends[${BACKEND_ID}] is not seeded -- is marlind running" >&2
+		echo "      with marlin-sctp-wsl.conf? '$0 seed' does not seed the SCTP VIP." >&2
+	fi
+
+	local log pid rc=0
+	log=$(mktemp)
+	# ip netns exec directly, not nsx(): backgrounding a shell function makes
+	# $! the subshell's pid, and killing that leaves sctp_test itself alive
+	# and still holding the port -- test_http_get (common.sh) makes the same
+	# choice for the same reason.
+	ip netns exec "${NS_BE}" sctp_test -H "${VIP}" -P "${SCTP_PORT}" -l -d 1 >"${log}" 2>&1 &
+	pid=$!
+	trap 'kill "${pid}" 2>/dev/null || true; rm -f "${log}"' EXIT
+
+	local i
+	for i in $(seq 1 50); do
+		if be_sctp_busy; then break; fi
+		if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+		sleep 0.1
+	done
+
+	if ! be_sctp_busy; then
+		echo "sctp_test server did not come up in ns ${NS_BE}:" >&2
+		cat "${log}" >&2
+		exit 1
+	fi
+
+	local rx_before rx_after
+	rx_before=$(rx4_packets)
+	stats_snapshot
+
+	# -c 0: 1-byte messages -- the association's own INIT/COOKIE/DATA/SACK
+	# exchange is the evidence here, not the payload. -x 3 repeats it a few
+	# times rather than once, so one dropped chunk doesn't read as total
+	# failure. No -D (drain): sctp_test's server never replies to data, only
+	# to the association's own control chunks, so a drain would just wait out
+	# the full timeout below.
+	timeout 10 ip netns exec "${NS_CLI}" sctp_test \
+		-H "${CLI_IP}" -P "${SCTP_CLI_PORT}" \
+		-h "${VIP}" -p "${SCTP_PORT}" \
+		-s -c 0 -x 3 -d 1 || rc=$?
+
+	rx_after=$(rx4_packets)
+	echo
+	echo "client exit status: ${rc}"
+	echo "${BE_RX4} RX packets: ${rx_before} -> ${rx_after} (delta $(( rx_after - rx_before )))"
+	stats_report
+
+	kill "${pid}" 2>/dev/null || true
+	wait "${pid}" 2>/dev/null || true
+	echo
+	echo "server log (ns ${NS_BE}):"
+	tail -n 20 "${log}" 2>/dev/null || true
+	rm -f "${log}"
+	trap - EXIT
+
+	if [[ ${rc} -ne 0 ]]; then
+		echo "client failed (exit ${rc})" >&2
+		return "${rc}"
+	fi
+	if (( rx_after <= rx_before )); then
+		echo "${BE_RX4}'s RX counter did not move -- nothing arrived through the tunnel" >&2
+		return 1
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------------------
 
 help() {
 	cat <<EOF
@@ -614,6 +760,9 @@ usage: $0 <command> [args]
   trace           follow the kernel trace pipe for xdp_main's bpf_printk output
   test_icmp_echo  ping the VIP from the client namespace, report drop_stats
   test_http_get   GET the VIP from the client namespace, report drop_stats
+  test_sctp_ping  run an SCTP association from the client namespace against
+                  a throwaway sctp_test server, report drop_stats -- needs
+                  marlind running with marlin-sctp-wsl.conf, not $0 seed
   verify          capture one test_http_get run and assert the emitted frame
                   byte-for-byte (docs/design/24-testing.md)
   help            show this text
@@ -635,10 +784,11 @@ case "${1:-}" in
 	trace)          trace ;;
 	test_icmp_echo) test_icmp_echo ;;
 	test_http_get)  test_http_get ;;
+	test_sctp_ping) test_sctp_ping ;;
 	verify)         verify ;;
 	help|-h|--help) help ;;
 	*)
-		echo "usage: $0 {up|attach|seed|unseed|reload|detach|status|down|listen|trace|test_icmp_echo|test_http_get|verify|help}" >&2
+		echo "usage: $0 {up|attach|seed|unseed|reload|detach|status|down|listen|trace|test_icmp_echo|test_http_get|test_sctp_ping|verify|help}" >&2
 		echo "run '$0 help' for what each command does" >&2
 		exit 2
 		;;
