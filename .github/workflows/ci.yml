@@ -1,0 +1,73 @@
+# Entry point: calls style.yml and build.yml on every push/PR, and, on a
+# `v*` tag, a release job that publishes the debs both already built and
+# verified. Every job here is a `make` target or a `gh`/`apt-get` call that
+# reproduces locally.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  style:
+    uses: ./.github/workflows/style.yml
+
+  build:
+    uses: ./.github/workflows/build.yml
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [style, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The meta package's own VERSION is the release's provenance
+      # (docs/PHASES.md's provenance decision); a tag that disagrees with it
+      # would publish a release whose name lies about what marlinlb it pins.
+      - name: Check tag matches packaging/VERSION
+        run: |
+          set -eu
+          expected="v$(cat packaging/VERSION)"
+          actual="${GITHUB_REF#refs/tags/}"
+          if [ "$actual" != "$expected" ]; then
+              echo "release: tag $actual does not match packaging/VERSION ($expected)" >&2
+              exit 1
+          fi
+
+      - name: Download all debs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: debs-*
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- *.deb > SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+              --verify-tag \
+              --title "$tag" \
+              --generate-notes \
+              dist/*.deb dist/SHA256SUMS

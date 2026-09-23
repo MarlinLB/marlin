@@ -55,10 +55,10 @@ you have to act on: PID 1 mounts the API filesystems, bpffs included, on every h
 targets. Confirm with `mountpoint -q /sys/fs/bpf`.
 
 Install `marlin.bpf.o`, `marlind` and the control-plane binary under `/usr/lib/marlin/`,
-and the environment file at `/etc/marlin/marlin.env` (from `deploy/marlin.env.example`). Nothing in
-the repository does this installation step yet — no packaging exists (`docs/REPO-STRUCTURE.md`) —
-so until it does, place the files there by hand or point `MARLIN_OBJ` at wherever `marlin.bpf.o`
-was built.
+and the environment file at `/etc/marlin/marlin.env` (from `deploy/marlin.env.example`).
+`marlinlb-xdp` and `marlinlb-daemon` (`packaging/`, installed together as the `marlinlb` meta
+package) do everything except the control-plane binary, which has no package yet because it has
+not been built yet (`docs/REPO-STRUCTURE.md`) — until it does, place it there by hand.
 
 **The loader is `marlind` (`marlind --attach`), a binary linked against libbpf,
 not a shell script.** It preflights (§1.3's checks among them, plus a check that `MARLIN_OBJ`

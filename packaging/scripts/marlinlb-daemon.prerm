@@ -1,0 +1,13 @@
+#!/bin/sh
+# Runs before removal. Only on a genuine "remove" (not "upgrade" or
+# "deconfigure" -- dpkg invokes this same script for those with a different
+# $1): stop the unit before its binary disappears, so no process is left
+# running against a deleted marlind.
+set -e
+
+if [ "$1" = "remove" ] && [ -d /run/systemd/system ]; then
+    systemctl stop marlind.service >/dev/null 2>&1 || true
+    systemctl disable marlind.service >/dev/null 2>&1 || true
+fi
+
+exit 0

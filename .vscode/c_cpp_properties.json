@@ -8,7 +8,8 @@
             "includePath": [
                 "${workspaceFolder}/data-plane/include",
                 "${workspaceFolder}/data-plane/tests/stubs",
-                "${workspaceFolder}/data-plane/build/include"
+                "${workspaceFolder}/data-plane/build/include",
+                "${workspaceFolder}/data-plane/vendor/tomlc17/include"
             ]
         }
     ],

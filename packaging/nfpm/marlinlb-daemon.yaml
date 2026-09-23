@@ -1,0 +1,56 @@
+# nfpm config for marlinlb-daemon: the marlind loader, its systemd unit and
+# environment file. See packaging/nfpm/marlinlb-xdp.yaml's header for the
+# ${VAR}/path conventions shared by every file in packaging/nfpm/.
+#
+# marlin.conf.example ships as documentation, not installed config: it names
+# real interfaces (eth0/eth1/eth2) and example hash_key/table_seed values that
+# must never be copied into /etc/marlind/marlin.conf unedited
+# (deploy/marlin.conf.example's own header, docs/design/31-file-configuration.md).
+name: "marlinlb-daemon"
+arch: "${DEB_ARCH}"
+platform: "linux"
+version: "${MARLINLB_DAEMON_VERSION}"
+version_schema: none
+maintainer: "Michel Megens <mtm.megens@gmail.com>"
+homepage: "https://github.com/MarlinLB/marlin"
+section: "net"
+priority: "optional"
+description: |
+  Marlin eBPF/XDP layer-4 load balancer -- loader daemon.
+  marlind loads marlin.bpf.o, pins its maps and program under /sys/fs/bpf/marlin,
+  attaches natively to an interface, and holds the resulting bpf_link for as
+  long as it runs.
+depends:
+  - ${SHLIBS_DEPENDS}
+  - marlinlb-xdp (>= ${MARLINLB_XDP_FLOOR_VERSION})
+contents:
+  - src: data-plane/build/marlind/marlind
+    dst: /usr/lib/marlin/marlind
+    file_info:
+      mode: 0755
+  # docs/DEPLOYMENT.md's `marlind --status` example assumes marlind is on
+  # PATH; the binary itself stays under /usr/lib/marlin, beside marlin.bpf.o.
+  - src: /usr/lib/marlin/marlind
+    dst: /usr/sbin/marlind
+    type: symlink
+  - src: deploy/marlind.service
+    dst: /usr/lib/systemd/system/marlind.service
+    file_info:
+      mode: 0644
+  - src: deploy/marlin.env.example
+    dst: /etc/marlin/marlin.env
+    type: config
+    file_info:
+      mode: 0644
+  - src: deploy/marlin.conf.example
+    dst: /usr/share/doc/marlinlb-daemon/examples/marlin.conf.example
+    file_info:
+      mode: 0644
+  - src: build/deb/copyright/marlinlb-daemon
+    dst: /usr/share/doc/marlinlb-daemon/copyright
+    file_info:
+      mode: 0644
+scripts:
+  postinstall: packaging/scripts/marlinlb-daemon.postinst
+  preremove: packaging/scripts/marlinlb-daemon.prerm
+  postremove: packaging/scripts/marlinlb-daemon.postrm

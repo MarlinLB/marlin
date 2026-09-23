@@ -1,0 +1,122 @@
+# Build: `make bpf marlind deb` per distro, then an install test in a fresh
+# container. The distro list lives here and nowhere else -- adding Debian 12
+# is one more `include:` entry (plus, if package names ever differ, one
+# `case` branch in .github/actions/setup-toolchain/install.sh).
+#
+# Each distro job builds, tests and packages what it built in one job: a
+# build/package split would hand a raw binary between jobs, and
+# actions/upload-artifact does not preserve the executable bit
+# (github.com/actions/upload-artifact's own README). The .deb files this job
+# does upload carry no such requirement -- dpkg reads permissions out of the
+# archive's own data.tar, never off the outer file passed between jobs.
+name: Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu24.04
+            image: ubuntu:24.04
+          - distro: ubuntu26.04
+            image: ubuntu:26.04
+    steps:
+      - name: Install git
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq git
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+        with:
+          nfpm: "true"
+
+      - name: make bpf
+        run: make bpf
+
+      - name: make marlind
+        run: make marlind
+
+      - name: make deb
+        run: make deb DEB_DISTRO=${{ matrix.distro }}
+
+      - name: Upload debs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: debs-${{ matrix.distro }}
+          path: build/deb/*.deb
+          if-no-files-found: error
+
+  install-test:
+    name: install-test (${{ matrix.distro }})
+    needs: build
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu24.04
+            image: ubuntu:24.04
+          - distro: ubuntu26.04
+            image: ubuntu:26.04
+    steps:
+      - name: Download debs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: debs-${{ matrix.distro }}
+          path: dist
+
+      # Proves the three packages' Depends: lines actually resolve against
+      # this distro's archive (libbpf1/libc6, and marlinlb-xdp for
+      # marlinlb-daemon's floor) -- dpkg-deb -c only shows what a package
+      # claims, not whether apt can satisfy it.
+      - name: Install
+        run: |
+          set -eu
+          apt-get update -qq
+          apt-get install -y -qq ./dist/*.deb
+
+      - name: Verify install
+        run: |
+          set -eu
+          test -x /usr/lib/marlin/marlind
+          test -f /usr/lib/systemd/system/marlind.service
+          test -f /etc/marlin/marlin.env
+
+          out=$(/usr/lib/marlin/marlind --version)
+          echo "$out"
+
+          # --version exits 0 unconditionally (data-plane/marlind/main.c), so
+          # the check is on what it printed, not on its exit code.
+          case "$out" in
+          *"will refuse"*)
+              echo "install-test: installed marlin.bpf.o is below marlind's floor" >&2
+              exit 1
+              ;;
+          *"no object at"*)
+              echo "install-test: marlind cannot find marlin.bpf.o at its default path" >&2
+              exit 1
+              ;;
+          esac
+          case "$out" in
+          *"marlin.bpf.o"*) ;;
+          *)
+              echo "install-test: marlind --version printed no marlin.bpf.o line" >&2
+              exit 1
+              ;;
+          esac

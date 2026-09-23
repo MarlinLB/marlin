@@ -186,6 +186,16 @@ marlin/
 │   ├── marlin.env.example             # IFACE, pin path
 │   └── marlin.conf.example            # docs/design/31-file-configuration.md's file-managed mode, fully worked
 │
+├── packaging/                         # turns already-built artefacts into marlinlb-xdp/-daemon/marlinlb (.deb, nfpm)
+│   ├── VERSION                        # the marlinlb meta package's own version, independent of both components
+│   ├── CHANGELOG.md
+│   ├── mkdeb.sh                       # computes versions/deps, runs nfpm once per package
+│   ├── nfpm/
+│   │   ├── marlinlb-xdp.yaml
+│   │   ├── marlinlb-daemon.yaml
+│   │   └── marlinlb.yaml
+│   └── scripts/                       # marlinlb-daemon's maintainer scripts (postinst/prerm/postrm)
+│
 ├── control-plane/
 │   ├── Marlin.sln
 │   ├── Directory.Build.props          # TreatWarningsAsErrors, AnalysisLevel
@@ -206,10 +216,16 @@ marlin/
 │       ├── Marlin.Health.Tests/
 │       └── .editorconfig
 │
-└── .github/workflows/
-    ├── build.yml
-    ├── verifier.yml                   # load gate + complexity trend (docs/design/24-testing.md)
-    └── style.yml                      # clang-format, clang-tidy, dotnet format, shellcheck
+└── .github/
+    ├── dependabot.yml                 # keeps the pinned-by-SHA actions below current
+    ├── actions/setup-toolchain/       # composite action: clang/bpftool/nfpm, shared by style.yml and build.yml
+    │   ├── action.yml
+    │   └── install.sh
+    └── workflows/
+        ├── ci.yml                     # entry point: calls style.yml + build.yml, releases on a v* tag
+        ├── style.yml                  # make format-check, make tidy -- one reference distro only
+        ├── build.yml                  # make bpf marlind deb per distro, then an install test
+        └── verifier.yml               # not yet implemented -- load gate + complexity trend (docs/design/24-testing.md)
 ```
 
 **`data-plane/marlind/` is not `data-plane/tools/` and not `deploy/`.** `data-plane/tools/` is
@@ -237,6 +253,13 @@ crosses to reach another). It sits beside `include/marlin/`, not inside it, beca
 is the datapath's own namespace (§3) and a header full of glibc/libbpf assumptions must not become
 reachable from a BPF TU by accident; `marlind.h` also `#error`s under `__bpf__` as a second line of
 defence. `.clang-tidy`'s `HeaderFilterRegex` and `make format`'s `$(HDRS)` cover both directories.
+
+**`packaging/` is not `deploy/`.** `deploy/` holds files installed verbatim onto a forwarding
+host (a systemd unit, an env-file template); `packaging/` holds the build recipes that turn
+`data-plane/build/`'s already-built artefacts into `marlinlb-xdp`, `marlinlb-daemon` and
+`marlinlb` (`packaging/mkdeb.sh`, `packaging/nfpm/*.yaml`). It sits at the root, beside
+`data-plane/` and `control-plane/`, because it spans both deployed pieces rather than belonging
+to either one.
 
 ---
 

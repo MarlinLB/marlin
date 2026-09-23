@@ -124,15 +124,38 @@ static void print_version(const char *conf_path)
 }
 
 /* No short form; getopt_long identifies it by a value past the short-option set. */
-enum { OPT_XDP_MODE = 256 };
+enum {
+    OPT_XDP_MODE = 256
+};
+
+/* Maps a mode-select short option to its enum mode; anything else is a getopt_long bug. */
+static enum mode mode_from_opt(int opt)
+{
+    switch(opt) {
+    case 'a':
+        return MODE_ATTACH;
+    case 's':
+        return MODE_STATUS;
+    case 'u':
+        return MODE_UNPIN;
+    case 'k':
+        return MODE_CHECK;
+    default:
+        return MODE_NONE;
+    }
+}
 
 int main(int argc, char **argv)
 {
     static const struct option opts[] = {
-        { "attach", no_argument, NULL, 'a' },       { "status", no_argument, NULL, 's' },
-        { "unpin", no_argument, NULL, 'u' },        { "check", no_argument, NULL, 'k' },
-        { "config", required_argument, NULL, 'c' }, { "help", no_argument, NULL, 'h' },
-        { "version", no_argument, NULL, 'V' },      { "xdp-mode", required_argument, NULL, OPT_XDP_MODE },
+        { "attach", no_argument, NULL, 'a' },
+        { "status", no_argument, NULL, 's' },
+        { "unpin", no_argument, NULL, 'u' },
+        { "check", no_argument, NULL, 'k' },
+        { "config", required_argument, NULL, 'c' },
+        { "help", no_argument, NULL, 'h' },
+        { "version", no_argument, NULL, 'V' },
+        { "xdp-mode", required_argument, NULL, OPT_XDP_MODE },
         { NULL, 0, NULL, 0 },
     };
     enum mode mode = MODE_NONE;
@@ -159,7 +182,7 @@ int main(int argc, char **argv)
                 usage(stderr, argv[0]);
                 return EXIT_USAGE;
             }
-            mode = opt == 'a' ? MODE_ATTACH : opt == 's' ? MODE_STATUS : opt == 'u' ? MODE_UNPIN : MODE_CHECK;
+            mode = mode_from_opt(opt);
             break;
         case 'c':
             conf_path = optarg;

@@ -1,0 +1,30 @@
+# nfpm config for marlinlb-xdp: the compiled XDP datapath object, no daemon and
+# no systemd unit. Consumed by packaging/mkdeb.sh, which sets every ${VAR}
+# below and runs `nfpm package --config packaging/nfpm/marlinlb-xdp.yaml`
+# from the repository root -- content src paths are repo-root-relative.
+#
+# `license:` and `vendor:` are omitted: neither reaches deb's control file
+# (goreleaser/nfpm deb/deb.go's controlTemplate has no such fields for deb).
+# Licensing is the copyright file below, which is the field dpkg actually reads.
+name: "marlinlb-xdp"
+arch: "${DEB_ARCH}"
+platform: "linux"
+version: "${MARLINLB_XDP_VERSION}"
+version_schema: none
+maintainer: "Michel Megens <mtm.megens@gmail.com>"
+homepage: "https://github.com/MarlinLB/marlin"
+section: "net"
+priority: "optional"
+description: |
+  Marlin eBPF/XDP layer-4 load balancer -- datapath object.
+  The compiled marlin.bpf.o, attached as native XDP by marlinlb-daemon. Carries
+  no loader and no systemd unit of its own.
+contents:
+  - src: data-plane/build/bpf/marlin.bpf.o
+    dst: /usr/lib/marlin/marlin.bpf.o
+    file_info:
+      mode: 0644
+  - src: build/deb/copyright/marlinlb-xdp
+    dst: /usr/share/doc/marlinlb-xdp/copyright
+    file_info:
+      mode: 0644
