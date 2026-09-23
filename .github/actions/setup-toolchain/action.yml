@@ -16,4 +16,4 @@ runs:
       shell: bash
       env:
         SETUP_NFPM: ${{ inputs.nfpm }}
-      run: ${{ github.action_path }}/install.sh
+      run: '"$GITHUB_ACTION_PATH/install.sh"'
