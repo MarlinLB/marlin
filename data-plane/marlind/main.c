@@ -79,13 +79,20 @@ static void usage(FILE *out, const char *argv0)
  * so the two figures below are not expected to match -- what matters is
  * whether the object clears MARLIND_MIN_BPF_VERSION, checked here the same
  * way preflight's check_object_version() checks it before --attach.
+ *
+ * The License lines below repeat the SPDX identifier every source file in
+ * marlind/ and bpf/ already carries in its own header: both artefacts are
+ * covered by the same expression, hence one constant for both lines.
  */
+#define MARLIN_SPDX_LICENSE "GPL-2.0-only OR BSD-2-Clause"
+
 static void print_version(const char *conf_path)
 {
     const char *path = config_obj_path(conf_path);
     struct bpf_object *obj;
 
     printf("marlind %s\n", MARLIND_VERSION);
+    printf("License: %s\n", MARLIN_SPDX_LICENSE);
 
     obj = bpf_object__open_file(path, NULL);
     if(obj == NULL) {
@@ -95,19 +102,22 @@ static void print_version(const char *conf_path)
 
     const struct marlin_build *build = marlin_build_from_object(obj);
     const char *base = strrchr(path, '/');
+    bool below_floor;
 
     if(build == NULL) {
         printf("%s (no embedded build version) (%s)\n", base != NULL ? base + 1 : path, path);
-        printf("marlind requires marlin.bpf.o %s or newer -- --attach will refuse this object\n", MARLIND_MIN_BPF_VERSION);
+        below_floor = true;
     } else {
         char version[MARLIN_VERSION_MAX + 1];
 
         marlind_build_version(build, version, sizeof(version));
         printf("%s %s (%s)\n", base != NULL ? base + 1 : path, version, path);
+        below_floor = marlind_bpf_object_supported(version) != MARLIND_COMPAT_OK;
+    }
 
-        if(marlind_bpf_object_supported(version) != MARLIND_COMPAT_OK) {
-            printf("marlind requires marlin.bpf.o %s or newer -- --attach will refuse this object\n", MARLIND_MIN_BPF_VERSION);
-        }
+    printf("License: %s\n", MARLIN_SPDX_LICENSE);
+    if(below_floor) {
+        printf("marlind requires marlin.bpf.o %s or newer -- --attach will refuse this object\n", MARLIND_MIN_BPF_VERSION);
     }
 
     bpf_object__close(obj);

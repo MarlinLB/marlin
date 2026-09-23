@@ -152,11 +152,15 @@ compatibility check `--attach` does, but only reports it, never refuses:
 ```sh
 $ marlind --version
 marlind 0.2.0
+License: GPL-2.0-only OR BSD-2-Clause
 marlin.bpf.o 0.1.0 (/usr/lib/marlin/marlin.bpf.o)
+License: GPL-2.0-only OR BSD-2-Clause
 marlind requires marlin.bpf.o 0.2.0 or newer -- --attach will refuse this object
 ```
 
-The two version lines are independent numbers (above) — expect them to differ. The third line
+The two version lines are independent numbers (above) — expect them to differ. Each is followed
+by the SPDX identifier its source files carry (`GPL-2.0-only OR BSD-2-Clause` for both today, but
+the two are printed separately since the artefacts could diverge). The final line
 appears only when the object does not clear `marlind`'s floor, or carries no build version at all;
 its absence means `--attach` will accept this object.
 
