@@ -153,7 +153,8 @@ packet: for an ICMP error it is reconstructed from the embedded header.
 | 1 | `VIP_RATELIMIT` — meter sources addressing this VIP (docs/design/28-rate-limiting.md) |
 | 2 | `VIP_HASH_5TUPLE` — hash the whole tuple for row selection, not the source address alone; drops every fragment on this VIP (docs/design/12-selection.md) |
 | 3 | `VIP_QUIC` — steer short-header UDP packets by connection ID instead of the hash path (docs/design/30-quic.md) |
-| 4–7 | reserved, must be zero |
+| 4 | `VIP_HASH_PORTS` — hash the source/dest port pair alone for row selection; SCTP-only, mutually exclusive with `VIP_HASH_5TUPLE`; drops every fragment on this VIP (docs/design/32-sctp.md) |
+| 5–7 | reserved, must be zero |
 | 8–12 | `VIP_QUIC_CID_LEN` — configured connection-ID length, 7–20; 0 = unset (docs/design/30-quic.md) |
 | 13–15 | reserved, must be zero |
 | 16–21 | `VIP_DSCP` — outer DSCP for this VIP's tunnel modes, `<< 2` into the emitted `tos` byte; 0 = unmarked (CS0), byte-identical to before this field existed (docs/design/14-forwarding-modes.md) |
@@ -162,10 +163,19 @@ packet: for an ICMP error it is reconstructed from the embedded header.
 `VIP_HASH_5TUPLE` is hash input, so it is subject to the cross-instance agreement requirement
 of `docs/design/21-active-active.md` rather than being a free per-instance choice. `VIP_QUIC`
 and `VIP_QUIC_CID_LEN` join it there for the same reason: a mismatch does not merely lose
-affinity, it routes deterministically to the wrong backend (docs/design/30-quic.md). `VIP_DSCP`
+affinity, it routes deterministically to the wrong backend (docs/design/30-quic.md). `VIP_HASH_PORTS`
+is hash input too, and joins the same set for the same reason (docs/design/32-sctp.md). `VIP_DSCP`
 does not join them: it never influences which backend a packet reaches, only a QoS byte on the
 wire after that choice is made, so an instance disagreement changes queuing behaviour, not
 correctness (docs/design/20-configuration-validation.md).
+
+`vip_key.proto` holds a raw `IPPROTO_*` value; `TCP`, `UDP` and `SCTP` are what the datapath
+gives a port-bearing verdict, and `docs/design/32-sctp.md`'s address groups let several
+`vip_key`s — differing only in address, and possibly in family — share one `vip_meta`, hence
+one `vip_num`, one `fwd_table` block and one `vip_stats` counter. Nothing in either struct
+changes to express a group: it is `marlind`'s (`data-plane/include/marlind/conf.h`'s
+`struct conf_vip.keys[]`) and, from Phase 3, the C# control plane's accounting, not a map
+layout.
 
 `backend.flags` packs the encapsulation mode with three independent bits — `mode`, `state` and
 `fib` were byte-per-field in an earlier revision of this document; the header now packs all of

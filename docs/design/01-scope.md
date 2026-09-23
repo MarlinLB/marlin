@@ -30,6 +30,15 @@ rather than guessed; see `PHASES.md`'s open-decision table, closed by Phase 2b.
 consistency with the other three rigs' backends — an operational default chosen so the rig
 could be written at all, not evidence toward closing the decision above.
 
+## Transport protocols
+
+TCP, UDP and SCTP are forwarded (`docs/design/32-sctp.md` for SCTP's own read, its multi-homing
+surface, and the two per-VIP mechanisms — `VIP_HASH_PORTS` and address groups — that address it
+without per-flow state). An ICMP error quoting any of the three is steered the same way
+(`docs/design/13-icmp.md`). Every other protocol is `not_forwarded`: passed to the host stack,
+uncounted against the ACL — see the `PHASES.md` open-decision row on whether that exemption
+should end.
+
 ## Targets
 
 - Up to 100 VIPs, compile-time maximum.

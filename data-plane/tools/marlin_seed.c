@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -134,6 +135,23 @@ out:
     return ret;
 }
 
+static bool vip_num_still_referenced(int vip_fd, __u32 vip_num)
+{
+    struct vip_key key;
+    struct vip_key next_key;
+    struct vip_meta meta;
+    bool have_key = false;
+
+    while(bpf_map_get_next_key(vip_fd, have_key ? &key : NULL, &next_key) == 0) {
+        key = next_key;
+        have_key = true;
+        if(bpf_map_lookup_elem(vip_fd, &key, &meta) == 0 && meta.vip_num == vip_num) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static int cmd_add(int argc, char **argv)
 {
     const char *pindir, *vip, *port, *proto;
@@ -248,11 +266,24 @@ static int cmd_del(int argc, char **argv)
         goto out;
     }
 
+    printf("vip_map   %s:%u proto %u removed\n", vip, ntohs(key.port), key.proto);
+
+    /*
+     * An address group (docs/design/32-sctp.md) shares vip_num across
+     * several vip_map keys; zeroing the block here would strand the
+     * addresses that key deletion above did not touch.
+     */
+    if(vip_num_still_referenced(vip_fd, vip_num)) {
+        printf("fwd_table [%u..%u] left alone: another vip_map key still references vip_num %u\n", vip_num * TABLE_SIZE,
+               vip_num * TABLE_SIZE + TABLE_SIZE - 1, vip_num);
+        ret = 0;
+        goto out;
+    }
+
     if(fill_fwd_table(fwd_fd, vip_num, MARLIN_NO_BACKEND) != 0) {
         goto out;
     }
 
-    printf("vip_map   %s:%u proto %u removed\n", vip, ntohs(key.port), key.proto);
     printf("fwd_table [%u..%u] zeroed\n", vip_num * TABLE_SIZE, vip_num * TABLE_SIZE + TABLE_SIZE - 1);
     ret = 0;
 

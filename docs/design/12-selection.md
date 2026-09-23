@@ -139,6 +139,11 @@ two positions above, for a hash-based input:
 - **Hashing ports with fragments falling back to the address** splits one datagram across two
   backends silently — strictly worse than either position, and rejected in
   `docs/design/25-rejected.md`.
+- **Hashing the port pair alone, dropping every fragment** (`VIP_HASH_PORTS`,
+  `docs/design/32-sctp.md`) is the same trade `VIP_HASH_5TUPLE` makes, over a narrower input: an
+  SCTP endpoint keeps one port for the life of an association on every path and in both
+  families, which no address-based input can say. SCTP-only, and mutually exclusive with
+  `VIP_HASH_5TUPLE`. Prior art: Katran's `HASH_DPORT_ONLY`, Nordix nfqlb's SCTP port hash.
 - **Reuniting fragments** requires tracking them, which is the rejected flow cache under
   another name (`docs/design/25-rejected.md`).
 - **Reseeding or reweighting to cool a hot row** does not address it: weights act per backend,

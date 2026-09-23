@@ -18,7 +18,10 @@ the kernel derive the advertised MSS.
 **What remains uncovered.** MSS applies only to TCP. QUIC is unaffected in practice: 1200-byte
 datagrams with DPLPMTUD sit below 1500 even with VXLAN's 50 bytes of overhead, now the worst
 case among the three — 1250 is still comfortably under 1500. Large non-QUIC UDP
-is covered only by jumbo frames.
+is covered only by jumbo frames. **SCTP has no MSS equivalent Marlin can influence** (its
+association-level MTU handling is peer-negotiated and path-MTU-probed end to end, RFC 9260
+§8.6), so under the three tunnel modes it joins large non-QUIC UDP: covered only by raising the
+MTU on the Marlin→backend path (`docs/design/32-sctp.md`).
 
 `RET_FRAG_NEEDED` is counted rather than merely dropped, which is what makes the
 misconfiguration diagnosable (`docs/design/22-observability.md`). `mtu_result` — the MTU value

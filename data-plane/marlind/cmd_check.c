@@ -38,7 +38,13 @@ int cmd_check(const char *conf_path)
         return EXIT_CONFIG;
     }
 
-    (void)printf("%s: ok (%u backend(s), %u vip(s))\n", path, conf->backend_count, conf->vip_count);
+    __u32 addr_count = 0;
+
+    for(__u32 i = 0; i < conf->vip_count; i++) {
+        addr_count += conf->vips[i].key_count;
+    }
+
+    (void)printf("%s: ok (%u backend(s), %u vip(s), %u address(es))\n", path, conf->backend_count, conf->vip_count, addr_count);
     conf_free(conf);
     return 0;
 }

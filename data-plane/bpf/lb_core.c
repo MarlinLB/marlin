@@ -29,6 +29,8 @@ _Static_assert(sizeof(((struct packet_tuple *)0)->src) % 8 == 0, "packet_tuple.s
 _Static_assert(sizeof(struct packet_tuple) % 8 == 0, "packet_tuple must be 8-byte sized: VIP_HASH_5TUPLE feeds in the whole struct");
 _Static_assert(sizeof(struct marlin_quic_input) % 8 == 0,
                "marlin_quic_input must be 8-byte sized: marlin_siphash() consumes it whole");
+_Static_assert(sizeof(struct marlin_ports_input) % 8 == 0,
+               "marlin_ports_input must be 8-byte sized: marlin_siphash() consumes it whole");
 _Static_assert(MARLIN_QUIC_CID_MAX - MARLIN_QUIC_CID_ENTROPY_OFF == sizeof(((struct marlin_quic_input *)0)->entropy),
                "entropy[] must exactly fit the entropy bytes of a longest-permitted connection ID");
 _Static_assert(MARLIN_QUIC_CID_MIN - MARLIN_QUIC_CID_ENTROPY_OFF >= MARLIN_QUIC_CID_ENTROPY_MIN,
@@ -154,7 +156,7 @@ static __always_inline int marlin_lb_admit(const struct marlin_ctx *pkt, const s
 
 static __always_inline int marlin_lb_check_frag(const struct marlin_ctx *pkt, const struct vip_meta *vmeta)
 {
-    if(!(vmeta->flags & VIP_HASH_5TUPLE)) {
+    if(!(vmeta->flags & (VIP_HASH_5TUPLE | VIP_HASH_PORTS))) {
         return MARLIN_OK;
     }
 
@@ -235,6 +237,14 @@ static __always_inline const struct backend *marlin_lb_select_backend_by_hash(co
 
     if(likely(vmeta->flags & VIP_HASH_5TUPLE)) {
         mix = marlin_siphash(&pkt->tuple, sizeof(pkt->tuple), vmeta->hash_key);
+    } else if(vmeta->flags & VIP_HASH_PORTS) {
+        struct marlin_ports_input ports_in;
+
+        __builtin_memset(&ports_in, 0, sizeof(ports_in));
+        ports_in.sport = pkt->tuple.sport;
+        ports_in.dport = pkt->tuple.dport;
+
+        mix = marlin_siphash(&ports_in, sizeof(ports_in), vmeta->hash_key);
     } else {
         mix = marlin_siphash(pkt->tuple.src, sizeof(pkt->tuple.src), vmeta->hash_key);
     }

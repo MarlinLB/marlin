@@ -66,7 +66,8 @@ following it, and rejoins at step 3.
 
 It replaces step 2 only. The VIP lookup is **not** branched: `parser.c` normalises both paths to
 one orientation, as below, so step 3 onward is a single shared path reached by ICMP and by
-TCP/UDP alike. Every stage after parsing therefore has exactly one call site — which is what
+TCP, UDP and SCTP alike (`docs/design/32-sctp.md`). Every stage after parsing therefore has
+exactly one call site — which is what
 makes the ACL of `docs/design/27-source-filtering.md` a single evaluation rather than one per path, and what keeps a future stage
 placed between parsing and selection from having to be duplicated.
 

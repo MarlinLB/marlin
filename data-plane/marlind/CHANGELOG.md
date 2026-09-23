@@ -10,6 +10,14 @@ and this project will adhere to [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- `"sctp"` as a `proto` value, and `hash_ports` (`VIP_HASH_PORTS`) as a per-VIP flag, SCTP-only
+  and mutually exclusive with `hash_5tuple` (`docs/design/32-sctp.md`).
+- Address groups: `addr` accepts an array of strings as well as a single string, giving one
+  `[[vip]]` entry several `vip_map` keys that share one `vip_meta`, `fwd_table` block and
+  `vip_stats` counter. `vip_alloc.c` is the pure `vip_num` allocator, extended from single-key
+  matching to per-entry claiming, merging, splitting and release-set computation. New SCTP
+  group validation rules in `conf_check.c`: `hash_5tuple` rejected on a group, a mixed-family
+  group requires `hash_ports`, a single-family group without it warns.
 - File-managed configuration (`docs/design/31-file-configuration.md`): `--config <path>`
   selects a mode where `marlind` reads a TOML file (default
   `/etc/marlind/marlin.conf`), validates it, and reconciles every map to it

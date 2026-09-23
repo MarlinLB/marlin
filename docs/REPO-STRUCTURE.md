@@ -109,6 +109,7 @@ marlin/
 │   │       ├── conf_check.h          # conf_check(), conf_check_against_previous()
 │   │       ├── reconcile.h           # reconcile_apply(): map I/O for file-managed mode
 │   │       ├── fwd_gen.h             # fwd_gen_block(): weighted-rendezvous fwd_table generation
+│   │       ├── vip_alloc.h           # vip_alloc(): vip_num allocation over MAX_VIPS, address groups included -- docs/design/32-sctp.md
 │   │       ├── hash.h                # marlind_siphash() -- the third SipHash-2-4 transcription, host-only
 │   │       └── rl_scale.h            # header-only: the operator-unit -> scaled-token-field conversion, shared with conf_check.c
 │   ├── tests/                       # native unit tests, `make tests` — Principle 5's exception
@@ -123,6 +124,7 @@ marlin/
 │   │   ├── compat_test.c            # <marlind/compat.h>, header-only -- marlind_version_cmp() and the version floor
 │   │   ├── conf_test.c              # #includes marlind/conf_value.c, conf_check.c, conf.c -- parser, coercion, validation
 │   │   ├── fwd_gen_test.c           # #includes marlind/fwd_gen.c, hash.c -- SipHash vectors, generation determinism/disruption
+│   │   ├── vip_alloc_test.c         # #includes marlind/vip_alloc.c -- surviving/merged/split/exhausted vip_num allocation
 │   │   ├── packet.h                 # packet builder declarations, shared with tests/packet/ below -- defined in support/packet.c
 │   │   ├── harness.h                # test registry + CHECK_* macro declarations, shared with tests/packet/ below -- defined in support/harness.c
 │   │   ├── support/                 # definitions for harness.h/packet.h, built once per tier (native vs. packet) so a case
@@ -148,6 +150,7 @@ marlin/
 │   │       ├── xdp_45_encap.c       # L2DSR, IPIP, GUE, VXLAN
 │   │       ├── xdp_50_siphash.c     # SipHash-2-4 published-vector self-check
 │   │       ├── xdp_60_lb_core.c     # VIP admission and backend selection
+│   │       ├── xdp_65_sctp.c        # SCTP forwarding, VIP_HASH_PORTS, address groups -- docs/design/32-sctp.md
 │   │       ├── xdp_70_acl_placement.c # ACL verdict placement relative to VIP lookup
 │   │       ├── xdp_80_quic.c        # QUIC connection-ID steering
 │   │       ├── xdp_fixture.h/.c     # addresses, run wrappers, VIP/backend fixture shared by ≥2 case files above
@@ -178,6 +181,7 @@ marlin/
 │       ├── conf_check.c             # docs/design/20-configuration-validation.md's rules, plus the file-form additions
 │       ├── reconcile.c              # reconcile_apply(): map I/O for file-managed mode
 │       ├── fwd_gen.c                # weighted-rendezvous fwd_table block generation
+│       ├── vip_alloc.c              # vip_num allocation, address groups included -- docs/design/32-sctp.md
 │       └── hash.c                  # marlind_siphash()
 │
 ├── deploy/

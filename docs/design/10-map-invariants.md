@@ -14,6 +14,12 @@ invalid:
 - A populated slot carries `struct backend.id` equal to its own index; a zeroed slot reads `id`
   0, the same "never allocated" value, so removal stays a single zero-write with no special case.
 
+**The same principle extends to a `fwd_table` block behind an address group**
+(`docs/design/32-sctp.md`): several `vip_map` keys may reference one block, so removing one
+key must zero the block only when no other key still references it — `marlind`'s
+`vip_alloc.c` computes that release set explicitly rather than leaving it to be inferred from a
+single key's removal.
+
 ## Zero the whole key before a hash lookup
 
 HASH keys are compared byte-exact. On an IPv4 lookup the unused 12 bytes of the `vip_key`

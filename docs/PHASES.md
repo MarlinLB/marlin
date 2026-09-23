@@ -210,6 +210,10 @@ revisable once a control plane has recorded a counter or read a struct in the fi
   `_Static_assert` guarding them are one commit spanning both languages. `struct vip_meta` does
   not grow. Its only consumers are Phase 2b's three encapsulation units and `nexthop.c`'s FIB
   lookup.
+- `VIP_HASH_PORTS` lands here or not at all, on the same freeze logic
+  (`docs/design/32-sctp.md`). It takes `vip_meta.flags` bit 4, out of `VIP_FLAGS_RESERVED` on
+  both sides of the ABI in the same commit. No struct grows and no new map or `marlin_ctx` field
+  is needed. Its only consumer is Phase 2b's three-way hash in `lb_core.c`.
 - Byte offsets stated in comments on both the C and C# sides for every mirrored struct, so
   parity is reviewable by reading — which `docs/design/06-map-abi.md` records as the only mechanism there is.
 - `drop_stats` enumerators appended from here, never reordered (`marlin.h:142`).
@@ -260,6 +264,12 @@ datapath is feature-complete and further work is control-plane work.
   `icmp_unparseable` threshold moves from two bytes of embedded L4 header to four with it.
   `tuple.pad` must stay zero, because the flag hashes the tuple whole
   (`docs/design/10-map-invariants.md`).
+- **SCTP forwarding** (`docs/design/32-sctp.md`). `parser.c` reads SCTP's port word exactly as
+  TCP/UDP's; host-bound SCTP moves from `not_forwarded` to `vip_miss`, so it is now subject to
+  the ACL enforcement gate above. `lb_core.c`'s `VIP_HASH_PORTS` hashes the port pair alone, for
+  client-side failover; address groups (`marlind`'s `struct conf_vip.keys[]` and
+  `data-plane/marlind/vip_alloc.c`) let several `vip_map` keys share one `vip_meta`, for
+  server-side multi-homing. Neither needs a new map, struct field or `marlin_ctx` bit.
 - **`lb_core.c`'s `VIP_QUIC` steering step.** On a `VIP_QUIC` VIP, a `MARLIN_CTX_F_QUIC` packet
   decodes a `backend_id` from its connection ID and indexes `backends[]` directly, bypassing
   `fwd_table`; any decode failure — check mismatch, an out-of-range or unpopulated
@@ -343,6 +353,11 @@ remaining fields are resolved.
    `bpf_jit_enable=1` (16 bytes) or `=0` (32 bytes) — the figure was measured under, since the
    two can differ by whether the chain is still inside budget. The measurement is a build
    product, so this criterion is the run, not a figure recorded here.
+6. `docs/design/32-sctp.md`'s failover and multi-homing rigs hold: a multi-homed SCTP client's
+   association survives a primary-link failover under `VIP_HASH_PORTS` and is aborted under the
+   default address hash — the baseline is asserted, not merely the fix; and a backend
+   advertising several group addresses answers a HEARTBEAT to any of them with no ABORT, while
+   the same addresses configured as two independent VIPs do abort.
 
 ---
 
@@ -381,6 +396,10 @@ rate-limiter conversion.
 - **`VIP_QUIC` backend distribution.** Assigning and distributing `backend_id`, `hash_key` and
   the connection-ID length to each backend's QUIC server, and the rotation story
   (`docs/design/30-quic.md`; `DEPLOYMENT.md` §1.7.2).
+- **Address groups and the SCTP validation rules in the C# control plane**
+  (`docs/design/32-sctp.md`): a VIP entity with one or more addresses and the same `vip_num`
+  allocation rule `marlind`'s `vip_alloc.c` gives file-managed mode, plus configuration
+  validation's `hash_ports` and group rules (`docs/design/20-configuration-validation.md`).
 
 ### Exit criteria
 
@@ -481,7 +500,7 @@ section it affects, not in a document of its own.
 | D6 — `enum marlin_ret` versus `docs/design/22-observability.md`'s reason list | `marlin.h:44` | 2a |
 | Whether a CI check diffs the compiled BTF against the C# `[FieldOffset]` set — the only thing that would catch a C-side reorder of two same-sized fields | `docs/REPO-STRUCTURE.md` §7.7 | 2a |
 | `BPF_FIB_LOOKUP_DIRECT` has no configuration surface, and neither does `fib.ipv4_src`/`l4_protocol`/`sport`/`dport`, left unseeded for the same reason. `fib.tos` is no longer part of this decision: per-VIP DSCP marking put the emitted `tos` byte in `marlin_ctx`, which `nexthop.c` already receives, so it is seeded from `marlin_outer_tos(mctx)` regardless of how the rest resolve | `nexthop.c:75-80` | 2b |
-| Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly | `docs/design/11-pipeline.md` step 3 | 2b |
+| Whether a parse-terminal `XDP_PASS` (`MARLIN_PASS_NOT_FORWARDED` for a non-IP-forwardable protocol) must still pass through the ACL, so a blocked source's non-forwarded traffic is dropped rather than reaching the host stack — `docs/design/27-source-filtering.md`'s "Operator lockout" argues yes, but only sanctions the exemption for ICMP echo explicitly. **Narrowed by `docs/design/32-sctp.md`:** SCTP left this set (it is now a `vip_miss`, under the instance-wide ACL block that already covers `vip_map` misses), so the protocols this row still concerns are ESP, AH and every other protocol `marlin_proto_has_ports()` does not name | `docs/design/11-pipeline.md` step 3 | 2b |
 | A fragment tail's parsed destination port is always zero, so an explicit-port VIP with no `port == 0` companion never admits its tails (`vip_miss`, indistinguishable from host-bound traffic), and one that has such a companion admits the tail into a different `vip_num` than its head — splitting one datagram across two independently configured pools, the outcome `docs/design/12-selection.md`'s "Hash input" rejects as a hash input, reached here through admission instead. Whether this is an accepted limitation (documented, uncounted, as written into `docs/design/11-pipeline.md`/`docs/design/12-selection.md`/`DEPLOYMENT.md` now), an added `drop_stats`/`MARLIN_COUNT_*` reason distinguishing a fragment-caused `vip_miss` from an ordinary one (a post-freeze `enum marlin_ret` append under Phase 2a's exit criterion 4 — `DROP_REASON_MAX` is 48 against `MARLIN_RET_MAX`'s current count, and it would also fire for ordinary host-bound fragment tails), or a control-plane-mandated `port == 0` companion sharing `vip_num` and `hash_key` with every explicit-port VIP (which widens the VIP to every port — a port-80 VIP would then forward port 22 to the backends — and cannot serve two explicit-port VIPs with different pools on one address) | `docs/design/11-pipeline.md:24-25`, `data-plane/bpf/lb_core.c:112-129` | 2b |
 | An IPv6 fragment head and tail can also disagree on `tuple.proto` itself, not only on port: the Fragment header's Next Header is the first header of the Fragmentable Part (RFC 8200 §4.5), so a tail stops there while a head walks past a following extension header to the real L4 — no `port == 0` companion recovers this, unlike the port-only case above. It is refused in the parser as `unsupported_proto`, sharing the reason and counter ESP/AH already use, rather than reaching `vip_map` for either half — but only for the packet Marlin forwards; the same shape inside an ICMP error's quote is exempt and still parses (`docs/design/13-icmp.md`), since a quote has no head/tail to split. Whether the shared counter is precise enough — it cannot distinguish "ports behind ESP/AH" from "protocol behind a post-Fragment extension header" — or the case earns its own appended reason is open; either way this drop reaches a fragment that may be addressed to the host, not to any VIP, exactly as the existing ESP/AH check already does | `docs/design/11-pipeline.md:21-33`, `data-plane/bpf/parser.c:393-412` | 2b |
 | VXLAN backend VIP placement: loopback/dummy interface, as under L2 DSR, or the `vxlan` device itself. The `data-plane/scripts/vxlan_wsl.sh` and `netns-topo.sh` rigs assume `lo`/a dummy device, matching every other mode's rig — an operational default for development, not a resolution of the question | `docs/design/01-scope.md` | 2b |
@@ -496,7 +515,8 @@ section it affects, not in a document of its own.
 | Whether `VIP_DSCP` non-zero on a VIP served only by `L2DSR` backends is a warning, silently accepted, or rejected. The marking has no outer header to land in there, but backend modes are per-backend and change under reconciliation, and the same VIP can mix modes over its lifetime — so a rejection would refuse an otherwise legitimate mixed-mode rollout | `docs/design/20-configuration-validation.md` | 3 |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |
 | D-F5 — whether file-managed mode keeps `config.max_frame` fresh from netlink link events, or only samples the MTU once per reconcile as it does today | `docs/design/31-file-configuration.md` §3, `data-plane/marlind/reconcile.c` | 3 |
-| D-F8 — whether an explicit-port VIP's `port == 0` companion gets file-schema sugar (a `ports` list) in file-managed mode. Blocked on the same fragment-tail admission decision named two rows up in this table | `docs/design/31-file-configuration.md` §4, `docs/design/11-pipeline.md` | 2b |
+| D-F8 — whether an explicit-port VIP's `port == 0` companion gets file-schema sugar (a `ports` list) in file-managed mode. Blocked on the same fragment-tail admission decision named two rows up in this table. **The machinery it would need already exists:** `docs/design/32-sctp.md`'s address groups let one `[[vip]]` entry hold several `vip_map` keys sharing one `vip_meta`, which is the same shape a `ports` list needs — but D-F8 stays blocked on the fragment-tail decision regardless | `docs/design/31-file-configuration.md` §4, `docs/design/11-pipeline.md` | 2b |
+| The SCTP health-probe protocol, and which address of a group a probe targets — `docs/design/18-health.md` specifies no probe protocol for any VIP today, so an SCTP-specific answer is needed before this phase's health checking can cover an SCTP VIP | `docs/design/18-health.md`, `docs/design/32-sctp.md` | 3 |
 | Whether a `marlinlb-daemon` package upgrade restarts `marlind`. Today it does neither: `deploy/marlin.env.example` ships with `IFACE` unset, so an unattended start would crash-loop, and restarting a running instance drops its `bpf_link` and interrupts forwarding | `packaging/scripts/marlinlb-daemon.postinst` | 1 |
 | Whether a release tag may ship a component whose `VERSION` is still a pre-release (`data-plane/marlind/VERSION` is `0.0.0-dev` today), and whether a packaging-only change must bump `packaging/mkdeb.sh`'s `DEB_REVISION`. Nothing today stops two different `.deb` builds from carrying the same Debian version string | `packaging/mkdeb.sh` | 1 |
 | Whether each distro's `marlin.bpf.o` must pass the verifier-load gate (`docs/design/24-testing.md`, `verifier.yml`, not yet implemented) before its `.deb` is released. `.github/workflows/build.yml`'s `ubuntu26.04` row compiles it with a clang no developer runs locally | `.github/workflows/build.yml`, `.github/workflows/ci.yml` | 1 |
@@ -520,7 +540,11 @@ Recorded so their absence is not read as an omission.
   (`docs/design/06-map-abi.md`), and a `backends[i].id` that drifts from `i` because of a
   control-plane bug, which misattributes `backend_stats` to the wrong backend and is caught by
   nothing outside the reconciler's own write-site assertion
-  (`docs/design/10-map-invariants.md`, `docs/design/20-configuration-validation.md`).
+  (`docs/design/10-map-invariants.md`, `docs/design/20-configuration-validation.md`), and
+  `VIP_HASH_PORTS`'s fixed-source-port collapse (`docs/design/32-sctp.md`, `DEPLOYMENT.md`
+  §1.7.4): peers sharing a fixed source port land on one backend, the same trade
+  `VIP_HASH_5TUPLE` already accepts for address-based skew, and no configuration can give a
+  mixed fixed/ephemeral population both distribution and failover on one VIP.
 - **Extending the firewall beyond `docs/design/27-source-filtering.md` and
   `docs/design/28-rate-limiting.md`.** L4-granular rules, stateful matching and userspace attack
   classification are non-goals (`docs/design/01-scope.md`), and nothing beyond what those two

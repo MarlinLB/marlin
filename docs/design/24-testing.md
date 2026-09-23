@@ -17,8 +17,19 @@ in both families exactly like the unfragmented head, and an IPv6 fragment head o
 Fragmentable Part opens with an extension header instead of the upper-layer protocol, also
 `unsupported_proto` (`docs/design/11-pipeline.md`) — IPv6 extension-header chains — including
 one at `MAX_EXT_HDRS` and one beyond it — ICMP errors including the embedded-header path,
-port-agnostic VIPs, the sentinel and down-backend paths, and the header-adjustment paths where
-pointer invalidation bites.
+port-agnostic VIPs, the sentinel and down-backend paths, the header-adjustment paths where
+pointer invalidation bites, and SCTP forwarded in every mode alongside TCP/UDP, including an
+embedded-header ICMP quote (`docs/design/32-sctp.md`).
+
+**`VIP_HASH_PORTS` and address groups** (`docs/design/32-sctp.md`) get the same doubled-regime
+treatment `VIP_HASH_5TUPLE` gets below: with the flag set, changing the client address leaves
+the selected backend unchanged and changing the source port moves it; with it clear, the
+reverse. A group's two `vip_map` keys (one per family, `xdp_fixture.c`'s `sctp_vip_seed()`)
+select the same backend under both regimes, and their traffic merges into one `vip_stats`
+counter. Fragments on a `VIP_HASH_PORTS` VIP drop `frag_unsupported`, the same assertion
+`VIP_HASH_5TUPLE` gets below. The client-failover and server-multi-homing claims themselves —
+that an association actually survives or actually fails — are integration-tier only
+(`data-plane/scripts/`): the packet tier has no kernel SCTP stack to form an association with.
 
 **`VIP_HASH_5TUPLE` doubles the selection regime rather than replacing it**
 (`docs/design/12-selection.md`). The determinism above makes each assertion exact:

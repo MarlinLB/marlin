@@ -45,7 +45,23 @@ Rejected at configuration time rather than allowed to fail per packet:
   redundancy between the array slot and the value's own `id` field can be caught, and it is a
   control-plane bug rather than an operator input error: the reconciler asserts it at the write
   site, it is not a validation of operator-supplied configuration.
-- More than `MAX_BACKENDS - 1` backends, or more than `MAX_VIPS` VIPs.
+- More than `MAX_BACKENDS - 1` backends, or more than `MAX_VIPS` VIP **addresses** — an
+  address group (`docs/design/32-sctp.md`) is one `[[vip]]` entry but several `vip_map` keys,
+  and `MAX_VIPS` bounds the map's key count, not the entry count.
+- Two VIP addresses that are identical in address, port and protocol, whether they belong to the
+  same `[[vip]]` entry (a duplicate inside a group) or to two different entries
+  (`docs/design/32-sctp.md`).
+- `VIP_HASH_PORTS` on a non-SCTP VIP, or together with `VIP_HASH_5TUPLE` on the same VIP
+  (`docs/design/32-sctp.md`).
+- `VIP_HASH_5TUPLE` on an SCTP address group: it hashes the VIP address, which the group exists
+  to make interchangeable (`docs/design/32-sctp.md`).
+- An SCTP address group mixing IPv4 and IPv6 addresses without `VIP_HASH_PORTS` set: the address
+  hash picks a different row per family, so a dual-stack backend's association fails exactly as
+  an unrelated pair of VIPs would (`docs/design/32-sctp.md`).
+- An SCTP address group of one family, on the address hash, with `VIP_HASH_PORTS` clear —
+  accepted with a warning, not rejected: it is safe only for a client that reaches every group
+  address from one source address, and nothing in the configuration can verify that a
+  deployment's clients do (`docs/design/32-sctp.md`).
 - An ACL allow rule for `0.0.0.0/0` or `::/0`. Under `docs/design/27-source-filtering.md`'s precedence it nullifies the
   blocklist and the rate limiter entirely, and no operator means it.
 - An ACL prefix whose host bits are set. `10.1.2.3/8` and `10.0.0.0/8` are the same trie key, so

@@ -41,42 +41,44 @@
 #define MARLIN_BE_F_STATE              (1U << MARLIN_BE_F_STATE_BIT)
 #define MARLIN_BE_F_RESERVED \
     ((__u8) ~(MARLIN_BE_F_ENCAP_MODE_MASK | (MARLIN_BE_F_ENCAP_REQUIRED) | MARLIN_BE_F_FIB | MARLIN_BE_F_STATE))
-#define ENCAP_MODE(f)              ((__u8)((f) & MARLIN_BE_F_ENCAP_MODE_MASK))
+#define ENCAP_MODE(f)          ((__u8)((f) & MARLIN_BE_F_ENCAP_MODE_MASK))
 
 /* The mode field of backend flags */
-#define MARLIN_MODE_L2DSR          0
-#define MARLIN_MODE_IPIP           1
-#define MARLIN_MODE_GUE            2
-#define MARLIN_MODE_VXLAN          3
+#define MARLIN_MODE_L2DSR      0
+#define MARLIN_MODE_IPIP       1
+#define MARLIN_MODE_GUE        2
+#define MARLIN_MODE_VXLAN      3
 
 /* backend.state */
-#define MARLIN_DOWN                0
-#define MARLIN_UP                  1
+#define MARLIN_DOWN            0
+#define MARLIN_UP              1
 
 /*
  * marlin_config.flags
  */
-#define CFG_ACL_ENABLE             (1U << 0)
-#define CFG_RL_ENABLE              (1U << 1)
-#define CFG_FLAGS_RESERVED         (~(__u32)(CFG_ACL_ENABLE | CFG_RL_ENABLE))
+#define CFG_ACL_ENABLE         (1U << 0)
+#define CFG_RL_ENABLE          (1U << 1)
+#define CFG_FLAGS_RESERVED     (~(__u32)(CFG_ACL_ENABLE | CFG_RL_ENABLE))
 
 /* vip_meta.flags */
-#define VIP_ACL                    (1U << 0)
-#define VIP_RATELIMIT              (1U << 1)
-#define VIP_HASH_5TUPLE            (1U << 2)
-#define VIP_QUIC                   (1U << 3)
+#define VIP_ACL                (1U << 0)
+#define VIP_RATELIMIT          (1U << 1)
+#define VIP_HASH_5TUPLE        (1U << 2)
+#define VIP_QUIC               (1U << 3)
+#define VIP_HASH_PORTS         (1U << 4)
 
-#define VIP_HASH_5TUPLE_BIT        2
-#define VIP_QUIC_BIT               3
-#define VIP_ACL_BIT                0
+#define VIP_HASH_5TUPLE_BIT    2
+#define VIP_QUIC_BIT           3
+#define VIP_ACL_BIT            0
+#define VIP_HASH_PORTS_BIT     4
 
 /*
  * QUIC connection-ID length for short-header decode: 7-20 inclusive, 0 = unset.
  * RFC 8999 SS4.2: DCID length not on wire, must come from configuration.
  */
-#define VIP_QUIC_CID_LEN_SHIFT     8
-#define VIP_QUIC_CID_LEN_MASK      ((__u32)0x1f << VIP_QUIC_CID_LEN_SHIFT)
-#define VIP_QUIC_CID_LEN(f)        (((f) & VIP_QUIC_CID_LEN_MASK) >> VIP_QUIC_CID_LEN_SHIFT)
+#define VIP_QUIC_CID_LEN_SHIFT 8
+#define VIP_QUIC_CID_LEN_MASK  ((__u32)0x1f << VIP_QUIC_CID_LEN_SHIFT)
+#define VIP_QUIC_CID_LEN(f)    (((f) & VIP_QUIC_CID_LEN_MASK) >> VIP_QUIC_CID_LEN_SHIFT)
 
 /*
  * Operator-assigned outer DSCP for this VIP's tunnel modes, RFC 2474's six
@@ -84,11 +86,12 @@
  * configuration by construction, not by convention (docs/design/14-forwarding-modes.md
  * SS7.2). 0 = CS0, the class every VIP got before this field existed.
  */
-#define VIP_DSCP_SHIFT             16
-#define VIP_DSCP_MASK              ((__u32)0x3f << VIP_DSCP_SHIFT)
-#define VIP_DSCP(f)                (((f) & VIP_DSCP_MASK) >> VIP_DSCP_SHIFT)
+#define VIP_DSCP_SHIFT         16
+#define VIP_DSCP_MASK          ((__u32)0x3f << VIP_DSCP_SHIFT)
+#define VIP_DSCP(f)            (((f) & VIP_DSCP_MASK) >> VIP_DSCP_SHIFT)
 
-#define VIP_FLAGS_RESERVED         (~(__u32)(VIP_ACL | VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK | VIP_DSCP_MASK))
+#define VIP_FLAGS_RESERVED \
+    (~(__u32)(VIP_ACL | VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_HASH_PORTS | VIP_QUIC_CID_LEN_MASK | VIP_DSCP_MASK))
 
 /*
  * Rate limiting
@@ -132,11 +135,12 @@ _Static_assert((MARLIN_BE_F_RESERVED &
                 (MARLIN_BE_F_ENCAP_MODE_MASK | MARLIN_BE_F_STATE | MARLIN_BE_F_ENCAP_REQUIRED | MARLIN_BE_F_FIB)) == 0,
                "flags reserved bits overlap an assigned bit");
 
-_Static_assert((VIP_FLAGS_RESERVED & (VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK | VIP_DSCP_MASK)) == 0,
+_Static_assert((VIP_FLAGS_RESERVED &
+                (VIP_ACL | VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_HASH_PORTS | VIP_QUIC_CID_LEN_MASK | VIP_DSCP_MASK)) == 0,
                "vip_meta.flags reserved mask overlaps an assigned bit");
 _Static_assert((20U << VIP_QUIC_CID_LEN_SHIFT) <= VIP_QUIC_CID_LEN_MASK,
                "the QUIC CID length field must hold values up to 20 (RFC 9000 SS17.2)");
-_Static_assert((VIP_DSCP_MASK & (VIP_ACL | VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_QUIC_CID_LEN_MASK)) == 0,
+_Static_assert((VIP_DSCP_MASK & (VIP_ACL | VIP_RATELIMIT | VIP_HASH_5TUPLE | VIP_QUIC | VIP_HASH_PORTS | VIP_QUIC_CID_LEN_MASK)) == 0,
                "the DSCP field overlaps an assigned vip_meta.flags bit");
 _Static_assert((VIP_DSCP_MASK >> VIP_DSCP_SHIFT) == 0x3f, "the DSCP field must hold every 6-bit codepoint (RFC 2474)");
 // NOLINTNEXTLINE(misc-redundant-expression) -- constant-folds, that's the point of the assert

@@ -14,7 +14,8 @@ error `parser.c` reconstructs it from the embedded header (`docs/design/13-icmp.
 **client**, and the transit router that emitted the packet appears nowhere. The ACL consequently
 filters the connection an error concerns, not the sender of the error. This is correct:
 
-- For TCP and UDP, `tuple.src` **is** the on-the-wire source, so the distinction is invisible.
+- For TCP, UDP and SCTP, `tuple.src` **is** the on-the-wire source, so the distinction is
+  invisible.
 - Blocking the router would be wrong. Routers are not the traffic being filtered, and PMTUD for
   every other client depends on their errors being processed (`docs/design/13-icmp.md`).
 - A blocked client's ICMP errors are suppressed along with its traffic, which is what blocking a

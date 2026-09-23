@@ -176,7 +176,15 @@ static void handle_reload(struct config *cfg, struct bpf_object *obj)
 
     conf_free(cfg->file);
     cfg->file = next;
-    logmsg("SIGHUP: reloaded %s (%u backend(s), %u vip(s))", cfg->conf_path, next->backend_count, next->vip_count);
+
+    __u32 addr_count = 0;
+
+    for(__u32 i = 0; i < next->vip_count; i++) {
+        addr_count += next->vips[i].key_count;
+    }
+
+    logmsg("SIGHUP: reloaded %s (%u backend(s), %u vip(s), %u address(es))", cfg->conf_path, next->backend_count, next->vip_count,
+           addr_count);
     notify("STATUS=attached %s to %s (ifindex %d); reloaded %s", MARLIN_PROG_NAME, cfg->iface, cfg->ifindex, cfg->conf_path);
 }
 

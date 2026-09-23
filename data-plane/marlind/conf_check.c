@@ -7,6 +7,8 @@
 #include <net/if.h>
 #include <string.h>
 
+#include <linux/in.h>
+
 #include <marlin/abi/defines.h>
 #include <marlin/lb_core.h>
 #include <marlind/conf_check.h>
@@ -181,10 +183,51 @@ static void check_vip_members(struct conf_vip *vip, const struct marlin_conf *co
     }
 }
 
+/*
+ * Every key in vip->keys agrees on proto/family group membership, since
+ * parse_one_vip() applies proto to all of them (docs/design/32-sctp.md) --
+ * these three rules apply only to an SCTP group, per that document's
+ * address-group rules.
+ */
+static void check_vip_group(struct conf_vip *vip, unsigned idx, struct conf_diag *diag)
+{
+    bool hash_ports = (vip->meta.flags & VIP_HASH_PORTS) != 0;
+    bool hash_5tuple = (vip->meta.flags & VIP_HASH_5TUPLE) != 0;
+    bool has_v4 = false;
+    bool has_v6 = false;
+
+    if(vip->key_count < 2 || vip->keys[0].proto != IPPROTO_SCTP) {
+        return;
+    }
+
+    for(__u32 k = 0; k < vip->key_count; k++) {
+        if(vip->keys[k].family == AF_INET) {
+            has_v4 = true;
+        } else {
+            has_v6 = true;
+        }
+    }
+
+    if(hash_5tuple) {
+        conf_diag_add(diag, "vip[%u] is a group of %u addresses and cannot set hash_5tuple: it hashes the VIP address", idx,
+                      vip->key_count);
+    }
+    if(has_v4 && has_v6 && !hash_ports) {
+        conf_diag_add(diag, "vip[%u] mixes IPv4 and IPv6 addresses and requires hash_ports = true", idx);
+    } else if(!hash_ports) {
+        conf_diag_warn(diag,
+                       "vip[%u] is a group hashed by client address: safe only for clients that reach every "
+                       "group address from one source (docs/design/32-sctp.md)",
+                       idx);
+    }
+}
+
 static void check_one_vip(struct conf_vip *vip, const struct marlin_conf *conf, struct conf_diag *diag)
 {
     unsigned idx = (unsigned)(vip - conf->vips);
     bool quic = (vip->meta.flags & VIP_QUIC) != 0;
+    bool hash_ports = (vip->meta.flags & VIP_HASH_PORTS) != 0;
+    __u8 proto = vip->key_count > 0 ? vip->keys[0].proto : 0;
     __u32 cid_len = VIP_QUIC_CID_LEN(vip->meta.flags);
     __u32 dscp = VIP_DSCP(vip->meta.flags);
 
@@ -197,22 +240,43 @@ static void check_one_vip(struct conf_vip *vip, const struct marlin_conf *conf, 
     if((vip->meta.flags & VIP_RATELIMIT) != 0 && (vip->meta.flags & VIP_ACL) == 0) {
         conf_diag_add(diag, "vip[%u].ratelimit = true requires acl = true", idx);
     }
+    if(hash_ports && proto != IPPROTO_SCTP) {
+        conf_diag_add(diag, "vip[%u].hash_ports = true requires proto = \"sctp\"", idx);
+    }
+    if(hash_ports && (vip->meta.flags & VIP_HASH_5TUPLE) != 0) {
+        conf_diag_add(diag, "vip[%u] cannot set both hash_ports and hash_5tuple", idx);
+    }
 
+    check_vip_group(vip, idx, diag);
     check_vip_members(vip, conf, diag);
 }
 
 static void check_vips(struct marlin_conf *conf, struct conf_diag *diag)
 {
-    if(conf->vip_count > MAX_VIPS) {
-        conf_diag_add(diag, "%u VIPs configured, more than MAX_VIPS (%u)", conf->vip_count, MAX_VIPS);
+    __u32 total_addrs = 0;
+
+    for(__u32 i = 0; i < conf->vip_count; i++) {
+        total_addrs += conf->vips[i].key_count;
+    }
+    if(total_addrs > MAX_VIPS) {
+        conf_diag_add(diag, "%u VIP addresses configured, more than MAX_VIPS (%u)", total_addrs, MAX_VIPS);
     }
 
     for(__u32 i = 0; i < conf->vip_count; i++) {
         struct conf_vip *vip = &conf->vips[i];
 
-        for(__u32 j = i + 1; j < conf->vip_count; j++) {
-            if(vip_key_eq(&vip->key, &conf->vips[j].key)) {
-                conf_diag_add(diag, "vip[%u] duplicates vip[%u]'s address/port/proto", i, j);
+        for(__u32 k1 = 0; k1 < vip->key_count; k1++) {
+            for(__u32 k2 = k1 + 1; k2 < vip->key_count; k2++) {
+                if(vip_key_eq(&vip->keys[k1], &vip->keys[k2])) {
+                    conf_diag_add(diag, "vip[%u].addr[%u] duplicates addr[%u]", i, k2, k1);
+                }
+            }
+            for(__u32 j = i + 1; j < conf->vip_count; j++) {
+                for(__u32 k2 = 0; k2 < conf->vips[j].key_count; k2++) {
+                    if(vip_key_eq(&vip->keys[k1], &conf->vips[j].keys[k2])) {
+                        conf_diag_add(diag, "vip[%u] duplicates vip[%u]'s address/port/proto", i, j);
+                    }
+                }
             }
         }
 

@@ -396,6 +396,42 @@ marking to land in, so `VIP_DSCP` is accepted but inert there
 (`docs/design/20-configuration-validation.md` warns rather than rejects, since backend modes
 change under reconciliation).
 
+### 1.7.4 SCTP: `VIP_HASH_PORTS`, address groups, and the multi-homing bind requirement
+
+SCTP is forwarded like TCP and UDP (`docs/design/32-sctp.md`), but its multi-homing surface
+needs two things from the integrator that neither of the other protocols does.
+
+**Bind the backend's SCTP listener to exactly the VIP entity's addresses — never a wildcard
+bind.** A Linux SCTP socket bound to a single address, or to a set via `sctp_bindx(3)`,
+advertises exactly those addresses in its INIT-ACK. A wildcard bind (`INADDR_ANY`) advertises
+every address the backend host holds, including ones Marlin never load-balances — a client that
+receives one of those in the address list can send directly to it, and its traffic then bypasses
+Marlin's ACL, rate limiter and backend selection entirely. If the VIP is an address group
+(below), the backend's bind set must match the group's address set exactly: an address the
+backend advertises that is not in the group aborts the association on the client's first
+HEARTBEAT to it (`docs/design/32-sctp.md`'s multi-homing failure mode), and a group address the
+backend does not bind is simply never used.
+
+**Choose the hash mode per VIP** (`VIP_HASH_PORTS`, `vip_meta.flags`, `docs/design/32-sctp.md`):
+
+| Peer population | Mode |
+|---|---|
+| Single-homed clients, or a backend fleet with no multi-homing | default (address hash) |
+| Clients that fail over between addresses, or a backend advertising more than one VIP address | `VIP_HASH_PORTS` |
+| Peers on fixed source ports, alongside peers needing failover | split across two VIPs, one per mode — a single VIP cannot give both the address hash's distribution and the ports hash's failover survival |
+
+As with `VIP_HASH_5TUPLE` (§1.7.1), a `VIP_HASH_PORTS` VIP drops every fragment, counted
+`frag_unsupported`, and nothing validates whether the traffic actually fragments.
+
+**Address groups** (one `[[vip]]` entry, several addresses, `docs/design/32-sctp.md`) are how a
+multi-homed backend's several VIP addresses stay interchangeable: they share one `hash_key`,
+`table_seed` and member list, so they cannot independently drift the way two hand-configured
+VIPs with matching settings could. A group mixing IPv4 and IPv6 addresses requires
+`VIP_HASH_PORTS` — the address hash picks a different row per family, which a dual-stack
+backend's association would not survive. A single-family group on the address hash is accepted
+with a warning: it protects only clients that reach every group address from one source
+address, which the configuration cannot verify.
+
 ### 1.8 Routing state
 
 **IPv4 forwarding must be enabled.** The datapath consults the kernel routing table for backends it
@@ -633,6 +669,10 @@ is the only address the datapath ever resolves. A backend configured without it 
 resolved hardware address does not substitute.
 
 **Ports are not translated.** A VIP on port 443 reaches backends on port 443.
+
+**An SCTP backend's bind set must match its VIP's address set exactly** — see §1.7.4 for why a
+wildcard bind or a mismatched multi-homing bind set breaks the association rather than merely
+underusing it.
 
 Two operational consequences worth knowing before you provision rather than after:
 
@@ -892,6 +932,8 @@ What this leaves uncovered:
 - MSS applies to TCP only. Large non-QUIC UDP is covered by raising the MTU and by nothing else.
 - QUIC is unaffected in practice: its 1200-byte datagrams, with DPLPMTUD, sit below 1500 even with
   VXLAN's 50 bytes added, the new worst case among the three.
+- SCTP has no MSS equivalent Marlin or the backend can clamp; it joins large non-QUIC UDP,
+  covered only by raising the MTU (`docs/design/32-sctp.md`).
 
 Marlin does not generate "fragmentation needed" or "packet too big" errors; it forwards ones
 generated elsewhere, steering them by the embedded header so that path MTU discovery works through

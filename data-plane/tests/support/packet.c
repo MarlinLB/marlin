@@ -191,6 +191,23 @@ __u32 pb_udp(__u16 sport_host, __u16 dport_host, __u16 len_host)
     return pb_raw(&udp, sizeof(udp));
 }
 
+__u32 pb_sctp(__u16 sport_host, __u16 dport_host, __u32 vtag_host)
+{
+    struct {
+        __be16 source;
+        __be16 dest;
+        __be32 vtag;
+        __be32 checksum;
+    } sctp;
+
+    sctp.source = bpf_htons(sport_host);
+    sctp.dest = bpf_htons(dport_host);
+    sctp.vtag = bpf_htonl(vtag_host);
+    sctp.checksum = 0;
+
+    return pb_raw(&sctp, sizeof(sctp));
+}
+
 __u32 pb_quic_form(__u8 first_byte)
 {
     return pb_raw(&first_byte, sizeof(first_byte));

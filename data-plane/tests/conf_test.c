@@ -79,6 +79,8 @@ MARLIN_TEST(parse_proto_and_mode_and_state)
     CHECK_EQ(IPPROTO_TCP, proto);
     CHECK_TRUE(conf_parse_proto("udp", &proto));
     CHECK_EQ(IPPROTO_UDP, proto);
+    CHECK_TRUE(conf_parse_proto("sctp", &proto));
+    CHECK_EQ(IPPROTO_SCTP, proto);
     CHECK_TRUE(!conf_parse_proto("icmp", &proto));
 
     CHECK_TRUE(conf_parse_mode("vxlan", &mode));
@@ -169,7 +171,7 @@ MARLIN_TEST(golden_example_config_parses_and_validates)
     }
 
     CHECK_EQ(5, conf->backend_count);
-    CHECK_EQ(3, conf->vip_count);
+    CHECK_EQ(4, conf->vip_count);
     CHECK_TRUE(conf->instance.tunnel_src_set);
     CHECK_EQ(2, conf->instance.tx_port_count);
 
@@ -188,8 +190,16 @@ MARLIN_TEST(golden_example_config_parses_and_validates)
     CHECK_EQ(46, VIP_DSCP(conf->vips[1].meta.flags));
 
     /* vip[2] is IPv6 with an explicit port of 0 ("any port"), not port-absent-defaults-elsewhere. */
-    CHECK_EQ(AF_INET6, conf->vips[2].key.family);
-    CHECK_EQ(0, conf->vips[2].key.port);
+    CHECK_EQ(AF_INET6, conf->vips[2].keys[0].family);
+    CHECK_EQ(0, conf->vips[2].keys[0].port);
+
+    /* vip[3] is the address group: one entry, two keys, one shared vip_meta. */
+    CHECK_EQ(2, conf->vips[3].key_count);
+    CHECK_EQ(AF_INET, conf->vips[3].keys[0].family);
+    CHECK_EQ(AF_INET6, conf->vips[3].keys[1].family);
+    CHECK_EQ(IPPROTO_SCTP, conf->vips[3].keys[0].proto);
+    CHECK_EQ(IPPROTO_SCTP, conf->vips[3].keys[1].proto);
+    CHECK_TRUE((conf->vips[3].meta.flags & VIP_HASH_PORTS) != 0);
 
     conf_free(conf);
 }
@@ -348,6 +358,169 @@ MARLIN_TEST(quic_without_cid_len_is_rejected)
     free(path);
 }
 
+MARLIN_TEST(sctp_vip_with_hash_ports_is_accepted)
+{
+    static const char *text = "[instance]\ninterface=\"lo\"\n"
+                              "[[backend]]\nname=\"b1\"\nid=1\naddr=\"10.0.0.1\"\nmode=\"l2dsr\"\n"
+                              "[[vip]]\naddr=\"203.0.113.1\"\nport=38412\nproto=\"sctp\"\n"
+                              "hash_key=\"00112233445566778899aabbccddeeff\"\n"
+                              "table_seed=\"ffeeddccbbaa99887766554433221100\"\n"
+                              "hash_ports=true\n"
+                              "members=[{backend=\"b1\",weight=1}]\n";
+    char *path = write_temp_conf(text);
+    struct conf_diag diag;
+    struct marlin_conf *conf;
+
+    conf_diag_reset(&diag);
+    conf = conf_load(path, CONF_LOAD_FULL, false, &diag);
+    CHECK_TRUE(conf != NULL);
+    conf_free(conf);
+    unlink(path);
+    free(path);
+}
+
+MARLIN_TEST(hash_ports_on_a_tcp_vip_is_rejected)
+{
+    static const char *text = "[instance]\ninterface=\"lo\"\n"
+                              "[[backend]]\nname=\"b1\"\nid=1\naddr=\"10.0.0.1\"\nmode=\"l2dsr\"\n"
+                              "[[vip]]\naddr=\"203.0.113.1\"\nport=80\nproto=\"tcp\"\n"
+                              "hash_key=\"00112233445566778899aabbccddeeff\"\n"
+                              "table_seed=\"ffeeddccbbaa99887766554433221100\"\n"
+                              "hash_ports=true\n"
+                              "members=[{backend=\"b1\",weight=1}]\n";
+    char *path = write_temp_conf(text);
+    struct conf_diag diag;
+
+    conf_diag_reset(&diag);
+    CHECK_TRUE(conf_load(path, CONF_LOAD_FULL, false, &diag) == NULL);
+    unlink(path);
+    free(path);
+}
+
+/* ---- address groups (docs/design/32-sctp.md) ------------------------------- */
+
+MARLIN_TEST(addr_array_parses_into_one_entry_with_several_keys)
+{
+    static const char *text = "[instance]\ninterface=\"lo\"\n"
+                              "[[backend]]\nname=\"b1\"\nid=1\naddr=\"10.0.0.1\"\nmode=\"l2dsr\"\n"
+                              "[[vip]]\naddr=[\"203.0.113.1\",\"203.0.113.2\"]\nport=38412\nproto=\"sctp\"\n"
+                              "hash_key=\"00112233445566778899aabbccddeeff\"\n"
+                              "table_seed=\"ffeeddccbbaa99887766554433221100\"\n"
+                              "hash_ports=true\n"
+                              "members=[{backend=\"b1\",weight=1}]\n";
+    char *path = write_temp_conf(text);
+    struct conf_diag diag;
+    struct marlin_conf *conf;
+
+    conf_diag_reset(&diag);
+    conf = conf_load(path, CONF_LOAD_FULL, false, &diag);
+    CHECK_TRUE(conf != NULL);
+    if(conf != NULL) {
+        CHECK_EQ(1, conf->vip_count);
+        CHECK_EQ(2, conf->vips[0].key_count);
+        CHECK_EQ(AF_INET, conf->vips[0].keys[0].family);
+        CHECK_EQ(AF_INET, conf->vips[0].keys[1].family);
+        conf_free(conf);
+    }
+    unlink(path);
+    free(path);
+}
+
+MARLIN_TEST(mixed_family_group_without_hash_ports_is_rejected)
+{
+    static const char *text = "[instance]\ninterface=\"lo\"\n"
+                              "[[backend]]\nname=\"b1\"\nid=1\naddr=\"10.0.0.1\"\nmode=\"l2dsr\"\n"
+                              "[[vip]]\naddr=[\"203.0.113.1\",\"2001:db8::1\"]\nport=38412\nproto=\"sctp\"\n"
+                              "hash_key=\"00112233445566778899aabbccddeeff\"\n"
+                              "table_seed=\"ffeeddccbbaa99887766554433221100\"\n"
+                              "members=[{backend=\"b1\",weight=1}]\n";
+    char *path = write_temp_conf(text);
+    struct conf_diag diag;
+
+    conf_diag_reset(&diag);
+    CHECK_TRUE(conf_load(path, CONF_LOAD_FULL, false, &diag) == NULL);
+    unlink(path);
+    free(path);
+}
+
+MARLIN_TEST(sctp_group_with_hash_5tuple_is_rejected)
+{
+    static const char *text = "[instance]\ninterface=\"lo\"\n"
+                              "[[backend]]\nname=\"b1\"\nid=1\naddr=\"10.0.0.1\"\nmode=\"l2dsr\"\n"
+                              "[[vip]]\naddr=[\"203.0.113.1\",\"203.0.113.2\"]\nport=38412\nproto=\"sctp\"\n"
+                              "hash_key=\"00112233445566778899aabbccddeeff\"\n"
+                              "table_seed=\"ffeeddccbbaa99887766554433221100\"\n"
+                              "hash_5tuple=true\n"
+                              "members=[{backend=\"b1\",weight=1}]\n";
+    char *path = write_temp_conf(text);
+    struct conf_diag diag;
+
+    conf_diag_reset(&diag);
+    CHECK_TRUE(conf_load(path, CONF_LOAD_FULL, false, &diag) == NULL);
+    unlink(path);
+    free(path);
+}
+
+MARLIN_TEST(single_family_group_without_hash_ports_warns)
+{
+    static const char *text = "[instance]\ninterface=\"lo\"\n"
+                              "[[backend]]\nname=\"b1\"\nid=1\naddr=\"10.0.0.1\"\nmode=\"l2dsr\"\n"
+                              "[[vip]]\naddr=[\"203.0.113.1\",\"203.0.113.2\"]\nport=38412\nproto=\"sctp\"\n"
+                              "hash_key=\"00112233445566778899aabbccddeeff\"\n"
+                              "table_seed=\"ffeeddccbbaa99887766554433221100\"\n"
+                              "members=[{backend=\"b1\",weight=1}]\n";
+    char *path = write_temp_conf(text);
+    struct conf_diag diag;
+    struct marlin_conf *conf;
+
+    conf_diag_reset(&diag);
+    conf = conf_load(path, CONF_LOAD_FULL, false, &diag);
+    CHECK_TRUE(conf != NULL);
+    CHECK_TRUE(diag.warn_count > 0);
+    conf_free(conf);
+    unlink(path);
+    free(path);
+}
+
+MARLIN_TEST(duplicate_address_within_a_group_is_rejected)
+{
+    static const char *text = "[instance]\ninterface=\"lo\"\n"
+                              "[[backend]]\nname=\"b1\"\nid=1\naddr=\"10.0.0.1\"\nmode=\"l2dsr\"\n"
+                              "[[vip]]\naddr=[\"203.0.113.1\",\"203.0.113.1\"]\nport=38412\nproto=\"sctp\"\n"
+                              "hash_key=\"00112233445566778899aabbccddeeff\"\n"
+                              "table_seed=\"ffeeddccbbaa99887766554433221100\"\n"
+                              "hash_ports=true\n"
+                              "members=[{backend=\"b1\",weight=1}]\n";
+    char *path = write_temp_conf(text);
+    struct conf_diag diag;
+
+    conf_diag_reset(&diag);
+    CHECK_TRUE(conf_load(path, CONF_LOAD_FULL, false, &diag) == NULL);
+    unlink(path);
+    free(path);
+}
+
+MARLIN_TEST(address_shared_across_two_vip_entries_is_rejected)
+{
+    static const char *text = "[instance]\ninterface=\"lo\"\n"
+                              "[[backend]]\nname=\"b1\"\nid=1\naddr=\"10.0.0.1\"\nmode=\"l2dsr\"\n"
+                              "[[vip]]\naddr=\"203.0.113.1\"\nport=80\nproto=\"tcp\"\n"
+                              "hash_key=\"00112233445566778899aabbccddeeff\"\n"
+                              "table_seed=\"ffeeddccbbaa99887766554433221100\"\n"
+                              "members=[{backend=\"b1\",weight=1}]\n"
+                              "[[vip]]\naddr=\"203.0.113.1\"\nport=80\nproto=\"tcp\"\n"
+                              "hash_key=\"112233445566778899aabbccddeeff00\"\n"
+                              "table_seed=\"eeddccbbaa99887766554433221100ff\"\n"
+                              "members=[{backend=\"b1\",weight=1}]\n";
+    char *path = write_temp_conf(text);
+    struct conf_diag diag;
+
+    conf_diag_reset(&diag);
+    CHECK_TRUE(conf_load(path, CONF_LOAD_FULL, false, &diag) == NULL);
+    unlink(path);
+    free(path);
+}
+
 /* ---- permission enforcement ------------------------------------------------ */
 
 MARLIN_TEST(enforce_perms_rejects_a_group_writable_file)
@@ -375,12 +548,15 @@ MARLIN_TEST(enforce_perms_rejects_a_group_writable_file)
 
 /* ---- conf_check() against hand-built models, no file involved -------------- */
 
-static void init_minimal_vip(struct conf_vip *vip, struct conf_member *members, __u32 member_count)
+static void init_minimal_vip(struct conf_vip *vip, struct vip_key *key, struct conf_member *members, __u32 member_count)
 {
     memset(vip, 0, sizeof(*vip));
-    vip->key.addr4 = 0x0100007f; /* 127.0.0.1, irrelevant to these checks */
-    vip->key.family = AF_INET;
-    vip->key.proto = IPPROTO_TCP;
+    memset(key, 0, sizeof(*key));
+    key->addr4 = 0x0100007f; /* 127.0.0.1, irrelevant to these checks */
+    key->family = AF_INET;
+    key->proto = IPPROTO_TCP;
+    vip->keys = key;
+    vip->key_count = 1;
     memset(vip->meta.hash_key, 0x11, sizeof(vip->meta.hash_key));
     memset(vip->table_seed, 0x22, sizeof(vip->table_seed));
     vip->meta.vip_num = MARLIN_CONF_VIP_NUM_UNSET;
@@ -394,6 +570,7 @@ MARLIN_TEST(check_rejects_ratelimit_flag_without_acl_flag)
     struct conf_backend backend;
     struct conf_member member;
     struct conf_vip vip;
+    struct vip_key key;
     struct conf_diag diag;
 
     memset(&conf, 0, sizeof(conf));
@@ -406,7 +583,7 @@ MARLIN_TEST(check_rejects_ratelimit_flag_without_acl_flag)
     (void)snprintf(member.backend_name, sizeof(member.backend_name), "b1");
     member.weight = 1;
 
-    init_minimal_vip(&vip, &member, 1);
+    init_minimal_vip(&vip, &key, &member, 1);
     vip.meta.flags = VIP_RATELIMIT; /* VIP_ACL deliberately clear */
 
     conf.instance.iface[0] = '\0';
@@ -417,6 +594,104 @@ MARLIN_TEST(check_rejects_ratelimit_flag_without_acl_flag)
 
     conf_diag_reset(&diag);
     CHECK_TRUE(!conf_check(&conf, &diag));
+}
+
+MARLIN_TEST(check_rejects_hash_ports_on_a_non_sctp_vip)
+{
+    struct marlin_conf conf;
+    struct conf_backend backend;
+    struct conf_member member;
+    struct conf_vip vip;
+    struct vip_key key;
+    struct conf_diag diag;
+
+    memset(&conf, 0, sizeof(conf));
+    memset(&backend, 0, sizeof(backend));
+    (void)snprintf(backend.name, sizeof(backend.name), "b1");
+    backend.id = 1;
+    backend.abi.addr = 0x0101000a;
+    backend.abi.flags = MARLIN_BE_F_STATE;
+
+    (void)snprintf(member.backend_name, sizeof(member.backend_name), "b1");
+    member.weight = 1;
+
+    init_minimal_vip(&vip, &key, &member, 1); /* proto = tcp */
+    vip.meta.flags = VIP_HASH_PORTS;
+
+    conf.instance.iface[0] = '\0';
+    conf.backends = &backend;
+    conf.backend_count = 1;
+    conf.vips = &vip;
+    conf.vip_count = 1;
+
+    conf_diag_reset(&diag);
+    CHECK_TRUE(!conf_check(&conf, &diag));
+}
+
+MARLIN_TEST(check_rejects_hash_ports_with_hash_5tuple)
+{
+    struct marlin_conf conf;
+    struct conf_backend backend;
+    struct conf_member member;
+    struct conf_vip vip;
+    struct vip_key key;
+    struct conf_diag diag;
+
+    memset(&conf, 0, sizeof(conf));
+    memset(&backend, 0, sizeof(backend));
+    (void)snprintf(backend.name, sizeof(backend.name), "b1");
+    backend.id = 1;
+    backend.abi.addr = 0x0101000a;
+    backend.abi.flags = MARLIN_BE_F_STATE;
+
+    (void)snprintf(member.backend_name, sizeof(member.backend_name), "b1");
+    member.weight = 1;
+
+    init_minimal_vip(&vip, &key, &member, 1);
+    vip.keys[0].proto = IPPROTO_SCTP;
+    vip.meta.flags = VIP_HASH_PORTS | VIP_HASH_5TUPLE;
+
+    conf.instance.iface[0] = '\0';
+    conf.backends = &backend;
+    conf.backend_count = 1;
+    conf.vips = &vip;
+    conf.vip_count = 1;
+
+    conf_diag_reset(&diag);
+    CHECK_TRUE(!conf_check(&conf, &diag));
+}
+
+MARLIN_TEST(check_accepts_hash_ports_on_an_sctp_vip)
+{
+    struct marlin_conf conf;
+    struct conf_backend backend;
+    struct conf_member member;
+    struct conf_vip vip;
+    struct vip_key key;
+    struct conf_diag diag;
+
+    memset(&conf, 0, sizeof(conf));
+    memset(&backend, 0, sizeof(backend));
+    (void)snprintf(backend.name, sizeof(backend.name), "b1");
+    backend.id = 1;
+    backend.abi.addr = 0x0101000a;
+    backend.abi.flags = MARLIN_BE_F_STATE;
+
+    (void)snprintf(member.backend_name, sizeof(member.backend_name), "b1");
+    member.weight = 1;
+
+    init_minimal_vip(&vip, &key, &member, 1);
+    vip.keys[0].proto = IPPROTO_SCTP;
+    vip.meta.flags = VIP_HASH_PORTS;
+
+    (void)snprintf(conf.instance.iface, sizeof(conf.instance.iface), "lo");
+    conf.backends = &backend;
+    conf.backend_count = 1;
+    conf.vips = &vip;
+    conf.vip_count = 1;
+
+    conf_diag_reset(&diag);
+    CHECK_TRUE(conf_check(&conf, &diag));
 }
 
 MARLIN_TEST(check_against_previous_rejects_in_place_backend_edit)
