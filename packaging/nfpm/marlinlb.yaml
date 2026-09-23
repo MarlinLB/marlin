@@ -1,0 +1,27 @@
+# nfpm config for marlinlb: the meta package. No files of its own beyond a
+# copyright notice; it exists to pin a tested marlinlb-xdp/marlinlb-daemon
+# pair with exact-version depends. See packaging/nfpm/marlinlb-xdp.yaml's
+# header for the ${VAR}/path conventions shared by every file here.
+name: "marlinlb"
+arch: "${DEB_ARCH}"
+platform: "linux"
+version: "${MARLINLB_META_VERSION}"
+version_schema: none
+maintainer: "Michel Megens <mtm.megens@gmail.com>"
+homepage: "https://github.com/MarlinLB/marlin"
+section: "net"
+priority: "optional"
+description: |
+  Marlin eBPF/XDP layer-4 load balancer -- metapackage.
+  Depends on the marlinlb-xdp/marlinlb-daemon pair this version was built and
+  tested against. Installing this package is the supported way to install
+  Marlin's data plane; installing the two components directly at unrelated
+  versions is not.
+depends:
+  - marlinlb-xdp (= ${MARLINLB_XDP_VERSION})
+  - marlinlb-daemon (= ${MARLINLB_DAEMON_VERSION})
+contents:
+  - src: build/deb/copyright/marlinlb
+    dst: /usr/share/doc/marlinlb/copyright
+    file_info:
+      mode: 0644

@@ -76,5 +76,6 @@ ceiling is an open decision (`docs/PHASES.md`).
 
 The floor is also weak protection **during `0.x`**: SemVer §4 makes every `0.y` bump potentially
 breaking, so a floor of `0.1.0` does not stop `0.2.0` from breaking `marlind` -- the floor becomes
-a meaningful guarantee only once both sides commit to `1.0.0`, itself contingent on packaging that
-does not exist yet (`docs/DEPLOYMENT.md` §1.2, `docs/PHASES.md`'s open-decision table).
+a meaningful guarantee only once both sides commit to `1.0.0`. Packaging exists now (`packaging/`,
+`docs/DEPLOYMENT.md` §1.2), so what remains is a release decision, not a build one -- see
+`docs/PHASES.md`'s open-decision table.

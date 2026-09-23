@@ -1,0 +1,13 @@
+#!/bin/sh
+# Runs after every install and upgrade (dpkg's postinst "configure" step).
+# Never enables, starts or restarts marlind: deploy/marlin.env.example ships
+# with IFACE unset, so an unattended start would crash-loop, and restarting a
+# running instance drops its bpf_link and interrupts forwarding -- whether an
+# upgrade should restart it is an open decision (docs/PHASES.md).
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+exit 0

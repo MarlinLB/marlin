@@ -1,0 +1,10 @@
+# Keeps the pinned-by-SHA actions in .github/workflows/*.yml and
+# .github/actions/*/action.yml current. See CONTRIBUTING.md for the rest of
+# the project's dependency story -- there is none yet for the data plane
+# (vendor/README.md) or the control plane (not built yet).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

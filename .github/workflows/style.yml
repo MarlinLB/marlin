@@ -1,0 +1,38 @@
+# Style: make format-check + make tidy. Runs on one reference distro only
+# (ubuntu:24.04, clang-format/clang-tidy 18) -- clang-format's output is not
+# stable across versions, so the other build.yml distros would disagree with
+# this job about what "formatted" means. See .github/actions/setup-toolchain
+# for the toolchain both this and build.yml install.
+name: Style
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  style:
+    name: format-check + tidy
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      # actions/checkout falls back to a REST API download with no git
+      # installed; installing it first gets a real .git instead.
+      - name: Install git
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq git
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+
+      - name: make format-check
+        run: make format-check
+
+      - name: make tidy
+        run: make tidy

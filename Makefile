@@ -10,7 +10,14 @@ MAKEFLAGS += --no-print-directory
 
 .DEFAULT_GOAL := all
 
-.PHONY: all data-plane bpf marlind version check-toolchain ci format format-check tidy clean tests packet-tests verifier-stats tools help
+.PHONY: all data-plane bpf marlind version check-toolchain ci format format-check tidy clean tests packet-tests verifier-stats tools deb help
+
+# packaging/mkdeb.sh applies its own defaults (nfpm on PATH, DEB_REVISION=1,
+# DEB_ARCH from dpkg, DEB_DISTRO from /etc/os-release) when these are empty.
+NFPM         ?=
+DEB_DISTRO   ?=
+DEB_REVISION ?=
+DEB_ARCH     ?=
 
 all: data-plane
 
@@ -69,9 +76,15 @@ format-check:
 tidy:
 	@$(MAKE) -C $(DATA_PLANE_DIR) tidy
 
-## Remove data-plane build artefacts.
+## Build marlinlb-xdp, marlinlb-daemon and marlinlb from `make bpf marlind`'s
+## output (packaging/mkdeb.sh; needs nfpm, https://nfpm.goreleaser.com).
+deb: bpf marlind
+	@NFPM=$(NFPM) DEB_DISTRO=$(DEB_DISTRO) DEB_REVISION=$(DEB_REVISION) DEB_ARCH=$(DEB_ARCH) packaging/mkdeb.sh
+
+## Remove data-plane build artefacts and built .deb packages.
 clean:
 	@$(MAKE) -C $(DATA_PLANE_DIR) clean
+	@rm -rf build
 
 ## List available targets.
 help:
@@ -91,6 +104,7 @@ help:
 	@echo "  packet-tests    Run bpf_prog_test_run tests over marlin.bpf.o (needs root)"
 	@echo "  verifier-stats  Report verifier insn/stack budgets for marlin.bpf.o (needs root)"
 	@echo "  tools           Build every dev tool under data-plane/tools/"
+	@echo "  deb             Build marlinlb-xdp, marlinlb-daemon and marlinlb (.deb; needs nfpm)"
 	@echo "  help            Show this message"
 	@echo ""
 	@echo "control-plane is not yet wired in here."

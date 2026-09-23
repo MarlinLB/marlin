@@ -1,0 +1,19 @@
+name: Setup Marlin toolchain
+description: >-
+  Installs the data-plane build/style toolchain (clang, bpftool, clang-format,
+  clang-tidy, libbpf-dev) into a bare distro container, and optionally nfpm
+  for packaging. One script so every distro job and the style job share the
+  same versions.
+inputs:
+  nfpm:
+    description: "Also install the pinned nfpm release"
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Install toolchain
+      shell: bash
+      env:
+        SETUP_NFPM: ${{ inputs.nfpm }}
+      run: ${{ github.action_path }}/install.sh
