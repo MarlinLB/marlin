@@ -260,7 +260,7 @@ the schema rather than a check.
 
 | Derived | From | Note |
 |---|---|---|
-| `vip_meta.vip_num` | allocated over `MAX_VIPS` blocks, one per `[[vip]]` entry regardless of how many addresses it holds (`docs/design/32-sctp.md`) | a surviving entry keeps the block any of its addresses already holds, read back from `vip_map`; new entries take free blocks. Minimises rewritten rows and makes a reload's churn proportional to the change; `data-plane/marlind/vip_alloc.c` is the pure allocator |
+| `vip_meta.vip_num` | allocated over `MAX_VIPS` blocks, one per `[[vip]]` entry regardless of how many addresses it holds (`docs/design/32-sctp.md`) | a surviving entry prefers a block one of its addresses already holds, read back from `vip_map`; new entries take free numbers. Cyclic regrouping may change that preference to an unreferenced final block. `data-plane/marlind/vip_alloc.c` computes assignments, safe write order and the release set before map writes |
 | `fwd_table` block | `table_seed`, members, weights (`docs/design/12-selection.md`) | `TABLE_SIZE` rows per VIP; `tools/marlin_seed.c:117` already writes a whole block with one `bpf_map_update_batch()` |
 | `config.rl_refill`, `config.rl_burst` | `tokens_per_sec`, `burst_packets` | the scaling of `docs/design/28-rate-limiting.md`; the datapath performs no unit conversion |
 | `config.acl_lists` | which of the four lists are non-empty | bit index `(list << 1) \| family` (`docs/design/08-types.md`) |
@@ -408,15 +408,29 @@ Write ordering is `docs/design/12-selection.md`'s and `docs/design/27-source-fil
 plus **one rule neither states, because neither has a component that allocates `vip_num`**,
 extended to entries with several addresses:
 
-> Write an entry's `fwd_table` block, then **every one of its** `vip_map` keys, before touching
-> any address it no longer holds. Zero a block only once no `vip_map` key still references it.
+> Delete keys absent from the desired configuration first. Before overwriting an entry's
+> destination block, move every surviving key belonging to another entry away from that block.
+> Write the complete destination block, then publish **every one of its** entry's keys.
+> Zero released blocks only after every surviving key has moved to its final destination.
 
 It is `docs/design/12-selection.md`'s reasoning one level up — `vip_num` is a reference the
 datapath follows to reach data, exactly as a row is — and without it a VIP moved between blocks
-forwards into another VIP's member set for the length of the rewrite. The "only once
-unreferenced" half is what an address group adds: `data-plane/marlind/vip_alloc.c` computes
-that release set explicitly (adding an address, removing one, merging two entries, splitting
-one), rather than the single-key "delete means zero" the original rule could get away with.
+forwards into another VIP's member set for the length of the rewrite. Delaying zeroing alone
+does not prevent this: a new entry can overwrite an absorbed block before a merge moves its
+remaining address, and a split can rewrite the retained shared block before its other address
+moves out.
+
+`data-plane/marlind/vip_alloc.c` simulates these references and returns a deterministic write
+order as well as assignments and a release set. If regrouping creates a dependency cycle, it
+assigns an entry an unreferenced, otherwise-unassigned final block to break the cycle. This is
+automatic, not an operator-managed sequence of reloads, and reserves no permanent spare.
+The affected group's `vip_num`, and therefore statistics-slot identity, may change; ordinary
+non-conflicting reloads retain the existing assignment preference.
+
+The reconciler requires a complete baseline read and a successful plan before any map write.
+A table or key write failure stops execution before dependent entries can reuse the block; a
+retry plans from the actual maps. These are ordering guarantees between operations, not an
+atomic reload or a new guarantee for packets already holding a previous map value.
 
 **A second rule this document did not originally state either, found implementing it: `config.acl_lists`
 needs the same "reference before referent" treatment as `vip_num`, one level further out.**

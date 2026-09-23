@@ -1,18 +1,7 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * Definitions for reconcile.h.
- *
- * Simplifications against the fullest version of this design: every
- * backend the file names is rewritten in full on every reconcile, and every
- * VIP's fwd_table block is regenerated on every reconcile, rather than
- * diffing against the previous generation first. Both are unconditional
- * writes of the desired state -- correct, per
- * docs/design/19-control-plane.md's "the maps are not authoritative" --
- * they just cost CPU proportional to the whole configuration rather than to
- * the size of a reload's change, which docs/design/17-reconfiguration.md's
- * "regeneration is per VIP" language is written against. Narrowing this to
- * only the VIPs/backends that actually changed is future work.
+ * Reconciles maps to the desired configuration, regenerating every VIP table.
  */
 
 #include <errno.h>
@@ -138,39 +127,43 @@ static bool zero_fwd_block(int fd, __u32 vip_num, struct conf_diag *diag)
 
 /* ---- vip_num allocation (docs/design/31-file-configuration.md §5, docs/design/32-sctp.md) --- */
 
-static __u32 read_vip_baseline(int fd, struct vip_alloc_baseline *out)
+static bool read_vip_baseline(int fd, struct vip_alloc_baseline *out, __u32 *count, struct conf_diag *diag)
 {
     struct vip_key key;
     struct vip_key next_key;
     struct vip_meta meta;
     bool have_key = false;
-    __u32 count = 0;
 
-    while(count < MAX_VIPS) {
+    *count = 0;
+    for(;;) {
         if(bpf_map_get_next_key(fd, have_key ? &key : NULL, &next_key) != 0) {
-            break;
+            if(errno == ENOENT) {
+                return true;
+            }
+            conf_diag_add(diag, "reading vip_map keys: %s", strerror(errno));
+            return false;
+        }
+        if(*count == MAX_VIPS) {
+            conf_diag_add(diag, "vip_map baseline exceeds MAX_VIPS (%u)", MAX_VIPS);
+            return false;
         }
         key = next_key;
         have_key = true;
         if(bpf_map_lookup_elem(fd, &key, &meta) != 0) {
-            continue;
+            conf_diag_add(diag, "reading vip_map value: %s", strerror(errno));
+            return false;
         }
-        out[count].key = key;
-        out[count].vip_num = meta.vip_num;
-        count++;
+        if(meta.vip_num >= MAX_VIPS) {
+            conf_diag_add(diag, "vip_map baseline vip_num %u exceeds MAX_VIPS (%u)", meta.vip_num, MAX_VIPS);
+            return false;
+        }
+        out[*count].key = key;
+        out[(*count)++].vip_num = meta.vip_num;
     }
-    return count;
 }
 
-/*
- * Delegates to vip_alloc.c's pure allocator: an entry keeps the block any
- * of its own addresses already holds, and release[]/release_count come
- * back naming every baseline block no entry ended up using -- reconcile_apply()
- * must not zero those until after every entry's block and vip_map keys are
- * written (docs/design/32-sctp.md).
- */
 static bool allocate_vip_nums(struct marlin_conf *conf, const struct vip_alloc_baseline *baseline, __u32 baseline_count,
-                              __u32 release[MAX_VIPS], __u32 *release_count, struct conf_diag *diag)
+                              struct vip_alloc_plan *plan, struct conf_diag *diag)
 {
     struct vip_alloc_entry entries[MAX_VIPS];
 
@@ -184,8 +177,8 @@ static bool allocate_vip_nums(struct marlin_conf *conf, const struct vip_alloc_b
         entries[i].key_count = conf->vips[i].key_count;
     }
 
-    if(!vip_alloc(entries, conf->vip_count, baseline, baseline_count, release, release_count)) {
-        conf_diag_add(diag, "not enough of MAX_VIPS (%u) blocks free for every [[vip]] entry", MAX_VIPS);
+    if(!vip_alloc(entries, conf->vip_count, baseline, baseline_count, plan)) {
+        conf_diag_add(diag, "cannot safely allocate and order [[vip]] entries within MAX_VIPS (%u) blocks", MAX_VIPS);
         return false;
     }
 
@@ -656,8 +649,7 @@ bool reconcile_apply(struct bpf_object *obj, struct marlin_conf *conf, struct co
     struct maps mp;
     struct vip_alloc_baseline baseline[MAX_VIPS];
     __u32 baseline_count;
-    __u32 release[MAX_VIPS];
-    __u32 release_count;
+    struct vip_alloc_plan plan;
     __u32 tx_want[MAX_TX_PORTS];
     __u16 old_acl_lists;
     __u16 final_acl_lists = acl_lists_bits(conf);
@@ -666,8 +658,8 @@ bool reconcile_apply(struct bpf_object *obj, struct marlin_conf *conf, struct co
         return false;
     }
 
-    baseline_count = read_vip_baseline(mp.vip_map, baseline);
-    if(!allocate_vip_nums(conf, baseline, baseline_count, release, &release_count, diag)) {
+    if(!read_vip_baseline(mp.vip_map, baseline, &baseline_count, diag) ||
+       !allocate_vip_nums(conf, baseline, baseline_count, &plan, diag)) {
         return false;
     }
 
@@ -699,14 +691,14 @@ bool reconcile_apply(struct bpf_object *obj, struct marlin_conf *conf, struct co
         return false;
     }
 
-    for(__u32 i = 0; i < conf->vip_count; i++) {
-        if(!write_vip(&mp, conf, &conf->vips[i], diag)) {
+    for(__u32 i = 0; i < plan.write_count; i++) {
+        if(!write_vip(&mp, conf, &conf->vips[plan.write_order[i]], diag)) {
             return false;
         }
     }
 
     /* Only now: every surviving key already points at its final block, so a released one is truly unreferenced. */
-    if(!release_stale_vip_blocks(&mp, release, release_count, diag)) {
+    if(!release_stale_vip_blocks(&mp, plan.release, plan.release_count, diag)) {
         return false;
     }
 

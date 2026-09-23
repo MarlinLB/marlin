@@ -31,6 +31,12 @@ counter. Fragments on a `VIP_HASH_PORTS` VIP drop `frag_unsupported`, the same a
 that an association actually survives or actually fails — are integration-tier only
 (`data-plane/scripts/`): the packet tier has no kernel SCTP stack to form an association with.
 
+The client-address-independence case uses two distinguishable backends in a striped table.
+It first finds two sources that route differently under the default hash, then proves those
+same sources route identically with `VIP_HASH_PORTS`. A single-backend table cannot test this
+property. Fragment coverage separates an explicit-port first fragment from a non-first
+fragment on a port-0 VIP, so both cases reach the fragment guard.
+
 **`VIP_HASH_5TUPLE` doubles the selection regime rather than replacing it**
 (`docs/design/12-selection.md`). The determinism above makes each assertion exact:
 
@@ -350,6 +356,19 @@ device in that case, and the verifier rewrites `ctx->ingress_ifindex` to that de
 1, not 0. The packet-level harness `unshare(CLONE_NEWNET)`s before loading the program so that
 ifindex, and what `bpf_fib_lookup()` makes of it, do not depend on the host's own routing table or
 `net.ipv4.ip_forward`.
+
+### File-managed reload tests
+
+`data-plane/tests/vip_alloc_test.c` checks allocation and the intermediate reference invariant,
+including regrouping cycles, full key capacity, split/merge ordering and release sets.
+`data-plane/tests/reconcile_test.c` executes the real reconciler with in-memory userspace map
+operations. It checks routing between table-row writes and key publications, including batch
+fallback, partial failures and retries. In the merge-plus-addition and split regressions, an
+address whose old and desired backend are identical must never observe a different backend.
+Baseline read failures must produce diagnostics before any map mutation.
+
+These native tests exercise write ordering without privileged kernel setup. They do not model
+concurrent in-flight readers or claim atomic map-generation replacement.
 
 ## Integration tests
 

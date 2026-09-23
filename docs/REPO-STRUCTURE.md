@@ -109,7 +109,7 @@ marlin/
 │   │       ├── conf_check.h          # conf_check(), conf_check_against_previous()
 │   │       ├── reconcile.h           # reconcile_apply(): map I/O for file-managed mode
 │   │       ├── fwd_gen.h             # fwd_gen_block(): weighted-rendezvous fwd_table generation
-│   │       ├── vip_alloc.h           # vip_alloc(): vip_num allocation over MAX_VIPS, address groups included -- docs/design/32-sctp.md
+│   │       ├── vip_alloc.h           # vip_alloc(): assignments, alias-safe write order and released blocks -- docs/design/32-sctp.md
 │   │       ├── hash.h                # marlind_siphash() -- the third SipHash-2-4 transcription, host-only
 │   │       └── rl_scale.h            # header-only: the operator-unit -> scaled-token-field conversion, shared with conf_check.c
 │   ├── tests/                       # native unit tests, `make tests` — Principle 5's exception
@@ -124,7 +124,8 @@ marlin/
 │   │   ├── compat_test.c            # <marlind/compat.h>, header-only -- marlind_version_cmp() and the version floor
 │   │   ├── conf_test.c              # #includes marlind/conf_value.c, conf_check.c, conf.c -- parser, coercion, validation
 │   │   ├── fwd_gen_test.c           # #includes marlind/fwd_gen.c, hash.c -- SipHash vectors, generation determinism/disruption
-│   │   ├── vip_alloc_test.c         # #includes marlind/vip_alloc.c -- surviving/merged/split/exhausted vip_num allocation
+│   │   ├── vip_alloc_test.c         # #includes marlind/vip_alloc.c -- allocation, reference ordering, cycles and capacity
+│   │   ├── reconcile_test.c         # #includes marlind/reconcile.c -- intermediate routing and failures with in-memory map operations
 │   │   ├── packet.h                 # packet builder declarations, shared with tests/packet/ below -- defined in support/packet.c
 │   │   ├── harness.h                # test registry + CHECK_* macro declarations, shared with tests/packet/ below -- defined in support/harness.c
 │   │   ├── support/                 # definitions for harness.h/packet.h, built once per tier (native vs. packet) so a case

@@ -1,11 +1,7 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
  *
- * vip_num allocation over MAX_VIPS blocks (docs/design/31-file-configuration.md
- * SS5, extended to address groups by docs/design/32-sctp.md): a pure function
- * over plain arrays, deliberately independent of marlind/conf.h so it links
- * and tests without libbpf, the same reasoning fwd_gen.h gives for staying
- * independent of it.
+ * Pure allocation and write ordering for VIP address groups, independent of map I/O.
  */
 
 #pragma once
@@ -36,22 +32,25 @@ struct vip_alloc_baseline {
     __u32 vip_num;
 };
 
+struct vip_alloc_plan {
+    __u32 write_order[MAX_VIPS]; /* indices into entries[] */
+    __u32 write_count;
+    __u32 release[MAX_VIPS];
+    __u32 release_count;
+};
+
 /*
- * Assigns entries[].vip_num in place: an entry takes the first baseline
- * vip_num any of its own keys still matches, in key order, skipping a value
- * already taken by an earlier entry -- which is what makes a merge keep one
- * of its two old blocks and a split hand the second half a fresh one.
- * Entries with no such match take the lowest block neither matched nor
- * already assigned.
+ * Entries must have unique keys, as enforced by configuration validation.
+ * Prefers the first unclaimed baseline block matching an entry's keys, then
+ * the lowest free number. A dependency cycle can move an entry to an
+ * unreferenced final block instead of retaining its preferred number.
  *
- * release/release_count receive every baseline vip_num no surviving entry
- * ended up using -- reconcile.c must write every entry's block and vip_map
- * keys before zeroing these, so a block a key still references is never
- * observed zeroed.
+ * Delete unwanted baseline keys first, then follow write_order: write each
+ * entry's whole block before publishing all its keys. Only then zero release[].
+ * This order moves foreign aliases away before their old block is overwritten.
  *
- * Returns false, leaving every entry's vip_num VIP_ALLOC_NUM_UNSET, if
- * MAX_VIPS blocks cannot cover every entry -- the caller's diagnostic to
- * raise, not this function's.
+ * On failure all assignments are unset and the plan is empty; the caller
+ * must report the failure before making any map writes.
  */
 bool vip_alloc(struct vip_alloc_entry *entries, __u32 entry_count, const struct vip_alloc_baseline *baseline, __u32 baseline_count,
-               __u32 release[MAX_VIPS], __u32 *release_count);
+               struct vip_alloc_plan *plan);

@@ -8,6 +8,13 @@ and this project will adhere to [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- Order VIP group reloads by live block references, so merges, splits and additions cannot
+  overwrite a surviving address's table with another VIP's members. Cyclic regrouping moves
+  an entry to a free final block without reserving capacity permanently. Incomplete baseline
+  reads now reject reconciliation before any map writes.
+
 ### Added
 
 - `"sctp"` as a `proto` value, and `hash_ports` (`VIP_HASH_PORTS`) as a per-VIP flag, SCTP-only

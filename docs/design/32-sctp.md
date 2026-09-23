@@ -117,7 +117,7 @@ discipline.
 
 **Allocation.** `vip_alloc()` (`data-plane/marlind/vip_alloc.c`) is a pure function over plain
 arrays, deliberately independent of `marlind/conf.h` the way `fwd_gen.c` is
-(`docs/REPO-STRUCTURE.md`), so it links and tests without libbpf. An entry claims the first
+(`docs/REPO-STRUCTURE.md`), so it links and tests without libbpf. An entry initially claims the first
 baseline `vip_num` any of its own addresses already holds, in address order, skipping a value an
 earlier entry already claimed; the entries this matters for:
 
@@ -130,10 +130,23 @@ earlier entry already claimed; the entries this matters for:
 - **Splitting a group into two entries** lets whichever entry is processed first keep the
   shared block; the other takes a fresh one.
 
-`reconcile.c` writes every entry's `fwd_table` block and every one of its `vip_map` keys before
-zeroing any released block (`docs/design/31-file-configuration.md`'s block-before-key ordering,
-extended to groups) — a block a surviving key still references is never observed zeroed, and a
-block released by a merge or a split is zeroed only once nothing points at it any more.
+Final assignments alone are not a safe write order. The allocator also simulates every
+surviving address's live reference: an entry may overwrite its destination block only after
+addresses belonging to other entries have moved away. `reconcile.c` follows that order,
+writing an entry's complete table before its keys, and clears released blocks only after all
+entries have been published (`docs/design/31-file-configuration.md` §8).
+
+**Cyclic regrouping is handled automatically.** For example, changing `[A,B]` and `[C,D]`
+into `[A,C]` and `[B,D]` can leave neither retained block safe to rewrite first. The planner
+assigns an entry an unreferenced, otherwise-unassigned final block, overriding its initial
+retention preference, then continues scheduling. No extra block is permanently reserved and
+no temporary per-packet or association state is introduced. That entry's statistics-slot
+identity follows its new `vip_num`; an unchanged subsequent reload retains it.
+
+Incomplete baseline reads or an invalid allocation plan fail before map writes. A failed
+write stops execution before any dependent block reuse. This prevents an unchanged address
+from observing an unrelated entry's table between writes, but does not turn reload into an
+atomic transaction or alter the existing in-flight-reader limitations.
 
 ## Rejected: stateful and cooperative alternatives
 

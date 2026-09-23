@@ -235,21 +235,54 @@ MARLIN_TEST(sctp_hash_ports_ignores_client_address)
 {
     unsigned char first[ETH_ALEN];
     struct xdp_run_result result;
+    __be32 other_src = 0;
+    struct vip_key key;
 
-    sctp_vip_seed(VIP_HASH_PORTS);
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    backend_seed_l2dsr(ALT_BACKEND_ID, ALT_BACKEND_MAC);
+    vip_seed4(V4_DST, SCTP_VIP_PORT, IPPROTO_SCTP, SCTP_VIP_NUM, 0);
+    xdp_fwd_fill_striped(SCTP_VIP_NUM, NH_BACKEND_ID, ALT_BACKEND_ID);
     sctp_build_frame4(V4_SRC, V4_DST, 11111, SCTP_VIP_PORT);
     result = run_current_packet();
     CHECK_EQ(0, result.err);
     CHECK_XDP(XDP_TX, result.retval);
     memcpy(first, out_buf, ETH_ALEN);
 
-    sctp_build_frame4(ACL_ADDR4(203, 0, 113, 200), V4_DST, 11111, SCTP_VIP_PORT);
-    result = run_current_packet();
-    CHECK_EQ(0, result.err);
-    CHECK_XDP(XDP_TX, result.retval);
-    CHECK_MEM(first, out_buf, ETH_ALEN);
+    /* The negative control rules out two addresses coincidentally choosing the same backend. */
+    for(__u32 i = 1; i <= 32; i++) {
+        __be32 src = ACL_ADDR4(203, 0, 113, i);
 
-    sctp_vip_clear();
+        sctp_build_frame4(src, V4_DST, 11111, SCTP_VIP_PORT);
+        result = run_current_packet();
+        CHECK_EQ(0, result.err);
+        CHECK_XDP(XDP_TX, result.retval);
+        if(result.err == 0 && result.retval == XDP_TX && memcmp(first, out_buf, ETH_ALEN) != 0) {
+            other_src = src;
+            break;
+        }
+    }
+    CHECK_TRUE(other_src != 0);
+
+    if(other_src != 0) {
+        vip_seed4(V4_DST, SCTP_VIP_PORT, IPPROTO_SCTP, SCTP_VIP_NUM, VIP_HASH_PORTS);
+        sctp_build_frame4(V4_SRC, V4_DST, 11111, SCTP_VIP_PORT);
+        result = run_current_packet();
+        CHECK_EQ(0, result.err);
+        CHECK_XDP(XDP_TX, result.retval);
+        memcpy(first, out_buf, ETH_ALEN);
+
+        sctp_build_frame4(other_src, V4_DST, 11111, SCTP_VIP_PORT);
+        result = run_current_packet();
+        CHECK_EQ(0, result.err);
+        CHECK_XDP(XDP_TX, result.retval);
+        CHECK_MEM(first, out_buf, ETH_ALEN);
+    }
+
+    vip_key4(&key, V4_DST, SCTP_VIP_PORT, IPPROTO_SCTP);
+    xdp_vip_del(&key);
+    xdp_fwd_clear(SCTP_VIP_NUM);
+    xdp_backend_clear(NH_BACKEND_ID);
+    xdp_backend_clear(ALT_BACKEND_ID);
 }
 
 static int sctp_hash_ports_sport_moves_selection(__u16 count)
