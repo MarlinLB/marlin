@@ -101,6 +101,10 @@ bool conf_parse_proto(const char *str, __u8 *out)
         *out = IPPROTO_UDP;
         return true;
     }
+    if(strcmp(str, "sctp") == 0) {
+        *out = IPPROTO_SCTP;
+        return true;
+    }
     return false;
 }
 

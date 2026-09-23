@@ -17,8 +17,25 @@ in both families exactly like the unfragmented head, and an IPv6 fragment head o
 Fragmentable Part opens with an extension header instead of the upper-layer protocol, also
 `unsupported_proto` (`docs/design/11-pipeline.md`) — IPv6 extension-header chains — including
 one at `MAX_EXT_HDRS` and one beyond it — ICMP errors including the embedded-header path,
-port-agnostic VIPs, the sentinel and down-backend paths, and the header-adjustment paths where
-pointer invalidation bites.
+port-agnostic VIPs, the sentinel and down-backend paths, the header-adjustment paths where
+pointer invalidation bites, and SCTP forwarded in every mode alongside TCP/UDP, including an
+embedded-header ICMP quote (`docs/design/32-sctp.md`).
+
+**`VIP_HASH_PORTS` and address groups** (`docs/design/32-sctp.md`) get the same doubled-regime
+treatment `VIP_HASH_5TUPLE` gets below: with the flag set, changing the client address leaves
+the selected backend unchanged and changing the source port moves it; with it clear, the
+reverse. A group's two `vip_map` keys (one per family, `xdp_fixture.c`'s `sctp_vip_seed()`)
+select the same backend under both regimes, and their traffic merges into one `vip_stats`
+counter. Fragments on a `VIP_HASH_PORTS` VIP drop `frag_unsupported`, the same assertion
+`VIP_HASH_5TUPLE` gets below. The client-failover and server-multi-homing claims themselves —
+that an association actually survives or actually fails — are integration-tier only
+(`data-plane/scripts/`): the packet tier has no kernel SCTP stack to form an association with.
+
+The client-address-independence case uses two distinguishable backends in a striped table.
+It first finds two sources that route differently under the default hash, then proves those
+same sources route identically with `VIP_HASH_PORTS`. A single-backend table cannot test this
+property. Fragment coverage separates an explicit-port first fragment from a non-first
+fragment on a port-0 VIP, so both cases reach the fragment guard.
 
 **`VIP_HASH_5TUPLE` doubles the selection regime rather than replacing it**
 (`docs/design/12-selection.md`). The determinism above makes each assertion exact:
@@ -339,6 +356,19 @@ device in that case, and the verifier rewrites `ctx->ingress_ifindex` to that de
 1, not 0. The packet-level harness `unshare(CLONE_NEWNET)`s before loading the program so that
 ifindex, and what `bpf_fib_lookup()` makes of it, do not depend on the host's own routing table or
 `net.ipv4.ip_forward`.
+
+### File-managed reload tests
+
+`data-plane/tests/vip_alloc_test.c` checks allocation and the intermediate reference invariant,
+including regrouping cycles, full key capacity, split/merge ordering and release sets.
+`data-plane/tests/reconcile_test.c` executes the real reconciler with in-memory userspace map
+operations. It checks routing between table-row writes and key publications, including batch
+fallback, partial failures and retries. In the merge-plus-addition and split regressions, an
+address whose old and desired backend are identical must never observe a different backend.
+Baseline read failures must produce diagnostics before any map mutation.
+
+These native tests exercise write ordering without privileged kernel setup. They do not model
+concurrent in-flight readers or claim atomic map-generation replacement.
 
 ## Integration tests
 

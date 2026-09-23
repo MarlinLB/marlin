@@ -89,6 +89,11 @@ static __always_inline int marlin_proto_unsupported(__u8 proto)
     return proto == IPPROTO_ESP || proto == IPPROTO_AH;
 }
 
+static __always_inline int marlin_proto_has_ports(__u8 proto)
+{
+    return proto == IPPROTO_TCP || proto == IPPROTO_UDP || proto == IPPROTO_SCTP;
+}
+
 _Static_assert(MARLIN_L3_OFF_ETH + sizeof(struct ipv6hdr) + ((unsigned long)MAX_EXT_HDRS * 2048UL) < 0x10000UL,
                "the IPv6 extension-header walk must not push l4_off past marlin_ctx.l4_off's width");
 
@@ -211,7 +216,7 @@ static __always_inline int marlin_parse_ports(const void *data, const void *data
         return MARLIN_DROP_UNSUPPORTED_PROTO;
     }
 
-    if(proto != IPPROTO_TCP && proto != IPPROTO_UDP) {
+    if(!marlin_proto_has_ports(proto)) {
         return MARLIN_PASS_NOT_FORWARDED;
     }
 

@@ -1,8 +1,18 @@
 # Marlin — Design
 
 **Status:** design settled, pre-implementation
-**Last updated:** 2026-09-17
-**Revision:** 13 — operator-controlled per-VIP outer DSCP marking added for IPIP, GUE and VXLAN
+**Last updated:** 2026-09-23
+**Revision:** 14 — SCTP added as a forwarded protocol (`32-sctp.md`): `parser.c` reads its
+common header's port word exactly as it does TCP/UDP's, no checksum work is needed in any mode,
+and two new per-VIP mechanisms address its multi-homing surface without per-flow state.
+`VIP_HASH_PORTS` (`vip_meta.flags` bit 4) hashes the port pair alone, for client-side failover;
+address groups (several `vip_map` keys sharing one `vip_meta`, `data-plane/include/marlind/conf.h`
+and `vip_alloc.h`) protect server-side multi-homing for every protocol. `01-scope.md`,
+`08-types.md`, `11-pipeline.md`, `12-selection.md`, `13-icmp.md`, `18-health.md`,
+`20-configuration-validation.md`, `21-active-active.md`, `22-observability.md`, `23-mtu.md`,
+`24-testing.md`, `25-rejected.md`, `27-source-filtering.md`, `31-file-configuration.md`,
+`DEPLOYMENT.md` and `PHASES.md` follow the consequence.
+Revision 13 — operator-controlled per-VIP outer DSCP marking added for IPIP, GUE and VXLAN
 (`14-forwarding-modes.md` §7.2): `vip_meta.flags` bits 16-21 become `VIP_DSCP`, a six-bit
 configured codepoint shifted `<< 2` into the outer header's `tos` byte before its checksum, 0
 (CS0) the default and byte-identical to every frame emitted before the field existed.
@@ -82,3 +92,4 @@ provisioning are the integrator's responsibility; see `DEPLOYMENT.md`.
 | 29-versions.md | Minimum kernel and toolchain version requirements |
 | 30-quic.md | QUIC connection-ID steering: wire format, ABI, and the backend contract |
 | 31-file-configuration.md | **Proposed, pre-decision.** TOML file configuration read by `marlind`, and the single-writer rule it depends on |
+| 32-sctp.md | SCTP as a forwarded protocol: `VIP_HASH_PORTS`, address groups, and the rejected stateful alternatives |

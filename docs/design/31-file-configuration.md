@@ -2,7 +2,7 @@
 
 **Status:** implemented in `marlind`. §11 records the outcome of each open decision; the ones
 still open are also carried in `PHASES.md`'s open-decision table.
-**Reconciled against:** `docs/design/README.md` revision 13, `data-plane/marlind/` as it stands.
+**Reconciled against:** `docs/design/README.md` revision 14, `data-plane/marlind/` as it stands.
 
 **The default path is `/etc/marlind/marlin.conf`, not `/etc/marlin/marlin.toml`** — §4's example
 below is corrected to match. `deploy/marlin.conf.example` is the shipped, fully worked example.
@@ -192,14 +192,16 @@ egress      = "eth0"                    # optional; omit for no expectation
 # inner_mac = "52:54:00:00:00:01"       # VXLAN only
 
 [[vip]]
-addr        = "203.0.113.1"
+addr        = "203.0.113.1"              # or ["203.0.113.1", "2001:db8::1"] -- an address group
 port        = 443                       # 0 = any port
-proto       = "tcp"
+proto       = "tcp"                     # "tcp" | "udp" | "sctp"
 hash_key    = "00112233445566778899aabbccddeeff"   # 32 hex digits, 16 bytes
 table_seed  = "ffeeddccbbaa99887766554433221100"   # 32 hex digits, 16 bytes
 acl         = true                      # VIP_ACL
 ratelimit   = false                     # VIP_RATELIMIT
 hash_5tuple = false                     # VIP_HASH_5TUPLE
+hash_ports  = false                     # VIP_HASH_PORTS; SCTP-only, landed in revision 14
+                                         #   (docs/design/32-sctp.md), after this document's first draft
 quic        = false                     # VIP_QUIC
 # quic_cid_len = 8                      # VIP_QUIC_CID_LEN, 7–20; required when quic = true
 # dscp        = 46                      # VIP_DSCP, 0–63; landed in revision 13, after this
@@ -209,6 +211,12 @@ members = [
     { backend = "web-02", weight = 50 },
 ]
 ```
+
+**`addr` accepts a string or an array of strings** (`docs/design/32-sctp.md`), the latter an
+address group: every address becomes its own `vip_map` key, and all of them share this entry's
+`port`, `proto`, `hash_key`, `table_seed`, flags and `members` — one `vip_num`, one `fwd_table`
+block, one `vip_stats` counter. `docs/design/20-configuration-validation.md` carries the group
+rules SCTP needs.
 
 Five shape decisions, each forced rather than chosen:
 
@@ -252,7 +260,7 @@ the schema rather than a check.
 
 | Derived | From | Note |
 |---|---|---|
-| `vip_meta.vip_num` | allocated over `MAX_VIPS` blocks | surviving VIPs keep the block they already hold, read back from `vip_map`; new VIPs take free blocks. Minimises rewritten rows and makes a reload's churn proportional to the change |
+| `vip_meta.vip_num` | allocated over `MAX_VIPS` blocks, one per `[[vip]]` entry regardless of how many addresses it holds (`docs/design/32-sctp.md`) | a surviving entry prefers a block one of its addresses already holds, read back from `vip_map`; new entries take free numbers. Cyclic regrouping may change that preference to an unreferenced final block. `data-plane/marlind/vip_alloc.c` computes assignments, safe write order and the release set before map writes |
 | `fwd_table` block | `table_seed`, members, weights (`docs/design/12-selection.md`) | `TABLE_SIZE` rows per VIP; `tools/marlin_seed.c:117` already writes a whole block with one `bpf_map_update_batch()` |
 | `config.rl_refill`, `config.rl_burst` | `tokens_per_sec`, `burst_packets` | the scaling of `docs/design/28-rate-limiting.md`; the datapath performs no unit conversion |
 | `config.acl_lists` | which of the four lists are non-empty | bit index `(list << 1) \| family` (`docs/design/08-types.md`) |
@@ -388,19 +396,41 @@ Additions the file form introduces:
 - A `members` entry naming a `[[backend]]` that does not exist, and a duplicate `name` or `id`.
 - `tx_ports` naming an interface that does not resolve, and `egress` naming one that is neither
   the attach interface nor in `tx_ports` — the existing rule, now checkable by name.
-- More than `MAX_VIPS` `[[vip]]` blocks or `MAX_BACKENDS - 1` `[[backend]]` blocks
-  (`abi/defines.h:25-26`). Reading the limits from the header rather than restating them is the
-  discipline `data-plane/scripts/common.sh`'s `abi_define()` already follows.
+- More than `MAX_VIPS` VIP **addresses** across every `[[vip]]` entry, or `MAX_BACKENDS - 1`
+  `[[backend]]` blocks (`abi/defines.h:25-26`). An address group (`docs/design/32-sctp.md`) is
+  one entry but several `vip_map` keys, so the bound is on keys, the map's real capacity, not on
+  entries. Reading the limits from the header rather than restating them is the discipline
+  `data-plane/scripts/common.sh`'s `abi_define()` already follows.
+- Two VIP addresses identical in address, port and protocol, whether in the same entry (a
+  duplicate inside a group) or in two different ones (`docs/design/32-sctp.md`).
 
 Write ordering is `docs/design/12-selection.md`'s and `docs/design/27-source-filtering.md`'s,
-plus **one rule neither states, because neither has a component that allocates `vip_num`**:
+plus **one rule neither states, because neither has a component that allocates `vip_num`**,
+extended to entries with several addresses:
 
-> Write a VIP's `fwd_table` block **before** writing the `vip_map` entry that points into it,
-> and zero the entry **before** reusing its block.
+> Delete keys absent from the desired configuration first. Before overwriting an entry's
+> destination block, move every surviving key belonging to another entry away from that block.
+> Write the complete destination block, then publish **every one of its** entry's keys.
+> Zero released blocks only after every surviving key has moved to its final destination.
 
 It is `docs/design/12-selection.md`'s reasoning one level up — `vip_num` is a reference the
 datapath follows to reach data, exactly as a row is — and without it a VIP moved between blocks
-forwards into another VIP's member set for the length of the rewrite.
+forwards into another VIP's member set for the length of the rewrite. Delaying zeroing alone
+does not prevent this: a new entry can overwrite an absorbed block before a merge moves its
+remaining address, and a split can rewrite the retained shared block before its other address
+moves out.
+
+`data-plane/marlind/vip_alloc.c` simulates these references and returns a deterministic write
+order as well as assignments and a release set. If regrouping creates a dependency cycle, it
+assigns an entry an unreferenced, otherwise-unassigned final block to break the cycle. This is
+automatic, not an operator-managed sequence of reloads, and reserves no permanent spare.
+The affected group's `vip_num`, and therefore statistics-slot identity, may change; ordinary
+non-conflicting reloads retain the existing assignment preference.
+
+The reconciler requires a complete baseline read and a successful plan before any map write.
+A table or key write failure stops execution before dependent entries can reuse the block; a
+retry plans from the actual maps. These are ordering guarantees between operations, not an
+atomic reload or a new guarantee for packets already holding a previous map value.
 
 **A second rule this document did not originally state either, found implementing it: `config.acl_lists`
 needs the same "reference before referent" treatment as `vip_num`, one level further out.**
@@ -461,7 +491,7 @@ the ten are now closed, by implementation; the remaining two are carried forward
 | D-F5 — whether `config.max_frame` tracks netlink link events | **Still open** — carried in `PHASES.md`. `marlind` derives it once, at reconcile time, from `SIOCGIFMTU`; it does not yet subscribe the existing netlink socket to MTU changes. |
 | D-F6 — where the generation-side SipHash lives | **Closed: a third transcription**, `data-plane/marlind/hash.c` (§5). |
 | D-F7 — where key generation lives | **Closed: documented `openssl rand -hex 16`.** No `marlind` subcommand; `deploy/marlin.conf.example`'s header and `docs/DEPLOYMENT.md` carry the command. A generator subcommand was rejected as unnecessary surface: the two secrets are opaque 16-byte values with no structure a purpose-built generator would validate. |
-| D-F8 — `port == 0` companion schema sugar | **Still open** — carried in `PHASES.md`, blocked on the same fragment-tail admission decision it always was. |
+| D-F8 — `port == 0` companion schema sugar | **Still open** — carried in `PHASES.md`, blocked on the same fragment-tail admission decision it always was. The machinery it would need already exists: `docs/design/32-sctp.md`'s address groups (`addr` as an array, `vip_alloc.c`) give one `[[vip]]` entry several `vip_map` keys sharing one `vip_meta`, the same shape a `ports` list needs — but D-F8 stays blocked on the fragment-tail decision regardless. |
 | D-F9 — the ACL trie value | **Closed: rule ordinal within its list** (§5), a diagnostic label. |
 | D-F10 — the byte encoding of `fwd_table` generation's hash inputs | **Closed: pinned in §5's derivation table** and restated here for visibility, since `docs/design/12-selection.md` is the document that should have stated it and did not. Both hashes are keyed by the VIP's `table_seed`. `row_seed = siphash(row_index as little-endian u32, padded to 8 bytes; table_seed)`. `score_input = siphash(row_seed as little-endian u64 (8B) ++ backend.addr exactly as stored, network order (4B) ++ backend.vni as little-endian u32 (4B) ++ backend.inner_mac (6B) ++ two zero pad bytes; table_seed)`, 24 bytes total. Little-endian for host-order scalars matches the datapath's own convention (`include/marlin/siphash.h:36-39`); network order for `addr` makes the buffer a direct copy of the ABI field. `data-plane/tests/fwd_gen_test.c` carries a computed vector over this encoding — not yet an external oracle, since no second implementation exists to check it against, but the concrete number a future `Marlin.Core` port must reproduce. |
 

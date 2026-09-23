@@ -542,6 +542,9 @@ static void parse_vip_flag_bits(toml_datum_t tab, struct conf_vip *vip, const ch
     if(get_bool(tab, "hash_5tuple", path, diag, &present, &flag) && flag) {
         vip->meta.flags |= VIP_HASH_5TUPLE;
     }
+    if(get_bool(tab, "hash_ports", path, diag, &present, &flag) && flag) {
+        vip->meta.flags |= VIP_HASH_PORTS;
+    }
     if(get_bool(tab, "quic", path, diag, &present, &flag) && flag) {
         vip->meta.flags |= VIP_QUIC;
     }
@@ -562,26 +565,93 @@ static void parse_vip_flag_bits(toml_datum_t tab, struct conf_vip *vip, const ch
     }
 }
 
-static void parse_vip_address(toml_datum_t tab, struct conf_vip *vip, const char *path, struct conf_diag *diag)
+static bool parse_one_addr(const char *addr_str, struct vip_key *key, const char *path, struct conf_diag *diag)
 {
-    char addr_str[64];
-
-    if(!req_str(tab, "addr", path, diag, addr_str, sizeof(addr_str))) {
-        return;
-    }
-
-    if(conf_parse_ipv4(addr_str, &vip->key.addr4)) {
-        vip->key.family = AF_INET;
-        return;
-    }
     __u8 addr6[16];
 
+    memset(key, 0, sizeof(*key));
+
+    if(conf_parse_ipv4(addr_str, &key->addr4)) {
+        key->family = AF_INET;
+        return true;
+    }
     if(conf_parse_ipv6(addr_str, addr6)) {
-        vip->key.family = AF_INET6;
-        memcpy(vip->key.addr6, addr6, 16);
+        key->family = AF_INET6;
+        memcpy(key->addr6, addr6, 16);
+        return true;
+    }
+    conf_diag_add(diag, "%s is not a valid IPv4 or IPv6 address", path);
+    return false;
+}
+
+/*
+ * addr is a single string, or an array of strings for an address group
+ * (docs/design/32-sctp.md): every address ends up a separate vip_map key
+ * sharing this entry's port/proto/hash_key/table_seed/flags/members, and
+ * therefore one vip_num.
+ */
+static void parse_vip_address(toml_datum_t tab, struct conf_vip *vip, const char *path, struct conf_diag *diag)
+{
+    toml_datum_t datum = toml_get(tab, "addr");
+    char addr_path[48];
+    char addr_str[64];
+
+    if(datum.type == TOML_UNKNOWN) {
+        conf_diag_add(diag, "%s.addr is required", path);
         return;
     }
-    conf_diag_add(diag, "%s.addr is not a valid IPv4 or IPv6 address", path);
+
+    if(datum.type == TOML_STRING) {
+        if((size_t)datum.u.str.len >= sizeof(addr_str)) {
+            conf_diag_add(diag, "%s.addr is too long (max %zu bytes)", path, sizeof(addr_str) - 1);
+            return;
+        }
+        memcpy(addr_str, datum.u.str.ptr, (size_t)datum.u.str.len);
+        addr_str[datum.u.str.len] = '\0';
+
+        vip->keys = calloc(1, sizeof(*vip->keys));
+        if(vip->keys == NULL) {
+            conf_diag_add(diag, "out of memory parsing %s.addr", path);
+            return;
+        }
+        vip->key_count = 1;
+        (void)snprintf(addr_path, sizeof(addr_path), "%s.addr", path);
+        (void)parse_one_addr(addr_str, &vip->keys[0], addr_path, diag);
+        return;
+    }
+
+    if(datum.type != TOML_ARRAY) {
+        conf_diag_add(diag, "%s.addr must be a string or an array of strings", path);
+        return;
+    }
+    if(datum.u.arr.size <= 0) {
+        conf_diag_add(diag, "%s.addr must not be an empty array", path);
+        return;
+    }
+
+    vip->keys = calloc((size_t)datum.u.arr.size, sizeof(*vip->keys));
+    if(vip->keys == NULL) {
+        conf_diag_add(diag, "out of memory parsing %s.addr", path);
+        return;
+    }
+    vip->key_count = (__u32)datum.u.arr.size;
+
+    for(int32_t i = 0; i < datum.u.arr.size; i++) {
+        toml_datum_t elem = datum.u.arr.elem[i];
+
+        (void)snprintf(addr_path, sizeof(addr_path), "%s.addr[%d]", path, i);
+        if(elem.type != TOML_STRING) {
+            conf_diag_add(diag, "%s must be a string", addr_path);
+            continue;
+        }
+        if((size_t)elem.u.str.len >= sizeof(addr_str)) {
+            conf_diag_add(diag, "%s is too long (max %zu bytes)", addr_path, sizeof(addr_str) - 1);
+            continue;
+        }
+        memcpy(addr_str, elem.u.str.ptr, (size_t)elem.u.str.len);
+        addr_str[elem.u.str.len] = '\0';
+        (void)parse_one_addr(addr_str, &vip->keys[i], addr_path, diag);
+    }
 }
 
 static void parse_vip_member(toml_datum_t elem, struct conf_member *member, const char *path, struct conf_diag *diag)
@@ -646,13 +716,21 @@ static void parse_one_vip(toml_datum_t tab, struct conf_vip *vip, __u32 idx, str
         if(present && (port < 0 || port > 0xffff)) {
             conf_diag_add(diag, "%s.port out of range (0-65535)", path);
         } else {
-            vip->key.port = htons((__u16)port);
+            for(__u32 k = 0; k < vip->key_count; k++) {
+                vip->keys[k].port = htons((__u16)port);
+            }
         }
     }
 
     if(req_str(tab, "proto", path, diag, proto_str, sizeof(proto_str))) {
-        if(!conf_parse_proto(proto_str, &vip->key.proto)) {
-            conf_diag_add(diag, "%s.proto must be \"tcp\" or \"udp\"", path);
+        __u8 proto;
+
+        if(!conf_parse_proto(proto_str, &proto)) {
+            conf_diag_add(diag, "%s.proto must be \"tcp\", \"udp\" or \"sctp\"", path);
+        } else {
+            for(__u32 k = 0; k < vip->key_count; k++) {
+                vip->keys[k].proto = proto;
+            }
         }
     }
 
@@ -828,6 +906,7 @@ void conf_free(struct marlin_conf *conf)
     free(conf->acl.block_v6);
 
     for(__u32 i = 0; i < conf->vip_count; i++) {
+        free(conf->vips[i].keys);
         free(conf->vips[i].members);
     }
     free(conf->vips);

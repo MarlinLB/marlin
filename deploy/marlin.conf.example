@@ -90,7 +90,7 @@ inner_mac = "52:54:00:00:00:01"
 [[vip]]
 addr       = "203.0.113.1"
 port       = 443
-proto      = "tcp"
+proto      = "tcp"                   # tcp | udp | sctp
 hash_key   = "00112233445566778899aabbccddeeff"
 table_seed = "ffeeddccbbaa99887766554433221100"
 acl        = true
@@ -103,7 +103,7 @@ members = [
 [[vip]]
 addr         = "203.0.113.2"
 port         = 443
-proto        = "udp"
+proto        = "udp"                 # tcp | udp | sctp
 hash_key     = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
 table_seed   = "f0e1d2c3b4a5968778695a4b3c2d1e0f"
 acl          = true
@@ -121,10 +121,30 @@ members = [
 [[vip]]
 addr       = "2001:db8::1"           # IPv6 VIP; backend.addr stays IPv4 by ABI (docs/design/15-nexthop-l2dsr.md)
 port       = 0                       # 0 matches any port
-proto      = "tcp"
+proto      = "tcp"                   # tcp | udp | sctp
 hash_key   = "112233445566778899aabbccddeeff00"
 table_seed = "eeddccbbaa99887766554433221100ff"
 acl        = false
 members = [
     { backend = "web-01", weight = 100 },
+]
+
+# An address group (docs/design/32-sctp.md): every address shares this
+# entry's port/proto/hash_key/table_seed/members and therefore one
+# vip_num, one fwd_table block and one vip_stats counter -- what lets a
+# multi-homed SCTP client or a dual-stack server reach the group from any
+# of its addresses without its HEARTBEATs landing on different backends.
+# Mixing IPv4 and IPv6 in one group requires hash_ports = true, since the
+# address hash would otherwise pick a different row per family.
+[[vip]]
+addr       = ["203.0.113.3", "2001:db8::3"]
+port       = 38412
+proto      = "sctp"                  # tcp | udp | sctp
+hash_key   = "223344556677889900aabbccddeeff11"
+table_seed = "ffeeddccbbaa998877665544332211ee"
+acl        = true
+hash_ports = true
+members = [
+    { backend = "web-01", weight = 100 },
+    { backend = "web-02", weight = 100 },
 ]

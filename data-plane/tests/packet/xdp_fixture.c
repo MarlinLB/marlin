@@ -128,6 +128,26 @@ void udp_vip_clear(void)
     xdp_backend_clear(NH_BACKEND_ID);
 }
 
+void sctp_vip_seed(__u32 flags)
+{
+    backend_seed_l2dsr(NH_BACKEND_ID, NH_BACKEND_MAC);
+    vip_seed4(V4_DST, SCTP_VIP_PORT, IPPROTO_SCTP, SCTP_VIP_NUM, flags);
+    vip_seed6(DST6, SCTP_VIP_PORT, IPPROTO_SCTP, SCTP_VIP_NUM, flags);
+    xdp_fwd_fill(SCTP_VIP_NUM, NH_BACKEND_ID);
+}
+
+void sctp_vip_clear(void)
+{
+    struct vip_key key;
+
+    vip_key4(&key, V4_DST, SCTP_VIP_PORT, IPPROTO_SCTP);
+    xdp_vip_del(&key);
+    vip_key6(&key, DST6, SCTP_VIP_PORT, IPPROTO_SCTP);
+    xdp_vip_del(&key);
+    xdp_fwd_clear(SCTP_VIP_NUM);
+    xdp_backend_clear(NH_BACKEND_ID);
+}
+
 void seed_acl_cfg(__u32 flags, __u16 acl_lists)
 {
     struct marlin_config cfg;

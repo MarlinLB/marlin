@@ -5,7 +5,9 @@ Single entry point. Because Marlin holds no per-flow state and backends reply di
 clients, there is no reverse path and no classifier.
 
 1. **Parse** L2 and L3. Determine L4 offset.
-2. **Parse L4 far enough to obtain the destination port**, which `vip_key` requires. For
+2. **Parse L4 far enough to obtain the destination port**, which `vip_key` requires. TCP, UDP
+   and SCTP all carry it at the same offset (`docs/design/32-sctp.md`), so one read covers all
+   three; every other protocol is `not_forwarded` — `XDP_PASS`, ahead of the ACL. For
    ICMP, take the ICMP branch (`docs/design/13-icmp.md`).
 
    For IPv4 the L4 offset follows from `ihl`. **For IPv6 it does not:** hop-by-hop, routing,

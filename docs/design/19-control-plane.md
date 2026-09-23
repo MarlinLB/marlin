@@ -4,7 +4,11 @@
 ## Responsibilities
 
 - Own the configuration of record and reconcile the maps to it.
-- Generate `fwd_table` per VIP from the stored `table_seed` and member set, and write it.
+- Generate `fwd_table` per VIP from the stored `table_seed` and member set, and write it. A VIP
+  is one or more addresses — an address group (`docs/design/32-sctp.md`) — sharing one
+  `table_seed`, one member set and therefore one `vip_num`; `marlind`'s file-managed mode gives
+  this allocation the same rule `data-plane/marlind/vip_alloc.c` implements, and this control
+  plane needs the same rule once it supports groups (Phase 3).
 - **Write `backend.id` equal to the slot it is writing to, on every add.** The array slot is
   already the backend's identity (`docs/design/07-maps.md`); this makes the value carry it too, and
   a mismatch is a control-plane bug the reconciler asserts against at the write site

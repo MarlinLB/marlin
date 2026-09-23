@@ -62,6 +62,9 @@ __u32 pb_ports(__u16 sport_host, __u16 dport_host);
  */
 __u32 pb_udp(__u16 sport_host, __u16 dport_host, __u16 len_host);
 
+/* Full 12-byte SCTP common header -- source/dest overlay marlin_l4_ports exactly as pb_ports() writes them. */
+__u32 pb_sctp(__u16 sport_host, __u16 dport_host, __u32 vtag_host);
+
 /*
  * One byte carrying only the QUIC header-form bit (RFC 8999 SS4.1;
  * MARLIN_QUIC_LONG_HEADER in proto.h): 0x80 set selects a long header, clear

@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Forward SCTP like TCP/UDP: `parser.c` reads its port word the same way, and host-bound SCTP
+  now counts `vip_miss` under the ACL enforcement gate rather than `not_forwarded`
+  (`docs/design/32-sctp.md`).
+- `VIP_HASH_PORTS` (`vip_meta.flags` bit 4): hash the source/dest port pair alone for row
+  selection, SCTP-only and mutually exclusive with `VIP_HASH_5TUPLE`. For client-side
+  multi-homing failover, which the address hash cannot survive. Drops every fragment, counted
+  `frag_unsupported`, the same trade `VIP_HASH_5TUPLE` already makes.
 - Implement the load-balancer core in `lb_core.c`. With this translation unit (TU), `balancer.c`
   TU can be decomissioned. The `lb_core` TU is responsible for VIP lookup, ACL enforcement,
   backend selection (including QUIC steering) and DSCP marking.

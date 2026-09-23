@@ -24,6 +24,11 @@ A single drop counter is insufficient. `drop_stats` is indexed by reason:
 `rl_insert_failed` (an admit, counted; `docs/design/28-rate-limiting.md`),
 `egress_mismatch` (not a drop, counted; `docs/design/16-fib-lookup.md`), `neigh_fallback` (not a drop, counted; `docs/design/16-fib-lookup.md`).
 
+**Host-bound SCTP counts `vip_miss`, not `not_forwarded`** (`docs/design/32-sctp.md`): SCTP is a
+port-bearing protocol like TCP and UDP, so an SCTP packet addressed to no configured VIP takes
+the same path any other port-bearing protocol's miss does, under the instance-wide ACL block.
+Only a protocol `marlin_proto_has_ports()` does not name reaches `not_forwarded` at all.
+
 Twenty-four of `DROP_REASON_MAX`. `enum marlin_ret` carries several more that this list does not
 name; reconciling the two is `marlin.h`'s open decision D6. One of those unnamed values gets its
 meaning fixed here regardless, since it is otherwise a footgun for whoever implements the
@@ -54,7 +59,7 @@ VIP's short-header volume is the aggregate signal that steering is not landing.
 
 | Signal | Scope | Diagnoses |
 |---|---|---|
-| packets, bytes | per VIP, per backend | distribution, hotspots, dead backends |
+| packets, bytes | per VIP, per backend | distribution, hotspots, dead backends — "per VIP" is per `vip_num`, so an address group's addresses (`docs/design/32-sctp.md`) share one counter, the same way its addresses share one block |
 | `mac_fallback` | instance | control plane not maintaining `backend.mac` — **unless** the deployment omits MACs deliberately (below), where it is the steady state and carries no signal |
 | `neigh_fallback` | instance | the kernel neighbour table is behind the control plane: a MAC was stored and usable, the neighbour entry for the same address was missing (`docs/design/16-fib-lookup.md`) |
 | `egress_mismatch` | instance | `backend.egress_ifindex` disagrees with the FIB — a stale reachability determination (`docs/design/16-fib-lookup.md`) |

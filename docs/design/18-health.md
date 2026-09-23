@@ -19,6 +19,13 @@ In each case the probe is addressed to the **VIP**, not the backend address, and
 the path Marlin would use. That is what distinguishes "the backend is up" from "the backend
 will accept what Marlin sends it".
 
+**No probe protocol is specified for any VIP here**, TCP or otherwise — the table above is a
+mode/path table, not a protocol one, and "TCP connect" above names only the rejected
+address-only alternative. An SCTP VIP's probe therefore has no answer yet either: whether it
+means a real probe association, a fallback TCP/ICMP proxy check, or something else, and which
+group address (`docs/design/32-sctp.md`) it targets when the VIP has more than one, is an open
+decision (`docs/PHASES.md`, Phase 3) rather than an omission from this document.
+
 ## The prober must not share a routing domain with the VIP
 
 Backends source from the VIP, so a backend's reply to a VIP-addressed probe carries the VIP as

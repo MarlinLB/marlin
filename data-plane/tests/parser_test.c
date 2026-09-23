@@ -581,9 +581,23 @@ MARLIN_TEST(parse_ports_ah_is_unsupported_proto)
     check_ports_untouched_after(MARLIN_DROP_UNSUPPORTED_PROTO, IPPROTO_AH, 4);
 }
 
-MARLIN_TEST(parse_ports_sctp_is_not_forwarded)
+MARLIN_TEST(parse_ports_sctp_exact_four_bytes_is_ok)
 {
-    check_ports_untouched_after(MARLIN_PASS_NOT_FORWARDED, IPPROTO_SCTP, 4);
+    __be16 sport;
+    __be16 dport;
+    int rc;
+
+    pb_reset();
+    pb_ports(38412, 132);
+    rc = marlin_parse_ports(pb_arena, pb_arena + pb_len, 0, IPPROTO_SCTP, &sport, &dport);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(bpf_htons(38412), sport);
+    CHECK_EQ(bpf_htons(132), dport);
+}
+
+MARLIN_TEST(parse_ports_sctp_truncated_three_bytes_is_parse_error)
+{
+    check_ports_untouched_after(MARLIN_DROP_PARSE_ERROR, IPPROTO_SCTP, 3);
 }
 
 MARLIN_TEST(parse_ports_gre_is_not_forwarded)
@@ -882,7 +896,7 @@ MARLIN_TEST(parse_ipv4_ah_is_unsupported_proto)
     CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
 }
 
-MARLIN_TEST(parse_ipv4_sctp_is_not_forwarded)
+MARLIN_TEST(parse_ipv4_sctp_ok)
 {
     struct xdp_md md;
     struct marlin_ctx mctx;
@@ -891,10 +905,13 @@ MARLIN_TEST(parse_ipv4_sctp_is_not_forwarded)
     pb_reset();
     pb_eth(ETH_P_IP);
     pb_ipv4(IPPROTO_SCTP, 5, 0, V4_SRC, V4_DST);
+    pb_sctp(38412, 132, 0xdeadbeef);
     pb_xdp(&md);
     mctx_init(&mctx);
     rc = marlin_parse(&md, &mctx);
-    CHECK_RET(MARLIN_PASS_NOT_FORWARDED, rc);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(bpf_htons(38412), mctx.tuple.sport);
+    CHECK_EQ(bpf_htons(132), mctx.tuple.dport);
 }
 
 MARLIN_TEST(parse_ipv4_gre_is_not_forwarded)
@@ -1047,6 +1064,26 @@ MARLIN_TEST(parse_ipv4_non_first_fragment_ah_is_unsupported_proto)
     CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
 }
 
+MARLIN_TEST(parse_ipv4_non_first_fragment_sctp_is_ok_no_ports)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_SCTP, 5, 0x0040, V4_SRC, V4_DST);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    mctx.tuple.sport = 0xdead;
+    mctx.tuple.dport = 0xbeef;
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(MARLIN_CTX_F_FRAG, mctx.flags);
+    CHECK_EQ(0xdead, mctx.tuple.sport);
+    CHECK_EQ(0xbeef, mctx.tuple.dport);
+}
+
 /*
  * parser.c:332 branches on mctx->flags, not the l3.flags this call computed
  * -- a caller-supplied stale F_FRAG bit makes an ordinary packet take the
@@ -1175,6 +1212,27 @@ MARLIN_TEST(parse_ipv6_non_first_fragment_ah_is_unsupported_proto)
     mctx_init(&mctx);
     rc = marlin_parse(&md, &mctx);
     CHECK_RET(MARLIN_DROP_UNSUPPORTED_PROTO, rc);
+}
+
+MARLIN_TEST(parse_ipv6_non_first_fragment_sctp_is_ok_no_ports)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    pb_ipv6(IPPROTO_FRAGMENT, SRC6, DST6);
+    pb_frag6(IPPROTO_SCTP, 0x0008);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    mctx.tuple.sport = 0xdead;
+    mctx.tuple.dport = 0xbeef;
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(MARLIN_CTX_F_FRAG, mctx.flags);
+    CHECK_EQ(0xdead, mctx.tuple.sport);
+    CHECK_EQ(0xbeef, mctx.tuple.dport);
 }
 
 /*
@@ -1333,6 +1391,25 @@ MARLIN_TEST(parse_ipv6_dstopts_header_is_ok)
     CHECK_RET(MARLIN_OK, rc);
 }
 
+MARLIN_TEST(parse_ipv6_dstopts_header_sctp_is_ok)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    pb_ipv6(IPPROTO_DSTOPTS, SRC6, DST6);
+    pb_ext6(IPPROTO_SCTP, 0);
+    pb_sctp(38412, 132, 0xdeadbeef);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(bpf_htons(38412), mctx.tuple.sport);
+    CHECK_EQ(bpf_htons(132), mctx.tuple.dport);
+}
+
 /*
  * An atomic fragment header (offset zero, MF clear) sets neither flag and
  * walk_ext6's "return 0" path (parser.c:78) is otherwise unreachable from a
@@ -1383,7 +1460,7 @@ MARLIN_TEST(parse_ipv6_atomic_fragment_with_ext_hdr_still_resolves_l4)
     CHECK_EQ(70, mctx.l4_off);
 }
 
-MARLIN_TEST(parse_ipv6_sctp_is_not_forwarded)
+MARLIN_TEST(parse_ipv6_sctp_ok)
 {
     struct xdp_md md;
     struct marlin_ctx mctx;
@@ -1392,10 +1469,13 @@ MARLIN_TEST(parse_ipv6_sctp_is_not_forwarded)
     pb_reset();
     pb_eth(ETH_P_IPV6);
     pb_ipv6(IPPROTO_SCTP, SRC6, DST6);
+    pb_sctp(38412, 132, 0xdeadbeef);
     pb_xdp(&md);
     mctx_init(&mctx);
     rc = marlin_parse(&md, &mctx);
-    CHECK_RET(MARLIN_PASS_NOT_FORWARDED, rc);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(bpf_htons(38412), mctx.tuple.sport);
+    CHECK_EQ(bpf_htons(132), mctx.tuple.dport);
 }
 
 MARLIN_TEST(parse_ipv6_tcp_truncated_l4_is_parse_error)
@@ -1734,7 +1814,7 @@ MARLIN_TEST(parse_icmpv4_embedded_ah_is_unparseable)
     CHECK_RET(MARLIN_DROP_ICMP_UNPARSEABLE, rc);
 }
 
-MARLIN_TEST(parse_icmpv4_embedded_sctp_is_unparseable)
+MARLIN_TEST(parse_icmpv4_embedded_sctp_recovers_tuple)
 {
     struct xdp_md md;
     struct marlin_ctx mctx;
@@ -1745,6 +1825,26 @@ MARLIN_TEST(parse_icmpv4_embedded_sctp_is_unparseable)
     pb_ipv4(IPPROTO_ICMP, 5, 0, V4_DST, V4_SRC);
     pb_icmp(ICMP_DEST_UNREACH, 0);
     pb_ipv4(IPPROTO_SCTP, 5, 0, EMB4_SRC, EMB4_DST);
+    pb_ports(38412, 132);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(bpf_htons(38412), mctx.tuple.dport);
+    CHECK_EQ(bpf_htons(132), mctx.tuple.sport);
+}
+
+MARLIN_TEST(parse_icmpv4_embedded_gre_is_unparseable)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_ICMP, 5, 0, V4_DST, V4_SRC);
+    pb_icmp(ICMP_DEST_UNREACH, 0);
+    pb_ipv4(IPPROTO_GRE, 5, 0, EMB4_SRC, EMB4_DST);
     pb_xdp(&md);
     mctx_init(&mctx);
     rc = marlin_parse(&md, &mctx);
@@ -1878,6 +1978,26 @@ MARLIN_TEST(parse_icmpv6_embedded_udp_recovers_tuple)
     rc = marlin_parse(&md, &mctx);
     CHECK_RET(MARLIN_OK, rc);
     CHECK_EQ(bpf_htons(51000), mctx.tuple.dport);
+}
+
+MARLIN_TEST(parse_icmpv6_embedded_sctp_recovers_tuple)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IPV6);
+    pb_ipv6(IPPROTO_ICMPV6, DST6, SRC6);
+    pb_icmp(ICMPV6_DEST_UNREACH, 0);
+    pb_ipv6(IPPROTO_SCTP, EMB6_SRC, EMB6_DST);
+    pb_ports(38412, 132);
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(bpf_htons(38412), mctx.tuple.dport);
+    CHECK_EQ(bpf_htons(132), mctx.tuple.sport);
 }
 
 MARLIN_TEST(parse_icmpv6_embedded_truncated_hdr_is_unparseable)
@@ -2152,6 +2272,24 @@ MARLIN_TEST(parse_quic_short_header_byte_on_tcp_no_flag)
     pb_ports(51820, 443);
     pb_pad(4); /* the len/checksum a real tcphdr carries here; parser.c never reads them */
     pb_quic_form(0x40); /* would set MARLIN_CTX_F_QUIC on UDP; proto is TCP */
+    pb_xdp(&md);
+    mctx_init(&mctx);
+    rc = marlin_parse(&md, &mctx);
+    CHECK_RET(MARLIN_OK, rc);
+    CHECK_EQ(0, mctx.flags & MARLIN_CTX_F_QUIC);
+}
+
+MARLIN_TEST(parse_quic_short_header_byte_on_sctp_no_flag)
+{
+    struct xdp_md md;
+    struct marlin_ctx mctx;
+    int rc;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_SCTP, 5, 0, V4_SRC, V4_DST);
+    pb_sctp(38412, 132, 0xdeadbeef);
+    pb_quic_form(0x40); /* would set MARLIN_CTX_F_QUIC on UDP; proto is SCTP */
     pb_xdp(&md);
     mctx_init(&mctx);
     rc = marlin_parse(&md, &mctx);

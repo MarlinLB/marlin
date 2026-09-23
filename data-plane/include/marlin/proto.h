@@ -62,7 +62,7 @@ struct marlin_l4_ports {
     __be16 dport;
 };
 
-_Static_assert(sizeof(struct marlin_l4_ports) == 4, "marlin_l4_ports must overlay the first word of a TCP or UDP header");
+_Static_assert(sizeof(struct marlin_l4_ports) == 4, "marlin_l4_ports must overlay the first word of a TCP, UDP or SCTP header");
 
 #define MARLIN_UDP_HLEN  8 /* source, dest, len, check -- fixed width, no options */
 
@@ -120,3 +120,12 @@ struct marlin_quic_input { /* 24 bytes, no implicit padding */
 
 _Static_assert(0xff >= MARLIN_QUIC_CID_MAX, "marlin_ctx.udp_payload_len (marlin.h) clamps to __u8; it must stay above the "
                                             "longest configured connection ID it is compared against in lb_core.c");
+
+/* VIP_HASH_PORTS's hash input: sport/dport only, padded to the multiple-of-8 marlin_siphash() requires. */
+struct marlin_ports_input { /* 8 bytes, no implicit padding */
+    __be16 sport;
+    __be16 dport;
+    __u8 pad[4];
+};
+
+_Static_assert(sizeof(struct marlin_ports_input) == 8, "marlin_ports_input must stay 8 bytes: marlin_siphash() consumes it whole");

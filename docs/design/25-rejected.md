@@ -58,6 +58,24 @@ link, and does not reintroduce load-time sizing or CO-RE. See `docs/design/02-ar
 deleting map pre-creation, the `map name … pinned …` reuse mechanism and its pin-path collision
 risk. A short attach sequence with no sizing logic of its own.
 
+**Stateful SCTP multi-homing mechanisms** (`docs/design/32-sctp.md`), in favour of the two
+stateless per-VIP mechanisms that document adopts instead:
+
+- **Learning client addresses from a client's own INIT.** INIT carries no secret an attacker
+  cannot also present, so an attacker can list a victim's address in their own INIT and
+  misroute — kill — that victim's association from their own real source, no spoofing needed.
+- **Verification-tag pinning** (learn the server's tag from a client's COOKIE ECHO, steer later
+  packets carrying it). The rejected flow cache above, narrowed to one protocol: it fails the
+  same active/active argument `docs/design/30-quic.md` already makes against its own stateful
+  alternative, and turns the accepted, scheduled `1/(N+1)` scale-up reset
+  (`docs/design/17-reconfiguration.md`) into an unscheduled one on every eviction or restart.
+- **Replicating pins across instances.** Everything wrong with pinning, plus a distribution
+  path and a race window in which an unreplicated pin still loses the packet to the hash path.
+- **Backend-encoded verification tags**, the `VIP_QUIC` pattern applied to SCTP's tag. Rejected
+  on the mechanism, not merely the cost: Linux generates the tag with `get_random_u32()` and
+  gives an application no way to influence it, so this needs a kernel patch on every backend,
+  and it runs into an active patent (US11973822B2) covering the construction.
+
 **IPv6 outer encapsulation.** Backends are on IPv4 networks. Fixing the outer family halves
 the encapsulation paths, keeps `backend.addr` at 4 bytes rather than 16, removes the `ip6tnl`
 cases, and eliminates the zero-UDPv6-checksum problem.

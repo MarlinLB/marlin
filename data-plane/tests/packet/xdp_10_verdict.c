@@ -64,7 +64,7 @@ MARLIN_TEST(not_forwarded_arp_is_pass_and_counted)
     CHECK_EQ(before + 1, xdp_drop_stats_total(MARLIN_PASS_NOT_FORWARDED));
 }
 
-MARLIN_TEST(not_forwarded_sctp_is_pass_and_counted)
+MARLIN_TEST(ok_ipv4_sctp_is_pass_and_uncounted)
 {
     __u64 before = xdp_drop_stats_total(MARLIN_PASS_NOT_FORWARDED);
     struct xdp_run_result result;
@@ -72,6 +72,22 @@ MARLIN_TEST(not_forwarded_sctp_is_pass_and_counted)
     pb_reset();
     pb_eth(ETH_P_IP);
     pb_ipv4(IPPROTO_SCTP, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
+    pb_sctp(38412, 132, 0xdeadbeef);
+
+    result = run_current_packet();
+    CHECK_EQ(0, result.err);
+    CHECK_XDP(XDP_PASS, result.retval);
+    CHECK_EQ(before, xdp_drop_stats_total(MARLIN_PASS_NOT_FORWARDED));
+}
+
+MARLIN_TEST(not_forwarded_gre_is_pass_and_counted)
+{
+    __u64 before = xdp_drop_stats_total(MARLIN_PASS_NOT_FORWARDED);
+    struct xdp_run_result result;
+
+    pb_reset();
+    pb_eth(ETH_P_IP);
+    pb_ipv4(IPPROTO_GRE, MARLIN_IPV4_IHL_MIN, 0, V4_SRC, V4_DST);
 
     result = run_current_packet();
     CHECK_EQ(0, result.err);

@@ -54,6 +54,8 @@ extern const unsigned char ALT_BACKEND_MAC[ETH_ALEN];
 #define NH_VIP_NUM  0U
 #define UDP_VIP_NUM 1U
 #define ALT_VIP_NUM 2U
+#define SCTP_VIP_NUM 3U
+#define SCTP_VIP_PORT 38412U
 
 /*
  * Every fixture VIP shares one hash key. Its value is arbitrary to the
@@ -86,6 +88,15 @@ void backend_seed_l2dsr(__u32 id, const unsigned char *mac);
  */
 void udp_vip_seed(__u32 flags);
 void udp_vip_clear(void);
+
+/*
+ * Two vip_map keys, one family each, sharing SCTP_VIP_NUM -- a VIP address
+ * group (docs/design/32-sctp.md): both keys point at the one fwd_table
+ * block udp_vip_seed's two keys already share, so a case addressed to
+ * either family selects the same backend and the same vip_stats counter.
+ */
+void sctp_vip_seed(__u32 flags);
+void sctp_vip_clear(void);
 
 #define ACL_ADDR4(a, b, c, d) bpf_htonl(((__u32)(a) << 24) | ((__u32)(b) << 16) | ((__u32)(c) << 8) | (__u32)(d))
 

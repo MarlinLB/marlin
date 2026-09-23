@@ -27,7 +27,7 @@ bool conf_parse_mac(const char *str, __u8 out[6]);
 /* Exactly 32 hex digits -> 16 bytes; hash_key and table_seed both use this. */
 bool conf_parse_hexkey16(const char *str, __u8 out[16]);
 
-/* "tcp" | "udp" -> IPPROTO_*. */
+/* "tcp" | "udp" | "sctp" -> IPPROTO_*. */
 bool conf_parse_proto(const char *str, __u8 *out);
 
 /* "l2dsr" | "ipip" | "gue" | "vxlan" -> MARLIN_MODE_*. */

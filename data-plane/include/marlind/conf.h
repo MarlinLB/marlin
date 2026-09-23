@@ -110,8 +110,17 @@ struct conf_member {
     __u32 weight;
 };
 
+/*
+ * A VIP entity: one or more addresses (docs/design/32-sctp.md's address
+ * groups), all sharing port/proto/hash_key/table_seed/flags/members and
+ * therefore one vip_num, one fwd_table block and one vip_stats counter.
+ * keys[0].port/proto is authoritative -- parse_one_vip() applies the
+ * entry's port and proto to every key, so every key in keys[] always
+ * agrees on both.
+ */
 struct conf_vip {
-    struct vip_key key;
+    struct vip_key *keys;
+    __u32 key_count;
     struct vip_meta meta; /* vip_num filled by the reconciler; MARLIN_CONF_VIP_NUM_UNSET until then */
     __u8 table_seed[16];
 

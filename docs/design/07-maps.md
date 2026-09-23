@@ -21,6 +21,12 @@
 
 All created from BTF declarations at load. No map is pre-created.
 
+**`vip_map` may hold several keys pointing at one `vip_meta` value** — an address group
+(`docs/design/32-sctp.md`): the datapath reads one key at a time and never notices, since
+nothing about a lookup changes when several keys happen to agree. `MAX_VIPS` bounds the number
+of `vip_map` **keys**, not the number of distinct `vip_meta` values or `fwd_table` blocks in
+use, which a group can only ever make smaller.
+
 ## Map type rationale
 
 **`vip_map` = HASH.** VIPs are sparse and matched exactly, so the key is not a dense
