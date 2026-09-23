@@ -67,6 +67,18 @@ a pure function of `packet_tuple.src`. Neither belongs with the rate limiter.
 
 ---
 
+## File-managed mode
+
+`docs/design/31-file-configuration.md` specifies a second, mutually exclusive arrangement:
+`marlind` reads a TOML file and reconciles every map to it itself, and the C# control plane is
+reduced to reading stats. **Implemented, in `data-plane/marlind/`, orthogonal to the phase
+table above** — it does not advance or substitute for any phase's exit criteria, because those
+are about the C# control plane specifically, and this is the alternative to it. Eight of that
+document's ten open decisions are closed by the implementation; D-F5 and D-F8 remain open and
+are carried in the table below.
+
+---
+
 ## Phase 1 — Project setup
 
 **Goal:** one packet arrives on a VIP and leaves for a backend, and a C# process put the
@@ -483,6 +495,8 @@ section it affects, not in a document of its own.
 | Whether the reconciler asserts `backends[i].id == i` on every write, or only on a full resync | `docs/design/20-configuration-validation.md` | 3 |
 | Whether `VIP_DSCP` non-zero on a VIP served only by `L2DSR` backends is a warning, silently accepted, or rejected. The marking has no outer header to land in there, but backend modes are per-backend and change under reconciliation, and the same VIP can mix modes over its lifetime — so a rejection would refuse an otherwise legitimate mixed-mode rollout | `docs/design/20-configuration-validation.md` | 3 |
 | The rate limiter's insert cost under a spoofed flood, and the mitigation it selects | `docs/design/28-rate-limiting.md` | 4 |
+| D-F5 — whether file-managed mode keeps `config.max_frame` fresh from netlink link events, or only samples the MTU once per reconcile as it does today | `docs/design/31-file-configuration.md` §3, `data-plane/marlind/reconcile.c` | 3 |
+| D-F8 — whether an explicit-port VIP's `port == 0` companion gets file-schema sugar (a `ports` list) in file-managed mode. Blocked on the same fragment-tail admission decision named two rows up in this table | `docs/design/31-file-configuration.md` §4, `docs/design/11-pipeline.md` | 2b |
 
 ---
 

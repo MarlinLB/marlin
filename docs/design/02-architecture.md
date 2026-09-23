@@ -42,6 +42,16 @@ Rationale:
   kernel silently fall back to generic/SKB mode when the driver lacks native XDP support —
   exactly the order-of-magnitude throughput regression this line exists to refuse. It must fail
   the attach, not degrade it.
+- **`--xdp-mode=generic` is an explicit exception to the line above, not a case of it.** The rule
+  this refuses is the kernel choosing SKB mode *unasked* when native support is merely absent.
+  `--xdp-mode=generic` is the operator asking for SKB mode outright, for a host where native
+  support is present but broken rather than absent: this repo's own netns integration rigs
+  (`data-plane/scripts/*_wsl.sh`), under a WSL2 kernel whose veth driver reports a successful
+  native attach and a successful `bpf_xdp_adjust_head()`, then silently fails every resulting
+  `XDP_TX` (`ethtool -S <if>`'s `rx_queue_N_xdp_tx_errors`, not visible from the BPF program or
+  from `drop_stats` at all). Default and unattended behaviour are unchanged — native only, refuse
+  rather than degrade; the flag exists so that gap doesn't also block using `marlind --attach`
+  itself against those rigs. `cmd_attach.c` logs loudly whenever it is used.
 - **A libbpf call, not a shelled-out tool.** Attaching directly through the syscalls avoids
   parsing another program's output and lets this process hold the resulting file descriptor,
   which the next point depends on.

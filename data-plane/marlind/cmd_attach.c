@@ -21,9 +21,12 @@
 
 #include <marlind/bpf_load.h>
 #include <marlind/cmd.h>
+#include <marlind/conf.h>
+#include <marlind/conf_check.h>
 #include <marlind/log.h>
 #include <marlind/marlind.h>
 #include <marlind/preflight.h>
+#include <marlind/reconcile.h>
 
 /*
  * A held bpf_link implies "attached" for every case except one: the
@@ -83,6 +86,12 @@ static bool link_monitor_saw_dellink(int fd, int ifindex)
     }
 }
 
+/*
+ * SIGHUP is the reload signal (docs/design/31-file-configuration.md §7):
+ * added to the same mask as SIGTERM/SIGINT so the epoll loop below gains a
+ * third branch rather than a new mechanism, and reload runs in the main
+ * loop rather than a handler, so nothing needs to be async-signal-safe.
+ */
 static int open_signal_fd(void)
 {
     sigset_t mask;
@@ -91,6 +100,7 @@ static int open_signal_fd(void)
     sigemptyset(&mask);
     sigaddset(&mask, SIGTERM);
     sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGHUP);
 
     if(sigprocmask(SIG_BLOCK, &mask, NULL) != 0) {
         die("sigprocmask: %s", strerror(errno));
@@ -104,7 +114,73 @@ static int open_signal_fd(void)
     return fd;
 }
 
-int cmd_attach(void)
+/*
+ * Reads and drains exactly one queued signal. signalfd is level-triggered,
+ * so leaving it unread would spin epoll_wait(); reading it is also how
+ * SIGHUP is told apart from SIGTERM/SIGINT now that more than one signal
+ * shares this fd.
+ */
+static int read_signal(int fd)
+{
+    struct signalfd_siginfo si;
+    ssize_t nread = read(fd, &si, sizeof(si));
+
+    if(nread != (ssize_t)sizeof(si)) {
+        return 0;
+    }
+    return (int)si.ssi_signo;
+}
+
+/*
+ * Re-parses cfg->conf_path, checks it against the currently applied model,
+ * and reconciles the maps to it. Never exits: a rejected reload logs and
+ * keeps the previous generation attached and serving
+ * (docs/design/31-file-configuration.md §7) -- the opposite of --attach's
+ * startup posture, where a bad file must refuse before anything is
+ * attached.
+ */
+static void handle_reload(struct config *cfg, struct bpf_object *obj)
+{
+    struct conf_diag diag;
+    struct marlin_conf *next;
+
+    if(cfg->conf_path == NULL) {
+        logmsg("SIGHUP has no effect in environment-managed mode (no --config given)");
+        return;
+    }
+
+    conf_diag_reset(&diag);
+    next = conf_load(cfg->conf_path, CONF_LOAD_FULL, true, &diag);
+    if(next == NULL) {
+        conf_diag_log(cfg->conf_path, &diag);
+        logmsg("SIGHUP: %s rejected, keeping the previous generation attached", cfg->conf_path);
+        return;
+    }
+
+    if(!conf_check_against_previous(next, cfg->file, &diag)) {
+        conf_diag_log(cfg->conf_path, &diag);
+        logmsg("SIGHUP: %s rejected (restart-only key or in-place edit), keeping the previous generation attached", cfg->conf_path);
+        conf_free(next);
+        return;
+    }
+    conf_diag_log(cfg->conf_path, &diag); /* warnings only past this point */
+
+    if(!reconcile_apply(obj, next, &diag)) {
+        conf_diag_log(cfg->conf_path, &diag);
+        logmsg("SIGHUP: %s: reconcile failed partway through -- maps may be a mix of old and new; "
+               "fix the underlying problem and send SIGHUP again",
+               cfg->conf_path);
+        conf_free(next);
+        return;
+    }
+
+    conf_free(cfg->file);
+    cfg->file = next;
+    logmsg("SIGHUP: reloaded %s (%u backend(s), %u vip(s))", cfg->conf_path, next->backend_count, next->vip_count);
+    notify("STATUS=attached %s to %s (ifindex %d); reloaded %s", MARLIN_PROG_NAME, cfg->iface, cfg->ifindex, cfg->conf_path);
+}
+
+int cmd_attach(const char *conf_path, enum xdp_attach_mode xdp_mode)
 {
     struct config cfg;
     struct bpf_object *obj;
@@ -112,7 +188,7 @@ int cmd_attach(void)
     int link_fd, sig_fd, nl_fd, epfd;
     struct epoll_event ev, events[2];
 
-    load_config(&cfg);
+    load_config(&cfg, conf_path, CONF_LOAD_FULL);
     preflight(&cfg);
 
     /*
@@ -142,10 +218,36 @@ int cmd_attach(void)
 
     obj = load_and_pin_maps(cfg.obj_path, cfg.pin_dir);
     pin_version(obj, cfg.pin_dir);
-    prog = pin_program(obj, cfg.obj_path, cfg.prog_pin);
-    link_fd = attach_link(bpf_program__fd(prog), cfg.iface, cfg.ifindex);
 
-    logmsg("attached %s to %s (xdpdrv), pinned under %s", MARLIN_PROG_NAME, cfg.iface, cfg.pin_dir);
+    /*
+     * Between load_and_pin_maps() and attach_link(): maps survive restarts
+     * by design (docs/design/02-architecture.md) and may hold the previous
+     * generation's contents, so attaching first would forward under stale
+     * configuration for the length of the reconcile
+     * (docs/design/31-file-configuration.md §1). A rejection here is fatal
+     * -- the opposite of handle_reload()'s posture -- because nothing has
+     * attached yet.
+     */
+    if(cfg.file != NULL) {
+        struct conf_diag diag;
+
+        conf_diag_reset(&diag);
+        if(!reconcile_apply(obj, cfg.file, &diag)) {
+            conf_diag_log(cfg.conf_path, &diag);
+            die_with(EXIT_CONFIG, "%s: reconcile failed; refusing to attach", cfg.conf_path);
+        }
+        conf_diag_log(cfg.conf_path, &diag);
+    }
+
+    prog = pin_program(obj, cfg.obj_path, cfg.prog_pin);
+    link_fd = attach_link(bpf_program__fd(prog), cfg.iface, cfg.ifindex, xdp_mode);
+
+    logmsg("attached %s to %s (%s), pinned under %s", MARLIN_PROG_NAME, cfg.iface,
+           xdp_mode == XDP_ATTACH_GENERIC ? "xdpgeneric" : "xdpdrv", cfg.pin_dir);
+    if(xdp_mode == XDP_ATTACH_GENERIC) {
+        logmsg("--xdp-mode=generic: this is an order-of-magnitude throughput regression versus "
+               "native XDP (docs/design/02-architecture.md) -- not for production use");
+    }
     notify("READY=1\nSTATUS=attached %s to %s (ifindex %d); pins under %s", MARLIN_PROG_NAME, cfg.iface, cfg.ifindex, cfg.pin_dir);
 
     for(;;) {
@@ -160,14 +262,22 @@ int cmd_attach(void)
 
         for(int i = 0; i < nready; i++) {
             if(events[i].data.fd == sig_fd) {
+                int signo = read_signal(sig_fd);
+
+                if(signo == SIGHUP) {
+                    handle_reload(&cfg, obj);
+                    continue;
+                }
                 logmsg("stopping: detaching %s from %s", MARLIN_PROG_NAME, cfg.iface);
                 notify("STOPPING=1");
                 close(link_fd);
+                free_config(&cfg);
                 return EXIT_ATTACHED;
             }
             if(events[i].data.fd == nl_fd && link_monitor_saw_dellink(nl_fd, cfg.ifindex)) {
                 logmsg("%s was removed -- the datapath is no longer attached", cfg.iface);
                 notify("STATUS=%s removed; datapath no longer attached", cfg.iface);
+                free_config(&cfg);
                 return EXIT_NOT_ATTACHED;
             }
         }

@@ -11,11 +11,21 @@ Type=notify
 NotifyAccess=main
 EnvironmentFile=/etc/marlin/marlin.env
 ExecStart=/usr/lib/marlin/marlind --attach
+#
+# File-managed mode (docs/design/31-file-configuration.md): comment out
+# EnvironmentFile and ExecStart above, and uncomment the three lines below
+# instead. The two modes are mutually exclusive -- a file-managed marlind
+# and a map-writing control plane must never run against the same pin_dir,
+# and nothing here enforces that (docs/DEPLOYMENT.md).
+#ExecStartPre=/usr/lib/marlin/marlind --check --config /etc/marlind/marlin.conf
+#ExecStart=/usr/lib/marlin/marlind --config /etc/marlind/marlin.conf --attach
+#ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=1s
 # EXIT_INCOMPATIBLE (5): the object is below marlind's floor, or predates
-# build versioning -- unfixable by retrying, only by replacing a file.
-RestartPreventExitStatus=5
+# build versioning. EXIT_CONFIG (6): --config's file failed to parse or
+# validate. Both are unfixable by retrying, only by replacing a file.
+RestartPreventExitStatus=5 6
 OOMScoreAdjust=-500
 MemoryAccounting=yes
 CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN

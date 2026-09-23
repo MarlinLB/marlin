@@ -113,10 +113,13 @@ _ReSharper*/
 # Local deployment state
 # ---------------------------------------------------------------------------
 
-# deploy/marlin.env.example is committed (docs/REPO-STRUCTURE.md §2); the
-# filled-in file names a real interface and pin path on one host. The glob
-# does not match the .example suffix, so no negation is needed.
+# deploy/marlin.env.example and deploy/marlin.conf.example are committed
+# (docs/REPO-STRUCTURE.md §2); a filled-in file names a real interface and
+# pin path on one host, and for marlin.conf also every VIP's hash_key and
+# table_seed (docs/design/31-file-configuration.md §10). Neither glob matches
+# the .example suffix, so no negation is needed.
 deploy/*.env
+deploy/*.conf
 
 # ---------------------------------------------------------------------------
 # Editor and OS junk

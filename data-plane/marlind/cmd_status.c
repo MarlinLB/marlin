@@ -123,14 +123,14 @@ static void read_version(const char *pin_dir, char *out, size_t out_sz)
     close(map_fd);
 }
 
-int cmd_status(void)
+int cmd_status(const char *conf_path)
 {
     struct config cfg;
     struct attach_probe probe;
     char version[MARLIN_VERSION_MAX];
     int rc;
 
-    load_config(&cfg);
+    load_config(&cfg, conf_path, CONF_LOAD_INSTANCE_ONLY);
     rc = attach_probe(&cfg, &probe);
 
     switch(rc) {
@@ -153,5 +153,6 @@ int cmd_status(void)
         break;
     }
 
+    free_config(&cfg);
     return rc;
 }
