@@ -158,7 +158,7 @@ PACKET_SUPPORT_OBJS := $(patsubst $(SUPPORT_DIR)/%.c,$(BUILD_DIR)/support/packet
 NATIVE_TOML_OBJS := $(patsubst $(TOML_DIR)/%.c,$(BUILD_DIR)/vendor/native/%.o,$(TOML_SRCS))
 
 .PHONY: all
-all: bpf marlind tools
+all: bpf $(COMPILE_COMMANDS) marlind tools
 
 .PHONY: bpf
 bpf: $(MARLIN_OBJ)
@@ -369,6 +369,13 @@ ci:
 format:
 	$(MAKE) check-toolchain
 	@$(CLANG_FORMAT) -i --style=file:$(MARLIN_REPO_ROOT)/.clang-format $(SRCS) $(HDRS) $(MARLIND_SRCS)
+
+.PHONY: format-check
+format-check:
+	@$(MAKE) check-toolchain
+	@echo "Checking format..."
+	@$(CLANG_FORMAT) --dry-run -Werror --style=file:$(MARLIN_REPO_ROOT)/.clang-format $(SRCS) $(HDRS) $(MARLIND_SRCS)
+	@echo "Format check complete"
 
 # Not one invocation over $(SRCS) $(MARLIND_SRCS): clang-tidy sharing one
 # process across a -target bpf TU and a host TU corrupts clang-analyzer-valist's

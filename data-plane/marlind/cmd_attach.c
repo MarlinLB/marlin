@@ -180,26 +180,11 @@ static void handle_reload(struct config *cfg, struct bpf_object *obj)
     notify("STATUS=attached %s to %s (ifindex %d); reloaded %s", MARLIN_PROG_NAME, cfg->iface, cfg->ifindex, cfg->conf_path);
 }
 
-int cmd_attach(const char *conf_path, enum xdp_attach_mode xdp_mode)
+/* Registers sig_fd and nl_fd with a fresh epoll instance; each failure is fatal. */
+static int open_event_loop(int sig_fd, int nl_fd)
 {
-    struct config cfg;
-    struct bpf_object *obj;
-    struct bpf_program *prog;
-    int link_fd, sig_fd, nl_fd, epfd;
-    struct epoll_event ev, events[2];
-
-    load_config(&cfg, conf_path, CONF_LOAD_FULL);
-    preflight(&cfg);
-
-    /*
-     * Subscribed before attaching, not after: a RTM_DELLINK landing in the
-     * gap between preflight's if_nametoindex() and a successful
-     * bpf_link_create() would otherwise go unseen, leaving this process
-     * believing it is attached after the kernel has already torn the
-     * interface (and with it, the link) down.
-     */
-    sig_fd = open_signal_fd();
-    nl_fd = open_link_monitor();
+    struct epoll_event ev;
+    int epfd;
 
     epfd = epoll_create1(EPOLL_CLOEXEC);
     if(epfd < 0) {
@@ -216,28 +201,59 @@ int cmd_attach(const char *conf_path, enum xdp_attach_mode xdp_mode)
         die("epoll_ctl(nl_fd): %s", strerror(errno));
     }
 
-    obj = load_and_pin_maps(cfg.obj_path, cfg.pin_dir);
-    pin_version(obj, cfg.pin_dir);
+    return epfd;
+}
+
+/*
+ * Between load_and_pin_maps() and attach_link(): maps survive restarts by
+ * design (docs/design/02-architecture.md) and may hold the previous
+ * generation's contents, so attaching first would forward under stale
+ * configuration for the length of the reconcile
+ * (docs/design/31-file-configuration.md §1). A rejection here is fatal --
+ * the opposite of handle_reload()'s posture -- because nothing has attached
+ * yet.
+ */
+static void reconcile_startup(const struct config *cfg, struct bpf_object *obj)
+{
+    struct conf_diag diag;
+
+    if(cfg->file == NULL) {
+        return;
+    }
+
+    conf_diag_reset(&diag);
+    if(!reconcile_apply(obj, cfg->file, &diag)) {
+        conf_diag_log(cfg->conf_path, &diag);
+        die_with(EXIT_CONFIG, "%s: reconcile failed; refusing to attach", cfg->conf_path);
+    }
+    conf_diag_log(cfg->conf_path, &diag);
+}
+
+int cmd_attach(const char *conf_path, enum xdp_attach_mode xdp_mode)
+{
+    struct config cfg;
+    struct bpf_object *obj;
+    struct bpf_program *prog;
+    int link_fd, sig_fd, nl_fd, epfd;
+    struct epoll_event events[2];
+
+    load_config(&cfg, conf_path, CONF_LOAD_FULL);
+    preflight(&cfg);
 
     /*
-     * Between load_and_pin_maps() and attach_link(): maps survive restarts
-     * by design (docs/design/02-architecture.md) and may hold the previous
-     * generation's contents, so attaching first would forward under stale
-     * configuration for the length of the reconcile
-     * (docs/design/31-file-configuration.md §1). A rejection here is fatal
-     * -- the opposite of handle_reload()'s posture -- because nothing has
-     * attached yet.
+     * Subscribed before attaching, not after: a RTM_DELLINK landing in the
+     * gap between preflight's if_nametoindex() and a successful
+     * bpf_link_create() would otherwise go unseen, leaving this process
+     * believing it is attached after the kernel has already torn the
+     * interface (and with it, the link) down.
      */
-    if(cfg.file != NULL) {
-        struct conf_diag diag;
+    sig_fd = open_signal_fd();
+    nl_fd = open_link_monitor();
+    epfd = open_event_loop(sig_fd, nl_fd);
 
-        conf_diag_reset(&diag);
-        if(!reconcile_apply(obj, cfg.file, &diag)) {
-            conf_diag_log(cfg.conf_path, &diag);
-            die_with(EXIT_CONFIG, "%s: reconcile failed; refusing to attach", cfg.conf_path);
-        }
-        conf_diag_log(cfg.conf_path, &diag);
-    }
+    obj = load_and_pin_maps(cfg.obj_path, cfg.pin_dir);
+    pin_version(obj, cfg.pin_dir);
+    reconcile_startup(&cfg, obj);
 
     prog = pin_program(obj, cfg.obj_path, cfg.prog_pin);
     link_fd = attach_link(bpf_program__fd(prog), cfg.iface, cfg.ifindex, xdp_mode);

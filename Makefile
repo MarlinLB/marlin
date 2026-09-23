@@ -10,7 +10,7 @@ MAKEFLAGS += --no-print-directory
 
 .DEFAULT_GOAL := all
 
-.PHONY: all data-plane bpf marlind version check-toolchain ci format tidy clean tests packet-tests verifier-stats tools help
+.PHONY: all data-plane bpf marlind version check-toolchain ci format format-check tidy clean tests packet-tests verifier-stats tools help
 
 all: data-plane
 
@@ -61,6 +61,10 @@ tools:
 format:
 	@$(MAKE) -C $(DATA_PLANE_DIR) format
 
+## Check the data plane's .c/.h formatting without rewriting (clang-format --dry-run -Werror).
+format-check:
+	@$(MAKE) -C $(DATA_PLANE_DIR) format-check
+
 ## Run clang-tidy over the data plane (repo-root .clang-tidy; builds its own compile database).
 tidy:
 	@$(MAKE) -C $(DATA_PLANE_DIR) tidy
@@ -80,6 +84,7 @@ help:
 	@echo "  check-toolchain Verify the data-plane toolchain is present and correct"
 	@echo "  ci              check-toolchain + a full build, the way CI runs it"
 	@echo "  format          Rewrite data-plane C sources/headers with clang-format"
+	@echo "  format-check    Check data-plane C sources/headers are clang-format clean (no rewrite)"
 	@echo "  tidy            Run clang-tidy over the data-plane C sources"
 	@echo "  clean           Remove data-plane build artefacts"
 	@echo "  tests           Run the native unit tests over the data plane"
